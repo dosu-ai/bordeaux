@@ -22,6 +22,9 @@ importers:
       '@vercel/board':
         specifier: 0.56.1
         version: 0.56.1(@chat-adapter/github@4.45.0(zod@4.6.7))(@chat-adapter/linear@4.45.0(graphql@17.1.0)(zod@4.6.7))(@chat-adapter/slack@4.45.0(zod@4.6.7))(chat@4.45.0(zod@4.6.7))
+      chat:
+        specifier: ^4.45.0
+        version: 4.45.0(zod@4.6.7)
       jose:
         specifier: ^6.2.12
         version: 6.2.18
@@ -41,9 +44,9 @@ importers:
       '@types/node':
         specifier: ^24
         version: 24.19.4
-      chat:
-        specifier: ^4.45.0
-        version: 4.45.0(zod@4.6.7)
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       typescript:
         specifier: ^5.9.3
         version: 5.9.3

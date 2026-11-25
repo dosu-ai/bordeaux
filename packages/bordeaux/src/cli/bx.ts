@@ -370,4 +370,10 @@ async function main(argv: string[]) {
   process.exitCode = await app.run(args)
 }
 
+// A reader that stops early (`bx --help | head`) ends the run, not with a stack trace.
+process.stdout.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EPIPE') process.exit(0)
+  throw error
+})
+
 await main(process.argv.slice(2))

@@ -4,9 +4,17 @@
   "description": "A board for people and agents on Cloudflare Durable Objects, compatible with vercel/board",
   "license": "Apache-2.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dosu-ai/bordeaux.git",
+    "directory": "packages/bordeaux"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
-    "bx": "./src/cli/bx.ts",
-    "bordeaux": "./src/cli/bx.ts"
+    "bx": "./dist/bx.mjs",
+    "bordeaux": "./dist/bx.mjs"
   },
   "exports": {
     "./worker": "./src/worker/index.ts",
@@ -14,12 +22,26 @@
     "./sync": "./src/sync/index.ts",
     "./connect-chat": "./src/sync/connect-chat.ts"
   },
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "check": "tsc --noEmit",
     "test": "vitest run",
     "conformance": "node scripts/conformance.mjs",
-    "vendor": "node scripts/vendor-upstream.mjs"
+    "vendor": "node scripts/vendor-upstream.mjs",
+    "build": "node scripts/build.mjs",
+    "prepack": "node scripts/build.mjs",
+    "load": "node scripts/load.mjs"
   },
   "dependencies": {
     "@chat-adapter/github": "^4.45.0",
@@ -35,6 +57,7 @@
     "@cloudflare/vitest-pool-workers": "^0.23.0",
     "@cloudflare/workers-types": "^5.20261123.1",
     "@types/node": "^24",
+    "esbuild": "0.28.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0",
     "wrangler": "^4.168.0"
