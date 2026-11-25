@@ -2,6 +2,8 @@ import { env, runInDurableObject, SELF } from 'cloudflare:test'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RAW_MAX } from '../src/engine/engine.ts'
 import { boardKey } from '../src/worker/backend.ts'
+import { GC_CRON } from '../src/worker/health.ts'
+import worker from '../src/worker/index.ts'
 import { api, BASE, tokenFor } from './helpers.ts'
 
 const DAY = 86_400_000
@@ -21,7 +23,10 @@ async function upload(token: string, name: string) {
 const stored = async () => (await env.FILES!.list({ prefix: 'boards/' })).objects.map((object) => object.key.split('/').at(-1))
 const copies = (id: number) => runInDurableObject(board(), async (_instance, state) => state.storage.sql.exec<{ n: number }>('select count(*) as n from board_versions where message_id = ?', id).one().n)
 
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 describe('retention', () => {
   it("keeps an inbox's raw payload whole up to 256 KB, and cuts a bigger one short, marked", async () => {
@@ -71,6 +76,21 @@ describe('retention', () => {
     expect(await copies(keeperIndex)).toBe(2)
     expect((await api(owner, 'GET', `/messages/${keeper.id}`)).body.message.text).toBe('v4')
     expect((await SELF.fetch(`${BASE}/attachments/${kept}`, { headers: { authorization: `Bearer ${owner}` } })).status).toBe(200)
+  })
+
+  it("runs on every one of the team's boards from the daily cron, and the other cron checks sync", async () => {
+    const owner = await tokenFor(1, 'owner')
+    await api(owner, 'POST', '/admin/boards', { name: 'gc-named' })
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await worker.scheduled({ cron: GC_CRON, scheduledTime: Date.now(), noRetry() {} } as ScheduledController, env as never)
+    const lines = logged.mock.calls.map((call) => String(call[0]))
+    expect(lines.some((line) => line.startsWith('[bordeaux] gc (default):'))).toBe(true)
+    expect(lines.some((line) => line.startsWith('[bordeaux] gc gc-named:'))).toBe(true)
+
+    const checked = vi.spyOn(globalThis, 'fetch')
+    await worker.scheduled({ cron: '*/15 * * * *', scheduledTime: Date.now(), noRetry() {} } as ScheduledController, env as never)
+    expect(lines.length).toBe(logged.mock.calls.length)
+    expect(checked.mock.calls.some(([input]) => String(input instanceof Request ? input.url : input).includes('slack.com'))).toBe(true)
   })
 
   it('is for someone who manages every channel', async () => {
