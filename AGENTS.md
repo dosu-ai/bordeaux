@@ -126,7 +126,8 @@ quiet, for a person at a terminal first, `--json` for programs. What bordeaux ad
 `token`, `tokens`, `boards`, `export`/`import`) follows the same rules.
 
 - **Say what happened, then stop.** One line per fact, lowercase phrases, no banners or
-  recaps. No emoji, color, or box drawing.
+  recaps. No emoji, color, or box drawing, but for 🍷, bordeaux's mark, which starts the help
+  header, a finished `bdx login`, `bdx doctor`'s all-good line, and `npm create`'s last message.
 - **Columns, not colons**, aligned when rows stack; paths as people write them (`~/…`); fit
   80 columns.
 - **Errors are data**, shaped like upstream's: what failed and why, then at most two ways
