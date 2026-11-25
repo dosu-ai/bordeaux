@@ -4,11 +4,14 @@
 import { directory, personId } from './auth.ts'
 import type { Session } from './directory.ts'
 import type { BordeauxEnv } from './env.ts'
+import { membershipOf } from './github-app.ts'
 
 /** How long an access token lasts: the most `vb` and agents hold one before asking for another. */
 export const ACCESS_TTL = 12 * 3600
 /** How long a sign-in lasts without being used: each refresh starts it again. */
 export const REFRESH_TTL_MS = 30 * 24 * 3600 * 1000
+/** How often a renewal checks the person is still in the org (spec 03). */
+export const RECHECK_MS = 12 * 3600 * 1000
 
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
 
@@ -31,8 +34,29 @@ async function member(send: Fetch, env: BordeauxEnv, token: string): Promise<{ i
   const found = await github(send, `/user/memberships/orgs/${encodeURIComponent(org)}`, token)
   const membership = found.ok ? ((await found.json()) as { state?: string; role?: string }) : null
   if (membership?.state !== 'active') return oauthError(403, 'access_denied', `${login} isn't a member of ${org} on GitHub`)
+  return { id: String(id), login, owner: ownerOf(env, login, membership.role) }
+}
+
+/** Org owners are board owners, and so is anyone BORDEAUX_OWNERS names (decided, Q2a). */
+function ownerOf(env: BordeauxEnv, login: string, role: string | undefined): boolean {
   const owners = (env.BORDEAUX_OWNERS ?? '').split(',').map((name) => name.trim().toLowerCase()).filter(Boolean)
-  return { id: String(id), login, owner: membership.role === 'admin' || owners.includes(login.toLowerCase()) }
+  return role === 'admin' || owners.includes(login.toLowerCase())
+}
+
+/**
+ * A sign-in, renewed: checked against the org again when its last check is over 12 hours old. The
+ * person's GitHub token isn't kept, so the board's App asks; a board with no App can't, and asks
+ * the person to sign in again instead.
+ */
+async function renewed(env: BordeauxEnv, session: Session, send: Fetch): Promise<Session | Response> {
+  const next = { ...session, expiresAt: Date.now() + REFRESH_TTL_MS }
+  if (Date.now() - session.checkedAt < RECHECK_MS) return next
+  const org = env.BORDEAUX_GITHUB_ORG
+  if (!org) return oauthError(500, 'server_error', 'this board has no GitHub org to check members against: set BORDEAUX_GITHUB_ORG')
+  const membership = await membershipOf(env, org, session.login, send)
+  if (membership === 'unknown') return oauthError(401, 'invalid_grant', "this board can't check you're still in its org without its GitHub App: run bx login")
+  if (membership === null) return oauthError(403, 'access_denied', `${session.login} isn't a member of ${org} on GitHub any more`)
+  return { ...next, owner: ownerOf(env, session.login, membership.role), checkedAt: Date.now() }
 }
 
 /** The board's tokens for a sign-in: a short access token and the refresh token that renews it. */
@@ -71,8 +95,8 @@ export async function broker(request: Request, env: BordeauxEnv, send: Fetch = f
     if (!body.refresh_token) return oauthError(400, 'invalid_request', 'refresh_token is required')
     const session = await directory(env).takeSession(body.refresh_token)
     if (!session) return oauthError(401, 'invalid_grant', 'that sign-in has ended: run bx login')
-    // Membership is checked again with the GitHub App's installation token at most every 12 hours (M2).
-    return issue(env, { ...session, expiresAt: Date.now() + REFRESH_TTL_MS })
+    const next = await renewed(env, session, send)
+    return next instanceof Response ? next : issue(env, next)
   }
   if (body.grant_type !== DEVICE_GRANT) return oauthError(400, 'unsupported_grant_type', `grant_type: ${DEVICE_GRANT} or refresh_token`)
   if (!clientId) return oauthError(501, 'unsupported_grant_type', 'this board has no GitHub App to sign in with: set GITHUB_CLIENT_ID')

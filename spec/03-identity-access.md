@@ -98,9 +98,9 @@ person ──(1) GitHub device flow (bx login)──▶ github.com/login/device
   - It is checked again at every refresh, at most every 12 hours. Leaving the org therefore
     loses access within 12 hours.
   - The person's GitHub token isn't kept, so the recheck asks GitHub with the GitHub App's
-    installation token (`GET /orgs/{org}/members/{login}`). **Not built yet:** M1's broker
-    renews a sign-in without the recheck, so until M2 a person who leaves the org keeps access
-    until their sign-in goes unused for 30 days or they're signed out.
+    installation token (`GET /orgs/{org}/memberships/{login}`, which also says whether they're
+    an owner now). A board with no App installed can't check, so its people sign in again
+    every 12 hours.
   - Anyone who isn't a member is refused at step (3).
   - **Δ** Upstream treats every verified person as a member. bordeaux keeps that, but only
     lets org members get verified.
