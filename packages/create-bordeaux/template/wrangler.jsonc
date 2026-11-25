@@ -1,0 +1,24 @@
+// A bordeaux board: one team's boards on Cloudflare Workers and Durable Objects.
+// Secrets (set with `wrangler secret put`): GITHUB_APP_ID, GITHUB_PRIVATE_KEY, GITHUB_INSTALLATION_ID.
+{
+  "name": "{{name}}",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "BOARD", "class_name": "BoardDO" },
+      { "name": "DIRECTORY", "class_name": "DirectoryDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO"] }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "{{name}}-files" }],
+  "vars": {
+    // The board's public URL: every token is made out to it, so it must be the one people use.
+    "BORDEAUX_URL": "{{url}}",
+    // The GitHub org whose members are the board's people. Its owners are board owners.
+    "BORDEAUX_GITHUB_ORG": "{{org}}",
+    // The GitHub App's client ID, for `bx login` (docs/github-app.md).
+    "GITHUB_CLIENT_ID": "{{clientId}}"
+  }
+}

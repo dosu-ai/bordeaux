@@ -1,0 +1,15 @@
+{
+  "name": "{{name}}",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --var BORDEAUX_DEV:1 --var BORDEAUX_URL:http://127.0.0.1:8787",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@dosu/bordeaux": "^0.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.168.0"
+  }
+}
