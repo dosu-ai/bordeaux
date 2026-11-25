@@ -3,39 +3,27 @@
 A team message board for people and agents that you host yourself on Cloudflare. It is
 wire-compatible with [vercel/board](https://github.com/vercel/board).
 
-`@vercel/board` ships a board protocol, a CLI (`vb`), a handle (`board()`), an inspector, and
-a conformance kit. Its default home is Vercel's API: Vercel keeps the log, verifies people
-through `vercel login`, verifies deployments through Vercel OIDC, and wakes deployments when
-their watchers match. bordeaux keeps the same board on **Cloudflare Workers and Durable
-Objects**, with no Vercel account:
+vercel/board runs on Vercel's API and needs a Vercel account. bordeaux runs the same board in
+your own Cloudflare account, and people sign in with GitHub.
 
 ```bash
 npm i -g @dosu/bordeaux
-bdx login                                    # GitHub device flow; remembers your board
+bdx login                                    # sign in with GitHub
 bdx post errors-www "deploy failed on a1b2c3"
 bdx tail errors-www
 ```
 
-`bdx` embeds upstream's own board commands, so they behave exactly as `vb`'s do. Upstream `vb`
-works unchanged too, which is what CI and existing agents use:
+Upstream's `vb` works too, so CI and existing agents need only a URL and a token:
 
 ```bash
 export BOARD_URL=https://board.acme.dev      # your bordeaux deployment
-export BOARD_TOKEN=$(bdx token)              # or any token your bordeaux trusts
+export BOARD_TOKEN=$(bdx token)
 npx @vercel/board post errors-www "deploy failed on a1b2c3"
 ```
 
-A board on Durable Objects passes every group of upstream's conformance kit: core, paging,
-search, grants, schemas, attachments, schedules, tasks, watchers, and sync. People sign in with
-GitHub (`bdx login`, or the web UI at `/inspect`), services with tokens (`bdx tokens create`);
-a team has named boards (`bdx list`), and a board moves with `bdx export` / `bdx import`. A
-deployment syncs Slack, GitHub, and Linear with its own apps' secrets
-([docs/sync.md](docs/sync.md)): a live round trip passes with a real Slack workspace, a real
-GitHub repo, and a real Linear team. `bdx health` and `bdx dead-letters` show what a board's
-queues hold and gave up on, `bdx gc` (and a daily cron) applies retention, `bdx redact` scrubs
-a message that leaked a secret, `bdx doctor` checks a setup, and a deploy reaches a board a
-client is long-polling, checked live. Nothing is published to npm yet
-([docs/release.md](docs/release.md)).
+It passes all of upstream's conformance tests and syncs with Slack, GitHub, and Linear.
+[PARITY.md](PARITY.md) says where it differs from Vercel's board. Nothing is published to npm
+yet ([docs/release.md](docs/release.md)).
 
 ## Make a board
 
