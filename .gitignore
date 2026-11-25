@@ -10,3 +10,6 @@ packages/bordeaux/deploy/
 # Copied from the repo root when the package is packed (scripts/build.mjs)
 packages/bordeaux/LICENSE
 packages/bordeaux/NOTICE
+
+# Evidence from the verify-bordeaux skill (.claude/skills/verify-bordeaux)
+.verify/
