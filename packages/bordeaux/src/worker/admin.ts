@@ -62,7 +62,7 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
     const stub = await named()
     if (stub instanceof Response) return stub
     const [health, sync] = await Promise.all([stub.health(), name === null ? checkSync(env) : Promise.resolve([])])
-    return Response.json({ board: name?.toLowerCase() ?? null, ...health, sync })
+    return Response.json({ board: name?.toLowerCase() ?? null, ...health, worker: env.CF_VERSION_METADATA?.id ?? null, sync })
   }
 
   // What a board's queues gave up on (spec 07, `bx dead-letters`), and putting one back.

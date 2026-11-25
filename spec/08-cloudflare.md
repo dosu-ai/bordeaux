@@ -248,7 +248,22 @@ deploy of this found posts answering 500 mid-reset; `test/deploys.test.ts` cover
 board's own code that outlasted its minute isn't waited for: it's cut short, and its item
 runs again when its lease runs out. Without the binding, nothing changes. The first deploy
 that adds it can't reload a busy board yet: the DO it would reach still runs the code from
-before. Not checked live yet.
+before.
+
+`GET /admin/health` answers the version the board's DO runs (`version`) and the Worker's that
+answered (`worker`); `bx health` prints them as `code`. A health call carries no caller version,
+so looking never reloads a board.
+
+**Checked live (2026-11-25)** on the test deployment's default board: an SSE tail
+(`curl -N /events?channel=reload-check`) held open, and posts with `bx post`.
+- Version A deployed; `bx health` showed the board on A. A post reached the tail.
+- Version B deployed with the tail still open. `bx health` showed the board still on A and the
+  Worker on B.
+- A post from B landed, and the board reloaded: the next `bx health` showed it on B.
+- Two more posts, the second after 30 s (past the TailDO's 20 s follow), reached the same
+  stream. The stream never closed and carried no error, and `bx health` showed no failures.
+- Not seen directly: the TailDO's own reset. Nothing reports its version; the stream carrying
+  posts after the board reloaded is all this showed.
 
 ## Observability
 

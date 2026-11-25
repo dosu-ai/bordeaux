@@ -55,7 +55,7 @@ bx <args>
 | `bx tokens create --service <name> --env <env> [--ttl 90d]` / `list` / `revoke <jti>` | service tokens (needs `manage` at `*`) |
 | `bx grants create --github-user <login>` / `--service <name> [--env <env>]` | resolves to upstream's `--user <id>` / `--oidc …` grant ([03](03-identity-access.md)) |
 | `bx list` / `bx boards create <name>` / `delete <name>` | named boards on this team (the DirectoryDO). Replaces upstream's `list`, which asks Vercel's API. |
-| `bx health [--name <board>] [--json]` | a board's queues, dead letters, latest failure, timers, and whether its sync reaches each platform (`GET /admin/health`). Exits 1 when a sync can't, or a timer is late. |
+| `bx health [--name <board>] [--json]` | a board's queues, dead letters, latest failure, timers, the Worker version its DO runs, and whether its sync reaches each platform (`GET /admin/health`). Exits 1 when a sync can't, or a timer is late. |
 | `bx dead-letters [--consumer <owner>] [--retry <id>]` | inspect and replay dead letters. **As built:** `GET /admin/dead-letters[?board=]` and `POST /admin/dead-letters/<id>/retry` (needs `manage` at `*`). A retry puts the item back at the end of its lane with its tries counted from none, and wakes its consumer. |
 | `bx redact <id> --reason <why> [--everywhere]` | scrub a message from the log, versions, inbox, and R2 ([02](02-model.md#redaction-δ-decided-q9)) |
 | `bx gc [--name <board>]` | run retention now (it also runs on a daily cron). **As built:** `POST /admin/gc`, answering how many dead letters, inbox IDs, message copies, and files went ([02](02-model.md#retention-δ-decided-q9)). |

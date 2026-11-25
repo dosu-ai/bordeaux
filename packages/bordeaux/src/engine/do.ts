@@ -225,11 +225,14 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     })
   }
 
-  /** The board's bookkeeping at a glance: queues, dead letters, the latest failure, timers. */
-  async health(): Promise<Health> {
+  /**
+   * The board's bookkeeping at a glance: queues, dead letters, the latest failure, timers, and
+   * the Worker version this instance runs. It carries no caller version, so it never reloads it.
+   */
+  async health(): Promise<Health & { version: string | null }> {
     return this.reloader.spell(async () => {
       await this.engine.ready
-      return this.engine.health()
+      return { ...this.engine.health(), version: this.env.CF_VERSION_METADATA?.id ?? null }
     })
   }
 

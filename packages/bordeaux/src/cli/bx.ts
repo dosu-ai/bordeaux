@@ -10,7 +10,13 @@ import type { Collected, DeadLetter, Health as BoardHealth } from '../engine/eng
 import type { SyncHealth } from '../worker/health.ts'
 
 /** What `GET /admin/health` answers. */
-type Health = BoardHealth & { board: string | null; sync: SyncHealth[] }
+type Health = BoardHealth & {
+  board: string | null
+  /** The Worker version the board's Durable Object runs, and the one that answered. */
+  version: string | null
+  worker: string | null
+  sync: SyncHealth[]
+}
 
 /** A sign-in to a deployment, and the access tokens it got for each of the team's boards. */
 type Saved = { url: string; login: string; refresh_token: string; tokens?: Record<string, { access_token: string; expires_at: string }> }
@@ -199,6 +205,7 @@ async function health(url: string, args: string[]) {
   rows.push(['timers', `${found.timers.count}${found.timers.next ? `, next ${found.timers.next}` : ''}${found.timers.late ? `, ${found.timers.late} late: the alarm isn't running them` : ''}`])
   for (const sync of found.sync) rows.push(['sync', `${sync.key.padEnd(12)} ${sync.ok ? 'ok' : sync.error}`])
   if (found.board === null && found.sync.length === 0) rows.push(['sync', 'none configured'])
+  if (found.version !== null) rows.push(['code', found.version === found.worker ? found.version : `${found.version} (the Worker that answered runs ${found.worker})`])
   for (const [label, text] of rows) process.stdout.write(`${label.padEnd(7)} ${text}\n`)
   if (found.sync.some((sync) => !sync.ok) || found.timers.late > 0) process.exitCode = 1
 }

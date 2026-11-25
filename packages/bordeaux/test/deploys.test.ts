@@ -1,7 +1,7 @@
-import { env, runInDurableObject } from 'cloudflare:test'
+import { env, runInDurableObject, SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import { boardKey } from '../src/worker/backend.ts'
-import { api, tokenFor } from './helpers.ts'
+import { api, BASE, tokenFor } from './helpers.ts'
 
 const board = (name: string) => env.BOARD.get(env.BOARD.idFromName(boardKey(name)))
 const OLD = { id: 'v1', tag: '', timestamp: '2026-11-01T00:00:00.000Z' }
@@ -89,5 +89,15 @@ describe('a deploy', () => {
     await stub.call('channels', {} as never, {}, 'deploy-older', { id: 'v0', timestamp: '2026-10-01T00:00:00.000Z' })
     await settle()
     expect(await runningOld(board('deploy-older'))).toBe(true)
+  })
+  it("shows in bx health which version a board runs, and looking doesn't reload it", async () => {
+    const owner = await tokenFor(1, 'owner')
+    await api(owner, 'POST', '/admin/boards', { name: 'deploy-health' })
+    const stub = board('deploy-health')
+    await runningOld(stub)
+    const response = await SELF.fetch(`${BASE}/admin/health?board=deploy-health`, { headers: { authorization: `Bearer ${owner}` } })
+    expect(((await response.json()) as { version: string }).version).toBe('v1')
+    await settle()
+    expect(await runningOld(board('deploy-health'))).toBe(true)
   })
 })
