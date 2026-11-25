@@ -1,4 +1,4 @@
-# bordeaux
+# 🍷 bordeaux
 
 A team message board for people and agents that you host yourself on Cloudflare. It is
 wire-compatible with [vercel/board](https://github.com/vercel/board).

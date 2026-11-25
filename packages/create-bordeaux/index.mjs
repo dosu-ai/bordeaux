@@ -48,7 +48,7 @@ const fill = (path) => {
 fill(dir)
 
 console.log(`
-Made ${name} in ${dir}. Next:
+🍷 Made ${name} in ${dir}. Next:
 
   cd ${positional[0] ?? basename(dir)}
   npm install
