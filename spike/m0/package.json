@@ -1,0 +1,29 @@
+{
+  "name": "bordeaux-spike-m0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@chat-adapter/github": "^4.41.1",
+    "@chat-adapter/linear": "^4.41.1",
+    "@chat-adapter/slack": "^4.41.1",
+    "@vercel/board": "0.56.1",
+    "chat": "^4.41.1",
+    "jose": "^6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4",
+    "@types/node": "^24",
+    "typescript": "^5",
+    "wrangler": "^4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "workerd"
+    ]
+  }
+}

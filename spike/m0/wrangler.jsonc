@@ -1,0 +1,7 @@
+{
+  "name": "bordeaux-spike",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "SPIKE_SECRET": "spike-only-not-a-secret" }
+}

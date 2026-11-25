@@ -1,0 +1,9 @@
+{
+  "name": "spike-app-www",
+  "main": "app.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "services": [
+    { "binding": "BOARD", "service": "bordeaux-spike", "entrypoint": "BoardEntrypoint", "props": { "service": "www", "env": "production" } }
+  ]
+}
