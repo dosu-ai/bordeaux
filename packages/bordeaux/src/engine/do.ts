@@ -11,7 +11,7 @@ export type WireError = { status: number; code: string; message: string; hint?: 
 export type Envelope = { ok: true; value: unknown } | { ok: false; error: WireError }
 
 /** The methods this board answers itself; the rest answer 501 until their milestone. */
-const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events'] as const
+const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema'] as const
 type Kept = (typeof KEPT)[number]
 const isKept = (method: string): method is Kept => (KEPT as readonly string[]).includes(method)
 

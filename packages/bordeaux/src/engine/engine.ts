@@ -25,8 +25,10 @@ import type { MessageFilter, MessageTables, ThreadPosition } from '../upstream/s
 import { createTables, doDb } from './db.ts'
 import { createLogTables, DuplicateEventError, Log, registerSession, type NewEvent } from './log.ts'
 import { ACCESS_SESSION, accessEvents, foldAccess, startingAccess, type AccessState } from './access.ts'
+import { emptySchemas, findSchema, foldSchemas, listSchemas, registering, schemaEvents, schemaView, SCHEMAS_SESSION, type SchemasState } from './schemas.ts'
 
 registerSession(ACCESS_SESSION, accessEvents)
+registerSession(SCHEMAS_SESSION, schemaEvents)
 import { createViewTables, Views } from './views.ts'
 
 type Caller = Identity & { request: boolean; schedule?: { id: number; n: number } }
@@ -149,6 +151,8 @@ export class BoardEngine {
   private lock: Promise<unknown> = Promise.resolve()
   /** The grants, folded from session `access`, kept beside the log in `bx_state`. */
   private access: AccessState
+  /** The schema registry, folded from session `schemas`, the same way. */
+  private schemaState: SchemasState
   /** Resolves once the tables have every event the log has. */
   readonly ready: Promise<void>
 
@@ -160,13 +164,23 @@ export class BoardEngine {
     this.views = new Views(storage)
     this.tables = sqlTables(doDb(storage))
     storage.sql.exec('create table if not exists bx_state (key text primary key, data text not null)')
-    this.access = this.loadAccess()
+    this.access = this.loadState('access', startingAccess)
+    this.schemaState = this.loadState('schemas', emptySchemas)
     this.ready = this.catchUp()
   }
 
-  private loadAccess(): AccessState {
-    const [row] = this.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'access'").toArray()
-    return row ? (JSON.parse(row.data) as AccessState) : startingAccess()
+  /** A side session's fold, as `bx_state` keeps it, or where it starts. */
+  private loadState<T>(key: string, start: () => T): T {
+    const [row] = this.storage.sql.exec<{ data: string }>('select data from bx_state where key = ?', key).toArray()
+    return row ? (JSON.parse(row.data) as T) : start()
+  }
+
+  /** Appends to a side session and writes its fold beside the log, in one transaction. */
+  private appendSide<T>(session: string, events: readonly NewEvent[], state: T, fold: (state: T, event: BoardEvent) => void) {
+    return this.log.append(session, events, (landed) => {
+      for (const row of landed) fold(state, row)
+      this.storage.sql.exec('insert into bx_state (key, data) values (?, ?) on conflict (key) do update set data = excluded.data', session, JSON.stringify(state))
+    })
   }
 
   /** The grants as they are, and the access session's head, which a grant write is conditioned on. */
@@ -182,13 +196,10 @@ export class BoardEngine {
     return this.exclusive(async () => {
       if (this.log.head(ACCESS_SESSION) !== ifIndex) return { moved: true as const }
       try {
-        const rows = this.log.append(ACCESS_SESSION, events, (landed) => {
-          for (const row of landed) foldAccess(this.access, row as never)
-          this.storage.sql.exec("insert into bx_state (key, data) values ('access', ?) on conflict (key) do update set data = excluded.data", JSON.stringify(this.access))
-        })
+        const rows = this.appendSide(ACCESS_SESSION, events, this.access, (state, row) => foldAccess(state, row as never))
         return { indexes: rows.map((row) => row.index) }
       } catch (error) {
-        this.access = this.loadAccess()
+        this.access = this.loadState('access', startingAccess)
         throw error
       }
     })
@@ -589,6 +600,30 @@ export class BoardEngine {
         { type: 'labels.changed', payload: { id: message.id, thread: message.thread, set: set ?? {}, unset: unset ?? [], by: caller.author } },
       ])
       return { ok: true as const }
+    })
+  }
+
+  // --- The schema registry (upstream src/server/schemas.ts). Anyone the board let in reads it. ---
+
+  async schemas(): Promise<Out<'schemas'>> {
+    return listSchemas(this.schemaState)
+  }
+
+  async schema(_caller: Caller, input: In<'schema'>): Promise<Out<'schema'>> {
+    return findSchema(this.schemaState, input)
+  }
+
+  createSchema(caller: Caller, body: In<'createSchema'>): Promise<Out<'createSchema'>> {
+    return this.exclusive(async () => {
+      const decided = registering(this.schemaState, caller, body)
+      if ('existing' in decided) return { schema: decided.existing, created: false }
+      try {
+        this.appendSide(SCHEMAS_SESSION, [decided.event], this.schemaState, (state, row) => foldSchemas(state, row as never))
+      } catch (error) {
+        this.schemaState = this.loadState('schemas', emptySchemas)
+        throw error
+      }
+      return { schema: schemaView(this.schemaState, decided.id), created: true }
     })
   }
 
