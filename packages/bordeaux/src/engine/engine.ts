@@ -204,6 +204,9 @@ function atRevision(message: Message | undefined, id: number, revision: number) 
 
 export const notKeptHere = (what: string) => new HttpError(501, 'not_implemented', `this bordeaux board doesn't keep ${what} yet`)
 
+/** How long an inbox remembers an event it took, to drop a platform's resend: 30 days. */
+const INBOX_SEEN_MS = 30 * 86_400_000
+
 export class BoardEngine {
   readonly log: Log
   private views: Views
@@ -246,6 +249,10 @@ export class BoardEngine {
     this.scheduleState = this.loadState('schedules', emptySchedules)
     this.registry = this.loadState('registry', () => ({ byOwner: {} }) as RegistryState)
     storage.sql.exec('create table if not exists bx_queues (owner text primary key, data text not null)')
+    // Every platform event an inbox has taken, by its derived ID: a platform's resend after the
+    // first was handled lands once (upstream keeps its inbox sessions for this, forever).
+    storage.sql.exec('create table if not exists bx_inbox_seen (id text primary key, at integer not null)')
+    storage.sql.exec('create index if not exists bx_inbox_seen_at on bx_inbox_seen (at)')
     storage.sql.exec('create table if not exists bx_timers (name text primary key, due_at integer not null, kind text not null, payload text not null, attempt integer not null default 1)')
     this.ready = this.catchUp()
     const writes: WriteContext = {
@@ -1314,8 +1321,10 @@ export class BoardEngine {
       // This board's own sync: its inbox, run by the board itself, one platform thread at a time.
       const pushed = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
       await this.exclusive(async () => {
+        const fresh = this.unseen(pushed)
+        if (fresh.length === 0) return
         const state = this.queueOf(OWN)
-        for (const one of pushed) foldQueue(state, one)
+        for (const one of fresh) foldQueue(state, one)
         this.saveQueue(OWN, state)
         this.arm('run', Date.now(), { kind: 'run', payload: {} })
       })
@@ -1324,11 +1333,29 @@ export class BoardEngine {
     // A sync elsewhere: its own queue, for it to pull back. A platform's retry lands once.
     const matched = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
     await this.exclusive(async () => {
+      const fresh = this.unseen(matched)
+      if (fresh.length === 0) return
       const state = this.queueOf(caller.principal.id)
-      for (const one of matched) foldQueue(state, one)
+      for (const one of fresh) foldQueue(state, one)
       this.saveQueue(caller.principal.id, state)
     })
     return { ok: true } as Out<'inboxPush'>
+  }
+
+  /**
+   * The inbox events not taken before, now noted as taken. Δ upstream keeps every one; this
+   * forgets them after INBOX_SEEN_MS, long past any platform's retries.
+   */
+  private unseen<T extends { id: string }>(events: T[]): T[] {
+    const now = Date.now()
+    this.storage.sql.exec('delete from bx_inbox_seen where at < ?', now - INBOX_SEEN_MS)
+    const fresh: T[] = []
+    for (const event of events) {
+      if (this.storage.sql.exec('select 1 from bx_inbox_seen where id = ?', event.id).toArray().length > 0) continue
+      this.storage.sql.exec('insert into bx_inbox_seen (id, at) values (?, ?)', event.id, now)
+      fresh.push(event)
+    }
+    return fresh
   }
 
   async inboxNext(caller: Caller, { key, limit }: In<'inboxNext'>): Promise<Out<'inboxNext'>> {

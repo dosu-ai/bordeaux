@@ -45,3 +45,29 @@ describe('a sync elsewhere', () => {
     expect((await api(token, 'GET', `/sync/copies?message=${reply.id}`)).body.copies[reply.id]['acme-slack:C1:100']).toEqual({ thread: 'acme-slack:C1:100', message: '102' })
   })
 })
+
+describe("a sync elsewhere's inbox", () => {
+  it('takes an event once, even when the platform sends it again after it was handled', async () => {
+    const token = await tokenFor(84, 'relay')
+    await api(token, 'POST', '/watchers', { watch: {}, sync })
+    const event = {
+      kind: 'reaction',
+      channel: 'acme-slack:C1',
+      thread: 'acme-slack:C1:200',
+      subthread: null,
+      message: '200',
+      context: null,
+      emoji: 'eyes',
+      added: true,
+      author,
+    }
+    const push = () => api(token, 'POST', '/inbox/acme-slack', { events: [{ id: 'evt-reaction-1', event, raw: {} }] })
+    expect((await push()).status).toBe(200)
+    const first = (await api(token, 'GET', '/inbox/acme-slack/next')).body.items
+    expect(first).toHaveLength(1)
+    expect((await api(token, 'POST', `/inbox/acme-slack/${first[0].id}/ack`, { lease: first[0].lease })).status).toBe(200)
+    // Slack, say, delivers the same event again: it's handled already.
+    expect((await push()).status).toBe(200)
+    expect((await api(token, 'GET', '/inbox/acme-slack/next')).body.items).toEqual([])
+  })
+})
