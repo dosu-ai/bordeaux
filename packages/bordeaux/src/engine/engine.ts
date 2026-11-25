@@ -38,6 +38,7 @@ export type Timer =
   | { name: string; dueAt: number; kind: 'schedule.due'; payload: { id: number; n: number; at: number }; attempt: number }
   | { name: string; dueAt: number; kind: 'lease.due'; payload: { id: number; epoch: number; at: number }; attempt: number }
   | { name: string; dueAt: number; kind: 'wake'; payload: { owner: string }; attempt: number }
+  | { name: string; dueAt: number; kind: 'run'; payload: Record<string, never>; attempt: number }
 
 /** A schedule's text as its creator sees it where it can't read (upstream a2.ts `blindSchedule`). */
 const blindSchedule = (schedule: ScheduleView, access: Access, ownActor: string): ScheduleView =>
@@ -56,7 +57,7 @@ import type { Actor, ExternalCopy } from '../upstream/contract/folds.ts'
 import { INBOX_EVENT_ID_MAX } from '../upstream/api/routes.ts'
 import type { SyncEntrySpec } from '../upstream/server/watchers-hash.ts'
 import { pullInbox } from './watchers.ts'
-import { ack as ackMatch, emptyQueue, foldQueue, matchesFor, pull, viewOf, watchersHash, type QueueState, type Registration, type RegistryState } from './watchers.ts'
+import { ack as ackMatch, emptyQueue, foldQueue, leaseAll, matchesFor, OWN, pull, viewOf, watchersHash, type QueueState, type Registration, type RegistryState } from './watchers.ts'
 import { compileWatcher } from '../upstream/server/watch-spec.ts'
 import { RemoteWatcherId } from '../upstream/contract/schemas.ts'
 import { TASK_BATCH_MAX } from '../upstream/contract/schemas.ts'
@@ -318,6 +319,8 @@ export class BoardEngine {
 
   /** Appends to the board's session, folding who's who and the channels in the same transaction, then applies the tables. */
   private async append(events: readonly NewEvent[]): Promise<BoardEvent[]> {
+    // Matching starts at the first write it could see: the head before this one, once.
+    this.storage.sql.exec("insert into bx_state (key, data) values ('watch-position', ?) on conflict (key) do nothing", String(this.log.head()))
     let rows: BoardEvent[]
     try {
       rows = this.log.append(BOARD_SESSION, events, (landed) => this.views.fold(landed))
@@ -327,9 +330,10 @@ export class BoardEngine {
       throw error
     }
     for (const row of rows) if (!(await this.tables.applyNext(row))) await this.catchUp()
-    // Registered watchers match it before the write answers. A run left to finish on its own, after
-    // the request that started it, can stall, and every later call would wait on it.
-    if (Object.keys(this.registry.byOwner).length > 0) await this.match()
+    // Registered watchers, and the board's own, match it before the write answers. With none, the
+    // position moves with the log: a watcher added later starts from then, not from the board's start.
+    if (Object.keys(this.registry.byOwner).length > 0 || this.ownRegistration()) await this.match()
+    else if (rows.length > 0) this.storage.sql.exec("update bx_state set data = ? where key = 'watch-position'", String(rows.at(-1)!.index))
     return rows
   }
 
@@ -356,13 +360,54 @@ export class BoardEngine {
     return run
   }
 
+  /**
+   * The board's own watchers and sync, as a registration the DO matches for itself: board()'s
+   * subscriptions in this isolate (the deployment's `bordeaux.config.ts`). Null when it has none.
+   */
+  private ownRegistration(): Registration | null {
+    const binding = this.binding()
+    if (!binding) return null
+    const watch = Object.fromEntries(Object.entries(binding.subscriptions).flatMap(([id, sub]) => (sub.kind === 'tail' ? [[id, { tail: sub.tail }]] : [])))
+    const sync = binding.subscriptions['@sync'] ? [...binding.sync] : []
+    if (Object.keys(watch).length === 0 && sync.length === 0) return null
+    return { owner: OWN, url: null, watch, sync, hash: '', principal: { id: OWN, kind: 'deployment', handle: 'board' }, can: FULL_ACCESS.summary(), own: true }
+  }
+
+  /** The board's own work that's due: each lane's oldest item, leased to the runner (the DO's alarm). */
+  leaseOwn(limit: number) {
+    return this.exclusive(async () => {
+      const state = this.queueOf(OWN)
+      const { events, leased } = leaseAll(state, { limit, now: Date.now() })
+      for (const event of events) foldQueue(state, event)
+      if (events.length > 0) this.saveQueue(OWN, state)
+      return leased
+    })
+  }
+
+  /** How the board's own run of an item went; one that failed is tried again later, up to 10 times (as A2 retries a consumer). */
+  ackOwn(id: string, lease: string, error?: string) {
+    return this.exclusive(async () => {
+      const state = this.queueOf(OWN)
+      try {
+        for (const event of ackMatch(state, id, { lease, ...(error !== undefined ? { error } : {}) }, Date.now(), 10)) foldQueue(state, event)
+      } catch {
+        // Its lease ran out while it ran, and the next run has it.
+      }
+      this.saveQueue(OWN, state)
+      // An item waiting out a retry, or a lease that ran out, comes back then.
+      const later = Object.values(state.pending).map((item) => item.retryAt ?? item.lease?.until ?? Date.now()).sort((a, b) => a - b)[0]
+      if (later !== undefined) this.arm(`run-${later}`, later, { kind: 'run', payload: {} })
+    })
+  }
+
   /** Matches what the log has past the stored position, a page at a time, until it has all of it. */
   private async matchAll(): Promise<void> {
     for (;;) {
       const from = this.loadState<number>('watch-position', () => this.log.head())
       const events = this.log.history({ gte: from + 1, lte: from + 200 })
       if (events.length === 0) return
-      const registrations = Object.values(this.registry.byOwner)
+      const own = this.ownRegistration()
+      const registrations = [...Object.values(this.registry.byOwner), ...(own ? [own] : [])]
       const woken = new Set<string>()
       for (const event of events) {
         for (const [owner, matched] of await matchesFor(event, registrations, this.reads, this.views.actors, async (thread) => (await this.tables.byEventId(thread)) ?? undefined)) {
@@ -374,6 +419,7 @@ export class BoardEngine {
       }
       this.storage.sql.exec("insert into bx_state (key, data) values ('watch-position', ?) on conflict (key) do update set data = excluded.data", String(events.at(-1)!.index))
       for (const owner of woken) if (this.registry.byOwner[owner]?.url) this.arm(`wake-${owner}`, Date.now(), { kind: 'wake', payload: { owner } })
+      if (woken.has(OWN)) this.arm('run', Date.now(), { kind: 'run', payload: {} })
     }
   }
 
@@ -1257,7 +1303,17 @@ export class BoardEngine {
     for (const { event } of events)
       for (const location of [event.channel, event.thread, 'subthread' in event ? event.subthread : null])
         if (location !== null && !location.startsWith(`${key}:`)) throw badRequest(`an inbox's platform locations belong to its sync key: ${location} isn't ${key}'s`)
-    if (ownSync(caller)) throw notKeptHere("this board's own sync inbox")
+    if (ownSync(caller)) {
+      // This board's own sync: its inbox, run by the board itself, one platform thread at a time.
+      const pushed = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
+      await this.exclusive(async () => {
+        const state = this.queueOf(OWN)
+        for (const one of pushed) foldQueue(state, one)
+        this.saveQueue(OWN, state)
+        this.arm('run', Date.now(), { kind: 'run', payload: {} })
+      })
+      return { ok: true } as Out<'inboxPush'>
+    }
     // A sync elsewhere: its own queue, for it to pull back. A platform's retry lands once.
     const matched = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
     await this.exclusive(async () => {

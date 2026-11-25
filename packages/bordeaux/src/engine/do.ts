@@ -13,6 +13,9 @@ import { boardOf } from '../worker/boards.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
 import type { BordeauxEnv } from '../worker/env.ts'
 
+/** How long one run of the board's own code (a watcher, a delivery, a platform event) may take. */
+const RUN_MS = 60_000
+
 export type WireError = { status: number; code: string; message: string; hint?: string }
 export type Envelope = { ok: true; value: unknown } | { ok: false; error: WireError }
 
@@ -91,6 +94,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       try {
         if (timer.kind === 'lease.due') await this.engine.leaseDue(timer.payload, timer.name)
         else if (timer.kind === 'wake') await this.wake(timer.payload.owner)
+        else if (timer.kind === 'run') await this.runOwn()
         else await this.send(timer)
       } catch (error) {
         console.error(`[bordeaux] ${timer.name} failed:`, (error as Error).message)
@@ -98,6 +102,38 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       }
     }
     await this.engine.rearm()
+  }
+
+  /**
+   * Runs the board's own work that's due (spec 04 config watchers, spec 06 sync): each watcher's
+   * match and each sync delivery through board()'s `run`, and each platform event through its
+   * `receive`, one item per lane at a time. One that throws is tried again later.
+   */
+  private async runOwn() {
+    const name = this.boardName()
+    boardOf(this.env, name)
+    const binding = bindingOf(name)
+    if (!binding) return
+    const until = Date.now() + 10 * 60_000
+    while (Date.now() < until) {
+      const items = await this.engine.leaseOwn(10)
+      if (items.length === 0) return
+      for (const item of items) {
+        try {
+          const meta = { trigger: item.id, attempt: item.attempt + 1 }
+          // Each run gets a minute: a platform that never answers fails the try, which is tried again.
+          const signal = AbortSignal.timeout(RUN_MS)
+          const ran = item.queue.startsWith('@inbox:')
+            ? binding.receive(item.queue.slice('@inbox:'.length), item.event as never, { id: item.id, attempt: item.attempt + 1, signal })
+            : binding.run(item.queue, item.event as never, meta)
+          await Promise.race([ran, new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error(`${item.queue} took over ${RUN_MS / 1000} s`)), { once: true }))])
+          await this.engine.ackOwn(item.id, item.lease)
+        } catch (error) {
+          console.error(`[bordeaux] ${item.queue} failed on ${item.id}:`, (error as Error).message)
+          await this.engine.ackOwn(item.id, item.lease, ((error as Error).message || 'failed').slice(0, 500))
+        }
+      }
+    }
   }
 
   /**

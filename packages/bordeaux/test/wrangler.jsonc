@@ -1,0 +1,20 @@
+// The tests' Worker: bordeaux with a deployment config (test/worker.ts).
+{
+  "name": "bordeaux-test",
+  "main": "worker.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "BOARD", "class_name": "BoardDO" },
+      { "name": "DIRECTORY", "class_name": "DirectoryDO" }
+    ]
+  },
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "bordeaux-files" }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO"] }],
+  "vars": {
+    "BORDEAUX_URL": "http://127.0.0.1:8790",
+    "BORDEAUX_GITHUB_ORG": "",
+    "BORDEAUX_DEV": "1"
+  }
+}

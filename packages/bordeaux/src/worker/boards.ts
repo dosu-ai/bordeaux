@@ -6,6 +6,7 @@ import { oidcTokens } from '@vercel/board/access'
 import { bordeauxTokens, directory, issuerKeys } from './auth.ts'
 import { durable } from './backend.ts'
 import type { BordeauxEnv } from './env.ts'
+import { configOf } from './config.ts'
 
 /** A board's name: 1 to 64 letters, numbers, and `._-`, matched whatever its case (as upstream's). */
 export const BOARD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -32,8 +33,13 @@ export function boardOf(env: BordeauxEnv, name: string | null) {
   if (!found) {
     // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
     const tokens = oidcTokens({ oidc: { [env.BORDEAUX_URL]: issuerKeys(env) } })
+    const config = configOf()
     found = board({
       backend: durable(env, name),
+      ...(config.middleware ? { middleware: config.middleware } : {}),
+      // A deployment's own watchers and sync are its default board's.
+      ...(name === null && config.watch ? { watch: config.watch } : {}),
+      ...(name === null && config.sync ? { sync: config.sync } : {}),
       url: boardUrl(env, name),
       ...(name !== null ? { basePath: `/b/${key}` } : {}),
       // The verifier chain (spec 03): the board's own tokens, then upstream's.

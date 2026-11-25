@@ -9,6 +9,7 @@ import { broker } from './broker.ts'
 import type { BordeauxEnv } from './env.ts'
 
 export { BoardDO } from '../engine/do.ts'
+export { configure, type BordeauxConfig } from './config.ts'
 export { DirectoryDO } from './directory.ts'
 
 // Upstream's waitUntil looks up Vercel's request context: it gets the Worker's own (spec 08, M0).

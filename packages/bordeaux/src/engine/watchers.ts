@@ -33,7 +33,10 @@ const RECEIPTS = new Set(['message.synced', 'message.files_synced', 'task.renewe
 const SYNCED = new Set(['message.posted', 'message.edited', 'message.deleted', 'reaction.added', 'reaction.removed', 'labels.changed', 'thread.synced'])
 
 /** A registration, with what its registrant could read when it registered. */
-export type Registration = RegistrationView & { principal: { id: string; kind: string; handle: string }; can: AccessSummary }
+export type Registration = RegistrationView & { principal: { id: string; kind: string; handle: string }; can: AccessSummary; own?: true }
+
+/** The registrant the board's own watchers and sync queue under, as if registered: they run in the board's DO. */
+export const OWN = '@board'
 export type RegistryState = { byOwner: Record<string, Registration> }
 
 /** The same on both ends as upstream's: a board on `http()` hashes its watchers, and the board it uses what it holds. */
@@ -170,15 +173,18 @@ function lease(state: QueueState, options: { limit: number; now: number; queues:
   return { events, leased }
 }
 
+/** Leases every queue's oldest free item, whatever it is: the board's own runner takes them all. */
+export const leaseAll = (state: QueueState, options: { limit: number; now: number }) => lease(state, { ...options, queues: () => true, visible: () => true })
+
 /** How a pulled match went: done, skipped, or an error that waits, then tries again (upstream `ack`). */
-export function ack(state: QueueState, id: string, body: { lease: string; error?: string | undefined; skip?: boolean | undefined }, now: number): QueueEvent[] {
+export function ack(state: QueueState, id: string, body: { lease: string; error?: string | undefined; skip?: boolean | undefined }, now: number, tries = MATCH_TRIES): QueueEvent[] {
   const found = state.pending[id]
   if (!found) throw new HttpError(404, 'no_match', `no match ${id} is waiting for this token`)
   if (found.lease?.id !== body.lease) throw new HttpError(409, 'stale_lease', 'that lease ran out, and the match was pulled again')
   if (body.skip) return [{ type: 'watch.skipped', payload: { matched: id, reason: 'its board skipped it' } }]
   if (body.error === undefined) return [{ type: 'watch.acked', payload: { matched: id, lease: body.lease } }]
   const attempts = found.attempts + 1
-  if (attempts >= MATCH_TRIES) return [{ type: 'watch.acked', payload: { matched: id, lease: body.lease, error: body.error } }, failure(found, body.error)]
+  if (attempts >= tries) return [{ type: 'watch.acked', payload: { matched: id, lease: body.lease, error: body.error } }, failure(found, body.error)]
   return [{ type: 'watch.acked', payload: { matched: id, lease: body.lease, error: body.error, retryAt: now + retryDelay(attempts) } }]
 }
 
@@ -210,8 +216,9 @@ export async function matchesFor(event: BoardEvent, registrations: readonly Regi
       } catch {
         continue
       }
-      // A watcher's own writes don't wake it (upstream watch.ts): it writes as `<owner>+<id>`.
-      if (by === `${registration.owner}+${watcherId.toLowerCase()}` && !scheduled) continue
+      // A watcher's own writes don't wake it (upstream watch.ts): a registered one writes as
+      // `<owner>+<id>`, the board's own as `board:watch:<id>`.
+      if (by === (registration.own ? `board:watch:${watcherId}` : `${registration.owner}+${watcherId.toLowerCase()}`) && !scheduled) continue
       if (RECEIPTS.has(event.type) && !compiled.all) continue
       const match = compileFilter(compiled.filters, { me: null, actors, messages, access })
       if (!(compiled.criteria ? match(before) || match(after) : id !== null)) continue
