@@ -127,8 +127,10 @@ If step 1 doesn't happen:
 **Run on 2026-11-25** against a test board on workers.dev and the Dosu workspace: all four
 steps passed (Slack root → board, board reply → Slack thread as its author, Slack thread
 reply → board thread, board reaction → Slack). A reaction made on Slack wasn't checked.
-The first two messages, sent right after the app was installed, never landed (one only after
-a redeploy, on Slack's retry); `slackSync` then used the Slack client's default of 10 retries
-over 30 minutes with no request timeout, so a stalled call could hold a webhook past Slack's
-3 seconds. It now caps the client as upstream does (`SLACK_CLIENT`), and seven more messages,
-four of them each the first after a fresh deploy, all landed in under 2 seconds.
+The first two messages, sent within two minutes of installing the app, never landed (the
+second only after a redeploy, on Slack's retry), and the cause wasn't caught: by the time it
+was instrumented, every message landed in under 2 seconds, routed by `#name` or by ID,
+including four that were each the first after a fresh deploy. One gap that would explain it
+is now closed: `slackSync` used the Slack client's default of 10 retries over 30 minutes with
+no request timeout, so one stalled Slack call could hold a webhook past Slack's 3 seconds. It
+now caps the client as upstream does (`SLACK_CLIENT`).
