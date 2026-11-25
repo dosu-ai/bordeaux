@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Runs upstream's conformance kit (`vb conformance`) against a local bordeaux board and checks the
-// groups a milestone must pass (spec 08). Every group's result is printed; only `--groups` decide.
+// groups it must pass (spec 08). Every group's result is printed; only `--groups` decide.
 //
-//   node scripts/conformance.mjs                      # M1: core, paging, search
+//   node scripts/conformance.mjs                      # core, paging, search
 //   node scripts/conformance.mjs --groups core,paging,search,grants
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'

@@ -15,7 +15,7 @@ export { TailDO } from '../engine/tail.ts'
 export { configure, type BordeauxConfig } from './config.ts'
 export { DirectoryDO } from './directory.ts'
 
-// Upstream's waitUntil looks up Vercel's request context: it gets the Worker's own (spec 08, M0).
+// Upstream's waitUntil looks up Vercel's request context: it gets the Worker's own (spec 08).
 const requestContext = new AsyncLocalStorage<{ waitUntil(promise: Promise<unknown>): void }>()
 Reflect.set(globalThis, Symbol.for('@vercel/request-context'), { get: () => requestContext.getStore() })
 

@@ -14,7 +14,7 @@ org, for two things:
   left loses access then. A board with no App credentials can't check, so its people sign in
   again every 12 hours instead.
 
-The same App will carry GitHub sync when that arrives (M3), with more permissions then.
+The same App carries GitHub sync, with more permissions ([sync.md](sync.md)).
 
 ## 1. Create the App
 

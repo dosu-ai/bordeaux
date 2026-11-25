@@ -36,7 +36,7 @@ directly.
   `readSource`, `typing`, and `url`.
   - The DO runs in a different isolate, so it can't call these functions directly. It calls
     back into the Worker instead (see below).
-- **Implementation strategy (as built in M1).** Two kinds of upstream code, treated
+- **Implementation strategy (as built).** Two kinds of upstream code, treated
   differently:
   - **Copied byte for byte** into `packages/bordeaux/src/upstream/` by
     `scripts/vendor-upstream.mjs`, which lists them: the pure data model (`contract/*`: events,
@@ -47,8 +47,8 @@ directly.
     has the same thing (`@vercel/board`, `@vercel/board/access`).
   - **Ported by hand** into `src/engine/engine.ts`: the protocol methods from `a2.ts` and the
     write rules from `writes.ts`, which are written against A2's sessions. Each function names
-    its upstream original. `tasks.ts`, `schedules.ts`, `registered.ts`, and `trust.ts` follow
-    in M2.
+    its upstream original. `tasks.ts`, `schedules.ts`, `registered.ts`, and `trust.ts` are
+    ported the same way.
   - Upstream's `Db` interface maps onto `ctx.storage.sql` plus `transactionSync`
     (`src/engine/db.ts`), so the tables run unchanged.
   - [QUESTIONS Q1](../QUESTIONS.md#q1) records why bordeaux doesn't run upstream's A2 engine.
@@ -68,7 +68,7 @@ directly.
 | `consumer_positions(consumer, lane, idx)` | consumer cursors per lane |
 | `dead_letters(consumer, lane, idx, error, at)` | |
 
-**Write path (as built in M1).** Every write runs in one critical section of the DO
+**Write path (as built).** Every write runs in one critical section of the DO
 (`exclusive`), with no I/O in between:
 
 1. Read the board and check the conditions (`after`, `if`, `revision`, a retried client ID).
@@ -93,10 +93,10 @@ reads from `consumer_positions` and processes each lane in order:
 | Consumer | Where the work happens |
 | --- | --- |
 | `board-watchers` (matching) | **In the DO.** It evaluates tails against the event before and after it changed, then appends `watch.matched` to the queues. Access for registered watchers is the stored principal's compiled access, refreshed whenever grants change (the access fold is local to the DO). |
-| `board-watch` (config watcher `run`) | **As built (M3): in the DO.** Config watchers and the board's own sync queue under one registrant, `@board`, beside registered ones (`bx_queues`). A write that matches arms a `run` timer; the DO's alarm leases from `@board` and runs each item through the board's own `board()` built in the DO (`binding.run`), then acks. No self service binding: the same pattern as schedule sends. Each run gets a minute; a failure is retried with backoff, up to 10 tries. |
-| `board-sync` (outbound) and `board-inbox` (inbound) | **As built (M3): in the DO**, by the same path. `@sync` matches for the board's own sync, and its platform events (`inboxPush` from the webhook route, queued as `@inbox:<key>`), run through `binding.run` and `binding.receive`; writes come back to the DO over RPC (`syncImport`, `syncReceipt`). Sync elsewhere is unchanged: its registrant pulls and acks over HTTP. |
-| `board-schedule-sends` | **As built (M2):** the DO keeps its timers in `bx_timers` and its alarm at the earliest. A due send builds the board's own `board()` in the DO (the same code the Worker runs, middleware included), asks its policy for the creator's access now (`binding.accessNow`), and posts through `binding.handle(creator)`; that post comes back into the same DO over RPC. No self service binding is needed. The send's derived ID makes a retry return the message already posted; a send that fails is tried again with backoff, up to 10 times. |
-| `board-leases` | **In the DO**, on an alarm: writes `task.expired`. As built (M2): leases share `bx_timers` with schedule sends. `src/engine/tasks.ts` is upstream's tasks.ts line for line but for its lease timer and its conditional appends, which run in the DO's write lock (`src/engine/writes.ts`). |
+| `board-watch` (config watcher `run`) | **As built: in the DO.** Config watchers and the board's own sync queue under one registrant, `@board`, beside registered ones (`bx_queues`). A write that matches arms a `run` timer; the DO's alarm leases from `@board` and runs each item through the board's own `board()` built in the DO (`binding.run`), then acks. No self service binding: the same pattern as schedule sends. Each run gets a minute; a failure is retried with backoff, up to 10 tries. |
+| `board-sync` (outbound) and `board-inbox` (inbound) | **As built: in the DO**, by the same path. `@sync` matches for the board's own sync, and its platform events (`inboxPush` from the webhook route, queued as `@inbox:<key>`), run through `binding.run` and `binding.receive`; writes come back to the DO over RPC (`syncImport`, `syncReceipt`). Sync elsewhere is unchanged: its registrant pulls and acks over HTTP. |
+| `board-schedule-sends` | **As built:** the DO keeps its timers in `bx_timers` and its alarm at the earliest. A due send builds the board's own `board()` in the DO (the same code the Worker runs, middleware included), asks its policy for the creator's access now (`binding.accessNow`), and posts through `binding.handle(creator)`; that post comes back into the same DO over RPC. No self service binding is needed. The send's derived ID makes a retry return the message already posted; a send that fails is tried again with backoff, up to 10 times. |
+| `board-leases` | **In the DO**, on an alarm: writes `task.expired`. As built: leases share `bx_timers` with schedule sends. `src/engine/tasks.ts` is upstream's tasks.ts line for line but for its lease timer and its conditional appends, which run in the DO's write lock (`src/engine/writes.ts`). |
 | wake dispatch | The DO sends to Queue `bordeaux-wake` ([below](#wake-ups)) |
 
 **The pull-and-ack contract.** The Worker uses the same contract as every external registrant.
@@ -106,12 +106,12 @@ DO from ever calling out to user code. The internal entrypoints sit on a named
 
 **`waitUntil`.** Upstream's `wait-until.ts` looks for `globalThis[Symbol.for('@vercel/request-context')]`.
 The bordeaux Worker installs one per request. It is backed by `AsyncLocalStorage`, so
-concurrent requests in one isolate each reach their own `ctx.waitUntil`. M0 confirmed it works,
+concurrent requests in one isolate each reach their own `ctx.waitUntil`. The spike confirmed it works,
 and that without it upstream drops background work when the response returns.
 
 **`url` is required.** The Worker always passes `board({ url })` from config. Without it,
 `board()` takes its URL from the request's host, and over a service binding that is
-`http://board`, which then becomes discovery's `audience` (M0).
+`http://board`, which then becomes discovery's `audience` (the spike).
 
 ### Long-polls, SSE, and waiters
 
@@ -124,7 +124,7 @@ The routes that wait are `/events?wait≤300`, `/tasks/claim?wait≤300`,
 - A held RPC keeps the DO resident and billed **(verify: duration billing)**.
 
 For v1, waiters stay in the DO. It is simple, and boards are team-sized. For **v1.1**, a
-`TailDO` fan-out layer (built in M4 after all, below):
+`TailDO` fan-out layer (built after all, below):
 
 - SSE clients connect through the Worker to a per-board TailDO over a **hibernatable
   WebSocket**.
@@ -133,7 +133,7 @@ For v1, waiters stay in the DO. It is simple, and boards are team-sized. For **v
 - Upstream's own open benchmark (1, 10, and 50 concurrent tails) is our trigger: build the
   TailDO when 50 tails add more than 5 ms p99 to the write path.
 
-**As built (M4): the TailDO is in 1.0.** On a deployed board, 50 tails added 42–49 ms to a
+**As built.** On a deployed board, 50 tails added 42–49 ms to a
 post's p99 without it, past the trigger, and nothing measurable with it (see "Load, as
 measured").
 - Every `events` call that waits (`wait > 0`: SSE pages after the first, `vb wait`) goes to
@@ -157,15 +157,15 @@ measured").
 
 **SSE length.** The Worker drives the stream: `board()` loops `events` pages. `streamMaxMs` is
 15 minutes. Clients reconnect with `after` either way. Workers have no wall-clock limit while
-the client stays connected, and CPU time counts only active work, resetting on each request (confirmed in [M0](../spike/m0/REPORT.md)).
+the client stays connected, and CPU time counts only active work, resetting on each request (confirmed in the [spike](../spike/m0/REPORT.md)).
 
 
-**As built (M3, live).** A deploy doesn't reach a board's Durable Object while a long-poll or
+**As built (live).** A deploy doesn't reach a board's Durable Object while a long-poll or
 SSE request is open on it: the instance keeps its old code, and its old secrets, until it's
 idle. With the inspector open, a board ran the previous version for minutes after a deploy,
 and switched 12 s after the inspector closed. Since the inspector re-polls continuously, an
-open inspector can hold a board on old code indefinitely. Not yet handled: the fix is to end
-open waits when the Worker's version changes (M4).
+open inspector can hold a board on old code indefinitely. A newer Worker version's call
+now answers those waits and resets the board (see "Deploys").
 ## Wake-ups
 
 - **Coalescing.** On a new `watch.matched` for a registrant that has a `url` or `binding` and
@@ -184,18 +184,18 @@ open waits when the Worker's version changes (M4).
   `boards/<board DO id>/attachments/<id>`. The DO keeps each file's record in `bx_files`:
   name, type, size, and uploader, which with the messages that carry it decides who may read
   it.
-- **Direct uploads (Δ, as built in M2).** `uploadStart` (up to 100 MB) returns a URL on the
+- **Direct uploads (Δ, as built).** `uploadStart` (up to 100 MB) returns a URL on the
   board itself, `<board>/__bordeaux/uploads/<id>?t=<secret>`, instead of an R2 presigned URL.
   The Worker streams the `PUT` body into R2 through its binding, taking exactly the
   `Content-Length` the start named, once. That needs no R2 API keys and works the same on a
   local board. `uploadFinish` HEADs the object, checks the size, and marks it stored. Before
   the bytes exist it answers 409 `not_uploaded`. Like upstream's `local()`, the optional
-  `sha256` isn't checked (M0).
+  `sha256` isn't checked (the spike).
 - **Downloads.** `attachment` is authorized in the DO, which streams the R2 object back to
   board() over RPC.
 - **Deletes.** Deleting a message hides its files. The bytes are deleted only by
   `bdx gc`, which removes unreferenced attachments that are more than 30 days old. This is
-  **Δ**: upstream never deletes bytes. **As built (M4):** see
+  **Δ**: upstream never deletes bytes. **As built:** see
   [02](02-model.md#retention-δ-decided-q9); the Worker's cron runs it daily.
 
 ## Multi-board and teams
@@ -344,13 +344,3 @@ process of their own (`scripts/tails.mjs`), and the same deployment with and wit
 With the TailDO, 50 tails cost a post nothing that the network's noise doesn't hide. The
 board's own time per request still wasn't measured: it has no server timing to read. Not
 measured: more than 50 tails, tails from more than one machine, and 100k messages with tails.
-
-## Milestones
-
-| | Scope | Exit criterion |
-| --- | --- | --- |
-| **M0 spike** (done, [report](../spike/m0/REPORT.md)) | Upstream `board()` default build in workerd with a stub backend. Confirm the `nodejs_compat` needs, `ctx.props` on entrypoints, R2 presigned checksum, and whether Chat SDK runs on Workers. Run `bdx` (embedded `createApp`) and upstream `vb` against it: `BOARD_URL`/`BOARD_TOKEN` pickup, token refresh during `tail`, and intercepting `list`/`--name`. | A spike report that answers every **(verify)** in this spec, and says whether `bdx` stays embedded ([07](07-clients.md#fallback-a-standalone-bdx)) |
-| **M1 core** (done) | BoardDO log, tables, messages, labels, reactions, channels, actors, `/events` with SSE, the verifier chain, the token broker, and `bdx` (login, token refresh, embedded commands) | conformance `core`, `paging`, and `search` pass |
-| **M2 platform** (done) | grants, schemas, R2 files, schedules (alarms), tasks, registered watchers, wake-ups, `@dosu/bordeaux/app`, `npm create @dosu/bordeaux`, GitHub App setup guide, agent skill | all groups except `sync` pass. `bdx export` and import work. |
-| **M3 sync** (done: the live Slack round trip passed 2026-11-25, [docs/sync.md](../docs/sync.md#checking-a-live-round-trip-m3s-exit-check)) | Slack, GitHub, and Linear with secrets; inbox and outbound consumers; the hosted inspector | the `sync` group passes. A live Slack ↔ board round trip works. |
-| **M4 1.0** | dead-letter UI and CLI, health, gc, load tests, full docs | the benchmarks are met |

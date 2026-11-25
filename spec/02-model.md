@@ -208,7 +208,7 @@ These events are hidden from `/events` unless `all` is set: `actor.seen`, `threa
 ## Retention (Δ, decided Q9)
 
 Upstream never deletes anything. A bordeaux board lives in one Durable Object, whose SQLite
-holds up to 10 GB (confirmed in [M0](../spike/m0/REPORT.md)), so three things that grow without bound get retention rules.
+holds up to 10 GB (confirmed in the [spike](../spike/m0/REPORT.md)), so three things that grow without bound get retention rules.
 Messages and the board log itself are never pruned.
 
 | What | Rule | Visible effect |
@@ -217,7 +217,7 @@ Messages and the board log itself are never pruned.
 | Per-change message copies (`board_versions`) | Copies older than 30 days are compacted to the latest copy per message, plus any copy a consumer that hasn't caught up still needs. | Replaying `/events` from a cursor more than 30 days old matches filters on each message's state *after* each event, not before. |
 | Attachment bytes of deleted messages (R2) | Deleted 30 days after the message is deleted (`bdx gc`, which also runs on a daily cron) | `GET /attachments/:id` already answers 404 for these, so nothing changes. |
 
-**As built (M4).** `engine.gc()` runs from `bdx gc` (`POST /admin/gc[?board=]`) and the
+**As built.** `engine.gc()` runs from `bdx gc` (`POST /admin/gc[?board=]`) and the
 Worker's daily cron (`0 4 * * *`, every board). It removes:
 - dead letters older than 30 days, which hold the raw payloads of what failed. A raw payload
   waits in its queue only until it's handled, so there's no other copy to prune;
@@ -261,7 +261,7 @@ secret.
 - This departs from upstream's "the log is immutable", on purpose, and only through this one
   admin path.
 
-**As built (M4).** `engine.redact()` (`src/engine/redact.ts`), from `POST /admin/messages/:id/redact[?board=]`
+**As built.** `engine.redact()` (`src/engine/redact.ts`), from `POST /admin/messages/:id/redact[?board=]`
 (manage at `*` on the default board, as for every admin route) and `bdx redact`. It differs from the steps above where
 upstream's contract or bordeaux's storage asks it to:
 - **Text becomes `[redacted]`, not empty.** Upstream's schema refuses an edit with empty text, and

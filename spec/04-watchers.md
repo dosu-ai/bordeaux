@@ -99,7 +99,7 @@ These are exactly upstream's `foldQueue`:
     `retryAt = now + min(30s, 1s·2^(n−1))`.
   - With `skip`: `watch.skipped`.
 
-### As built (M2)
+### As built
 
 - **Matching runs in the board's DO** after each write, from a stored position, so a restart
   picks up where it stopped. It's upstream's `dispatch` (src/server/watch.ts) and queue
@@ -113,7 +113,7 @@ These are exactly upstream's `foldQueue`:
   one `POST <url>/wake` per batch of matches, with `x-board-watchers` set to its hash, retried
   with backoff when it fails. Not yet covered by a test (the test runner can't receive it).
 - Config watchers (`board({ watch })` in `bordeaux.config.ts`) and the `@sync` queue come with
-  the template and sync (M3).
+  the template and sync.
 
 ## Wake-ups without Vercel (Δ)
 

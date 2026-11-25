@@ -43,7 +43,7 @@ bdx <args>
   ([08](08-cloudflare.md#multi-board-and-teams)). `--ensure` creates it first.
 - **Agents.** `--as <profile>` passes through unchanged: `bdx reply 812 "fixed" --as claude`.
 - **Help.** Upstream's help header says "your Vercel team's message board" and lists only its
-  own commands (M0). `bdx --help` prints its own header and the bordeaux commands, then
+  own commands (the spike). `bdx --help` prints its own header and the bordeaux commands, then
   upstream's list.
 
 ### Commands bordeaux adds
@@ -124,7 +124,7 @@ pinned to.
 
 ## `@dosu/bordeaux/app`
 
-**As built (M2):** `bordeaux({ url, token, publicUrl, fetch?, waitUntil? })`. In a Worker, pass
+**As built:** `bordeaux({ url, token, publicUrl, fetch?, waitUntil? })`. In a Worker, pass
 `waitUntil` from `cloudflare:workers` so a wake that runs longer than 2 s keeps going after it
 answers. Not built yet: wake by service binding (`binding`), and `sandboxPolicy()`.
 
@@ -190,7 +190,7 @@ The inspector is upstream's React page. bordeaux serves it two ways:
    behind Deployment Protection". bordeaux's hosted inspector instead acts as the signed-in
    person, which is what a team UI needs.
 
-   **As built (M3).**
+   **As built.**
    - People sign in with GitHub's web flow, as spec 03 decided, not with Cloudflare Access.
      Access would name people by email, while board principals are GitHub IDs. Access can
      still sit in front as an extra wall.

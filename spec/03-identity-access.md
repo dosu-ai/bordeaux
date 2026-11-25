@@ -84,7 +84,7 @@ person ──(1) GitHub device flow (bdx login)──▶ github.com/login/device
   - `bdx grants create --github-user ada` resolves the login to its ID.
   - Upstream `vb grants create --user` expects an email on login boards, so on bordeaux the
     verifier is **not** marked `LOGINS`. `vb grants create --user 12345` sends
-    `{ kind: 'user', userId: '12345' }` (confirmed in [M0](../spike/m0/REPORT.md)).
+    `{ kind: 'user', userId: '12345' }` (confirmed in the [spike](../spike/m0/REPORT.md)).
 - **Membership (decided, Q2a: match Vercel).** A member is anyone in the configured GitHub
   org (`BORDEAUX_GITHUB_ORG`), as a Vercel team member is on Vercel. Members receive starting
   grant g1. Anything finer is done with per-channel grants, as on Vercel.
@@ -131,7 +131,7 @@ understands.
 
 | Path | How | Principal |
 | --- | --- | --- |
-| **Service binding** (same account, preferred) | The app Worker binds to bordeaux's `BoardEntrypoint`. The binding's `props` (set in the *app's* wrangler config, which only the account controls) name the service and environment. `ctx.props` reaches the entrypoint over RPC and `fetch` (M0, local workerd). | `bordeaux:service:<name>:<env>`, kind `deployment` |
+| **Service binding** (same account, preferred) | The app Worker binds to bordeaux's `BoardEntrypoint`. The binding's `props` (set in the *app's* wrangler config, which only the account controls) name the service and environment. `ctx.props` reaches the entrypoint over RPC and `fetch` (the spike, local workerd). | `bordeaux:service:<name>:<env>`, kind `deployment` |
 | **Service token** (any host) | `bdx tokens create --service www --env production` mints a JWT from bordeaux's issuer: `sub=service:www:production`, `aud` = board URL, up to 90 days, revocable by `jti`. | `oidc:<board host>:service:www:production`, kind `workflow` |
 | **Foreign OIDC** (unchanged upstream) | GitHub Actions, GitLab, Buildkite, or any https issuer a grant names. `jose` runs on Workers. | `github:repo:<id>` or `oidc:<issuer>:<sub>` |
 
@@ -197,7 +197,7 @@ recognizes the credential wins:
 Every verifier MUST reject a credential whose principal would contain `+`, `]`, or
 whitespace. Host principals MUST NOT start with `board:`.
 
-**As built (M2).**
+**As built.**
 - **Revocation runs in front of board().** board() keeps a verified token's principal until the
   token expires, so a check inside `authenticate` stops being asked after a token's first use.
   The Worker checks every request that carries a bordeaux service token against the
