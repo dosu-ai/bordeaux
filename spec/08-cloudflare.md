@@ -173,7 +173,8 @@ open waits when the Worker's version changes (M4).
   board() over RPC.
 - **Deletes.** Deleting a message hides its files. The bytes are deleted only by
   `bx gc`, which removes unreferenced attachments that are more than 30 days old. This is
-  **Δ**: upstream never deletes bytes.
+  **Δ**: upstream never deletes bytes. **As built (M4):** see
+  [02](02-model.md#retention-δ-decided-q9); the Worker's cron runs it daily.
 
 ## Multi-board and teams
 

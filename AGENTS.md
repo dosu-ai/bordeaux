@@ -165,7 +165,7 @@ Worker → upstream `board()` → `durable()` backend → the board's Durable Ob
 - **One log per board.** Every board fact is an event in the DO's `bx_log`, in session
   `board`, `access`, `schemas`, or `schedules`. Tables and folds are built from it with
   upstream's code (`src/upstream/store/sql.ts`, `contract/folds.ts`); nothing else writes
-  them. Bookkeeping people don't read (queues, timers, seen inbox IDs, failures) lives in
+  them, except retention pruning old `board_versions` copies (spec 02). Bookkeeping people don't read (queues, timers, seen inbox IDs, failures) lives in
   `bx_*` side tables, never in the log.
 - **Writes are exclusive.** A check-then-append runs inside the engine's `exclusive()` lock,
   so two writes never both pass a check that only one should.

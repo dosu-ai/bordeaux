@@ -86,8 +86,9 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
 
 **As built (M3).**
 - The pipelines run in the board's DO, not the Worker ([08](08-cloudflare.md#consumers-and-the-worker)).
-- The inbox is queue `@inbox:<key>` in `bx_queues`, not a table of its own. Raw payloads are
-  kept as upstream keeps them: the 256 KB cap and 30-day retention aren't built yet (M4).
+- The inbox is queue `@inbox:<key>` in `bx_queues`, not a table of its own. A raw payload is
+  kept with its item until it's handled; one over 256 KB of JSON is cut short as it's pushed,
+  and a dead letter's goes after 30 days (spec 02, "Retention").
 - Credentials: `@dosu/bordeaux/sync` builds each provider from Worker secrets (`slackSync`,
   `githubSync`, `linearSync`). `configure()` takes `(env) => config`, so a deployment's sync
   can read them. Setup: [docs/sync.md](../docs/sync.md).

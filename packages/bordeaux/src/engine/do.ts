@@ -11,7 +11,7 @@ import { indexOf } from '../upstream/server/feed.ts'
 import { bindingOf } from '../worker/backend.ts'
 import { boardOf } from '../worker/boards.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
-import type { DeadLetter, Failure, Health } from './engine.ts'
+import type { Collected, DeadLetter, Failure, Health } from './engine.ts'
 
 /** What a run that's still going when the runner moves on resolves to. */
 const SLOW = Symbol('slow')
@@ -182,6 +182,12 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
   async health(): Promise<Health> {
     await this.engine.ready
     return this.engine.health()
+  }
+
+  /** Runs retention now (`bx gc`, and the Worker's daily cron). */
+  async gc(): Promise<Collected> {
+    await this.engine.ready
+    return this.spell(() => this.engine.gc())
   }
 
   /** What the board's queues gave up on after their last try, newest first. */

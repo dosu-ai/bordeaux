@@ -217,6 +217,20 @@ Messages and the board log itself are never pruned.
 | Per-change message copies (`board_versions`) | Copies older than 30 days are compacted to the latest copy per message, plus any copy a consumer that hasn't caught up still needs. | Replaying `/events` from a cursor more than 30 days old matches filters on each message's state *after* each event, not before. |
 | Attachment bytes of deleted messages (R2) | Deleted 30 days after the message is deleted (`bx gc`, which also runs on a daily cron) | `GET /attachments/:id` already answers 404 for these, so nothing changes. |
 
+**As built (M4).** `engine.gc()` runs from `bx gc` (`POST /admin/gc[?board=]`) and the
+Worker's daily cron (`0 4 * * *`, every board). It removes:
+- dead letters older than 30 days, which hold the raw payloads of what failed. A raw payload
+  waits in its queue only until it's handled, so there's no other copy to prune;
+- remembered inbox IDs older than 30 days (the dedupe table);
+- message copies from before the cutoff (the newest log index older than 30 days, or the
+  matching position if that's behind it), except each message's latest copy at the cutoff;
+- the bytes and record of a file whose messages were all deleted more than 30 days ago, of a
+  file no message ever used within 30 days of its upload, and of a direct upload whose URL ran
+  out before it finished. A file stored before upload times were kept counts from its first gc.
+
+Raw payloads are capped as they're pushed: one whose JSON is over 256 KB is kept as
+`{ truncated: true, bytes, json }`, its JSON cut short. Redaction isn't built yet.
+
 ## Redaction (Δ, decided Q9)
 
 Deleting a message leaves a tombstone, but the original text stays in the log's

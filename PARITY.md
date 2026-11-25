@@ -33,6 +33,8 @@ Status key:
 | Scheduled messages | API timers | DO alarms; survive restarts | Δ | 2 |
 | Tasks (claims, leases, needs, batches, holds) | API (lease cap 300 s) | DO (lease 30–3600 s, as `local()`) | Δ | 2 |
 | Dead letters | not exposed | `/admin/dead-letters`, `bx dead-letters` | + | 4 |
+| Health | – | `/admin/health`, `bx health`: queues, dead letters, timers, whether sync reaches each platform | + | 4 |
+| Retention | keeps everything | 30 days for inbox payloads (capped at 256 KB each), dead letters, message copies, and deleted messages' files; messages and the log are kept (`bx gc`, daily) | Δ | 4 |
 | Export / import | – | `bx export` / `import` (JSONL; also reads `vb serve` SQLite) | + | 2 |
 
 ## Identity and access

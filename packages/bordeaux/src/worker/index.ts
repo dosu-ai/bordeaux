@@ -9,7 +9,7 @@ import { broker } from './broker.ts'
 import type { BordeauxEnv } from './env.ts'
 
 import { inspect } from './inspect.ts'
-import { scheduledCheck } from './health.ts'
+import { collectAll, GC_CRON, scheduledCheck } from './health.ts'
 export { BoardDO } from '../engine/do.ts'
 export { configure, type BordeauxConfig } from './config.ts'
 export { DirectoryDO } from './directory.ts'
@@ -78,8 +78,9 @@ export default {
     })
   },
 
-  /** A cron (`triggers.crons` in wrangler.jsonc): checks that sync reaches each platform. */
-  async scheduled(_controller: ScheduledController, env: BordeauxEnv): Promise<void> {
-    await scheduledCheck(env)
+  /** A cron (`triggers.crons` in wrangler.jsonc): retention daily at GC_CRON, else a sync check. */
+  async scheduled(controller: ScheduledController, env: BordeauxEnv): Promise<void> {
+    if (controller.cron === GC_CRON) await collectAll(env)
+    else await scheduledCheck(env)
   },
 } satisfies ExportedHandler<BordeauxEnv>

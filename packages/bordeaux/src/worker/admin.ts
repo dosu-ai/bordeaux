@@ -78,6 +78,13 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
     return (await stub.replayDead(id)) ? Response.json({ retried: id }) : error(404, 'not_found', `no dead letter ${id} on this board: bx dead-letters lists them`)
   }
 
+  // Retention now (spec 02; `bx gc`): the Worker's daily cron runs it on every board.
+  if (pathname === '/admin/gc' && request.method === 'POST') {
+    const stub = await named()
+    if (stub instanceof Response) return stub
+    return Response.json({ board: name?.toLowerCase() ?? null, collected: await stub.gc() })
+  }
+
   // A board's whole log, out and in (spec 07).
   if (pathname === '/admin/export' || pathname === '/admin/import') {
     const stub = await named()

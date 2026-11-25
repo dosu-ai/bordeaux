@@ -220,6 +220,24 @@ export type Health = {
 
 /** How long an inbox remembers an event it took, to drop a platform's resend: 30 days. */
 const INBOX_SEEN_MS = 30 * 86_400_000
+/** How long retention keeps what it prunes: dead letters, message copies, deleted files' bytes (spec 02, Δ decided Q9). */
+const RETENTION_MS = 30 * 86_400_000
+/** The most of a raw platform payload an inbox keeps, as JSON (spec 02). */
+export const RAW_MAX = 256 * 1024
+
+/**
+ * A raw platform payload as an inbox keeps it (Δ, spec 02): whole up to RAW_MAX bytes of JSON,
+ * else its JSON cut short, as `{ truncated: true, bytes, json }`. Upstream keeps it whole.
+ */
+export function capRaw(raw: unknown): unknown {
+  if (raw === undefined) return raw
+  const bytes = new TextEncoder().encode(JSON.stringify(raw) ?? 'null')
+  if (bytes.byteLength <= RAW_MAX) return raw
+  return { truncated: true, bytes: bytes.byteLength, json: new TextDecoder().decode(bytes.slice(0, RAW_MAX - 1024)) }
+}
+
+/** What one gc removed (`bx gc`). */
+export type Collected = { deadLetters: number; inboxIds: number; messageCopies: number; files: number }
 
 export class BoardEngine {
   readonly log: Log
@@ -425,6 +443,40 @@ export class BoardEngine {
       failures: { kept: this.failures().length, latest: latest ? { at: latest.at, queue: latest.queue, error: latest.error } : null },
       timers: { count: Number(timers?.count ?? 0), next: timers?.next ? new Date(Number(timers.next)).toISOString() : null, late: Number(timers?.late ?? 0) },
     }
+  }
+
+  /**
+   * Retention (spec 02, Δ decided Q9; upstream never deletes anything): dead letters (which keep
+   * their raw payloads) and remembered inbox IDs older than 30 days; message copies
+   * (`board_versions`) from before 30 days ago, down to the latest one per message then, kept
+   * as far back as matching still needs; and the bytes of files whose messages were all deleted
+   * more than 30 days ago, or that no message ever used in 30 days. Messages and the log are kept.
+   */
+  gc(now = Date.now()): Promise<Collected> {
+    const before = now - RETENTION_MS
+    return this.exclusive(async () => {
+      const deadLetters = this.storage.sql.exec('delete from bx_dead where at < ?', before).rowsWritten
+      const inboxIds = this.storage.sql.exec('delete from bx_inbox_seen where at < ?', now - INBOX_SEEN_MS).rowsWritten
+      // Matching reads each message as it was before an event: copies it hasn't passed stay.
+      const [old] = this.storage.sql.exec<{ idx: number | null }>('select max(idx) as idx from bx_log where session = ? and created_at < ?', BOARD_SESSION, before).toArray()
+      const [matched] = this.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'watch-position'").toArray()
+      const cutoff = Math.min(Number(old?.idx ?? 0), matched ? Number(matched.data) : Number.POSITIVE_INFINITY)
+      const messageCopies =
+        cutoff > 0
+          ? this.storage.sql.exec('delete from board_versions where log_index < ? and log_index < (select max(w.log_index) from board_versions w where w.message_id = board_versions.message_id and w.log_index <= ?)', cutoff, cutoff).rowsWritten
+          : 0
+      const files = await this.files.collect(async (id, uploadedAt) => {
+        const using = await this.tables.withAttachment(id)
+        if (using.length === 0) return uploadedAt < before
+        // Deleted, and each one's deletion (its last change) is older than the retention.
+        return using.every((message) => {
+          if (!message.deleted || message.revision === undefined) return false
+          const [deleted] = this.log.history({ gte: message.revision, lte: message.revision })
+          return deleted !== undefined && new Date(deleted.createdAt).getTime() < before
+        })
+      }, now)
+      return { deadLetters, inboxIds, messageCopies, files }
+    })
   }
 
   /** What the queues gave up on, newest first. */
@@ -1437,7 +1489,7 @@ export class BoardEngine {
         if (location !== null && !location.startsWith(`${key}:`)) throw badRequest(`an inbox's platform locations belong to its sync key: ${location} isn't ${key}'s`)
     if (ownSync(caller)) {
       // This board's own sync: its inbox, run by the board itself, one platform thread at a time.
-      const pushed = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
+      const pushed = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw: capRaw(raw) } } })))
       await this.exclusive(async () => {
         const fresh = this.unseen(OWN, pushed)
         if (fresh.length === 0) return
@@ -1449,7 +1501,7 @@ export class BoardEngine {
       return { ok: true } as Out<'inboxPush'>
     }
     // A sync elsewhere: its own queue, for it to pull back. A platform's retry lands once.
-    const matched = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
+    const matched = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw: capRaw(raw) } } })))
     await this.exclusive(async () => {
       const fresh = this.unseen(caller.principal.id, matched)
       if (fresh.length === 0) return

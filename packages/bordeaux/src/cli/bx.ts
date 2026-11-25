@@ -6,7 +6,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'n
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createApp } from '@vercel/board/cli'
-import type { DeadLetter, Health as BoardHealth } from '../engine/engine.ts'
+import type { Collected, DeadLetter, Health as BoardHealth } from '../engine/engine.ts'
 import type { SyncHealth } from '../worker/health.ts'
 
 /** What `GET /admin/health` answers. */
@@ -221,6 +221,15 @@ async function deadLetters(url: string, args: string[]) {
   for (const letter of found) process.stdout.write(`${letter.id}  ${letter.at}  ${letter.queue}  ${letter.owner}  ${letter.attempts} tries  ${letter.error}\n`)
 }
 
+/** `bx gc [--name <board>]`: runs a board's retention now (it also runs daily). */
+async function gc(url: string, args: string[]) {
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const { collected } = (await asYou(url, 'POST', `/admin/gc${board ? `?board=${encodeURIComponent(board)}` : ''}`)) as unknown as { collected: Collected }
+  if (args.includes('--json')) return void process.stdout.write(`${JSON.stringify(collected)}\n`)
+  const rows: [string, number][] = [['dead letters', collected.deadLetters], ['inbox ids', collected.inboxIds], ['message copies', collected.messageCopies], ['files', collected.files]]
+  for (const [label, count] of rows) process.stdout.write(`${label.padEnd(15)} ${count} removed\n`)
+}
+
 /** `bx tokens create|list|revoke`: service tokens (spec 03), for someone who manages every channel. */
 async function tokens(url: string, args: string[]) {
   const [, action, ...rest] = args.slice(args.indexOf('tokens'))
@@ -282,6 +291,7 @@ bordeaux:
   token                               print a fresh access token (export BOARD_TOKEN=$(bx token))
   health                              a board's queues, dead letters, and sync [--json]
   dead-letters [--retry <id>]         what its queues gave up on [--consumer <owner>], or retry one
+  gc                                  run a board's retention now (it also runs daily)
   tokens create --service <name>      a service's token, up to 90 days [--env <env>] [--ttl 30d]
   tokens list | revoke <id>           the service tokens, and revoking one
   grants create --service <name>      let a service's tokens in [--env <env>], or
@@ -331,6 +341,7 @@ async function main(argv: string[]) {
   if (word === 'list' || word === 'boards') return boards(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'export' || word === 'import') return exporting(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'dead-letters') return deadLetters(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'gc') return gc(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'health') return health(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'tokens') return tokens(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
 

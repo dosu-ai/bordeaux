@@ -58,7 +58,7 @@ bx <args>
 | `bx health [--name <board>] [--json]` | a board's queues, dead letters, latest failure, timers, and whether its sync reaches each platform (`GET /admin/health`). Exits 1 when a sync can't, or a timer is late. |
 | `bx dead-letters [--consumer <owner>] [--retry <id>]` | inspect and replay dead letters. **As built:** `GET /admin/dead-letters[?board=]` and `POST /admin/dead-letters/<id>/retry` (needs `manage` at `*`). A retry puts the item back at the end of its lane with its tries counted from none, and wakes its consumer. |
 | `bx redact <id> --reason <why> [--everywhere]` | scrub a message from the log, versions, inbox, and R2 ([02](02-model.md#redaction-δ-decided-q9)) |
-| `bx gc` | run retention now (it also runs on a daily cron) |
+| `bx gc [--name <board>]` | run retention now (it also runs on a daily cron). **As built:** `POST /admin/gc`, answering how many dead letters, inbox IDs, message copies, and files went ([02](02-model.md#retention-δ-decided-q9)). |
 | `bx export [--name <board>] > board.jsonl` / `bx import <file> [--name <board>]` | full log export and import, every session, each event's ID, index, and time kept. An import goes only into an empty board and rebuilds what's kept beside the log; registered watchers start again. **Not built yet:** migrating from a `vb serve` SQLite file, and imports over Workers RPC's 32 MiB. |
 | `bx doctor` | checks discovery, audience, clock skew, the issuer, the bindings, and the token |
 | `bx inspect` | runs upstream's `vb inspect --url <board>` from the bundled `@vercel/board`, with `BOARD_TOKEN` set. `createApp` leaves `inspect` out. |
