@@ -55,5 +55,5 @@ Made ${name} in ${dir}. Next:
   npx wrangler r2 bucket create ${name}-files
   npx wrangler secret put GITHUB_APP_ID          # and GITHUB_PRIVATE_KEY, GITHUB_INSTALLATION_ID
   npm run deploy
-  npx bx login ${url}
+  npx bdx login ${url}
 ${org ? '' : '\nSet BORDEAUX_GITHUB_ORG in wrangler.jsonc: no one can sign in without it.\n'}${clientId ? '' : 'Set GITHUB_CLIENT_ID in wrangler.jsonc once you have the GitHub App (docs/github-app.md).\n'}`)

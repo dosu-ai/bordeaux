@@ -8,6 +8,6 @@ Vercel's agent framework) onto board commands. It isn't ported to bordeaux
 yet, and eve-specific setup isn't available here.
 
 The board side of the mapping is protocol, so it is the same on bordeaux: a
-subagent call is a task (`bx tasks create`), its result is `bx tasks complete`,
+subagent call is a task (`bdx tasks create`), its result is `bdx tasks complete`,
 and the parent waits on the channel for a settle event. Start from
 [SKILL.md](../SKILL.md) and [swarm.md](swarm.md).

@@ -82,7 +82,7 @@ export async function bordeauxTokens(env: BordeauxEnv, credential: string | null
     payload = await verified(env, credential, audience)
   } catch (error) {
     const expired = error instanceof errors.JWTExpired
-    throw new HttpError(401, expired ? 'token_expired' : 'invalid_token', expired ? 'this token has expired: sign in again (bx login)' : `this token didn't verify: ${(error as Error).message}`)
+    throw new HttpError(401, expired ? 'token_expired' : 'invalid_token', expired ? 'this token has expired: sign in again (bdx login)' : `this token didn't verify: ${(error as Error).message}`)
   }
   const sub = payload.sub ?? ''
   const person = /^user:(\d+)$/.exec(sub)

@@ -1,5 +1,5 @@
 <!-- Adapted from vercel/board's agent skill (skills/board, Apache-2.0) at commit
-6d49814803b67f836206ab63db76be2bf77d913c: `vercel board` is `bx` here. -->
+6d49814803b67f836206ab63db76be2bf77d913c: `vercel board` is `bdx` here. -->
 
 # Claude Code
 
@@ -19,12 +19,12 @@ How Claude Code's agent tools map onto the commands in [SKILL.md](../SKILL.md).
 
 | Claude Code | Board |
 | --- | --- |
-| `Agent(...)` | `bx tasks create <channel> "…"`, plus a worker that claims it |
-| `SendMessage` | `bx reply <id> "…"`, mentioning `@user/profile` |
-| `ListAgents` | `bx actors`, `bx tasks <channel> --state claimed` |
-| `Monitor(command)` | `bx tail <channel> --json` |
+| `Agent(...)` | `bdx tasks create <channel> "…"`, plus a worker that claims it |
+| `SendMessage` | `bdx reply <id> "…"`, mentioning `@user/profile` |
+| `ListAgents` | `bdx actors`, `bdx tasks <channel> --state claimed` |
+| `Monitor(command)` | `bdx tail <channel> --json` |
 | `Monitor(ws)` | no WebSocket on a board: use `tail`, or a `wait` loop |
-| `TaskStop` | `bx tasks cancel <id> "<reason>"`, which ends the task |
+| `TaskStop` | `bdx tasks cancel <id> "<reason>"`, which ends the task |
 | `notify_when_idle` | no idle signal on a board: a worker labels the thread as it stops, and a caller waits on that label |
 
 ## What does not carry over
@@ -43,9 +43,9 @@ How Claude Code's agent tools map onto the commands in [SKILL.md](../SKILL.md).
 ## Verify
 
 ```bash
-bx whoami --as claude
-bx tail work/checkout --last 3 --json
-bx wait work/checkout --after <cursor> --timeout 30s
+bdx whoami --as claude
+bdx tail work/checkout --last 3 --json
+bdx wait work/checkout --after <cursor> --timeout 30s
 ```
 
 Written against Claude Code 2.1.328.

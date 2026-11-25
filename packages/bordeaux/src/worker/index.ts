@@ -19,7 +19,7 @@ export { DirectoryDO } from './directory.ts'
 const requestContext = new AsyncLocalStorage<{ waitUntil(promise: Promise<unknown>): void }>()
 Reflect.set(globalThis, Symbol.for('@vercel/request-context'), { get: () => requestContext.getStore() })
 
-async function devToken(request: Request, env: BordeauxEnv): Promise<Response> {
+async function devSignIn(request: Request, env: BordeauxEnv): Promise<Response> {
   const body = (await request.json().catch(() => ({}))) as { id?: number | string; login?: string; ttl?: number; audience?: string }
   const id = String(body.id ?? 1)
   if (!/^\d+$/.test(id)) return Response.json({ error: { code: 'invalid_request', message: 'id: a GitHub user ID' } }, { status: 400 })
@@ -27,7 +27,6 @@ async function devToken(request: Request, env: BordeauxEnv): Promise<Response> {
   const login = body.login ?? `dev${id}`
   const dir = directory(env)
   const { token, expiresAt } = await dir.mint({ sub: `user:${id}`, login }, Math.min(body.ttl ?? 3600, 12 * 3600), body.audience)
-  // A sign-in too, so `bx` can be run against a local board with no GitHub App.
   const refresh = await dir.startSession({ id, login, owner: false, checkedAt: Date.now(), expiresAt: Date.now() + 24 * 3600 * 1000 })
   return Response.json({ access_token: token, token_type: 'Bearer', expires_at: new Date(expiresAt).toISOString(), refresh_token: refresh, login })
 }
@@ -47,14 +46,14 @@ export default {
       }
       if (pathname === '/__dev/token' && request.method === 'POST') {
         if (env.BORDEAUX_DEV !== '1') return new Response('not found', { status: 404 })
-        return devToken(request, env)
+        return devSignIn(request, env)
       }
       // A named board at /b/<name>/, which the team must have made; the default board at the root.
       const named = /^\/b\/([^/]+)(?:\/|$)/.exec(pathname)
       if (named) {
         const name = named[1]!
         if (!BOARD_NAME.test(name) || !(await exists(env, name)))
-          return Response.json({ error: { code: 'no_board', message: `this team has no board named ${name}: bx boards create ${name}` } }, { status: 404 })
+          return Response.json({ error: { code: 'no_board', message: `this team has no board named ${name}: bdx boards create ${name}` } }, { status: 404 })
         const rest = pathname.slice(`/b/${name}`.length)
         if (rest.startsWith(UPLOADS)) return putUpload(request, env, name.toLowerCase(), rest.slice(UPLOADS.length))
         if (rest === '/inspect' || rest.startsWith('/inspect/')) {

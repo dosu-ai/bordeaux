@@ -13,8 +13,8 @@
     "node": ">=22"
   },
   "bin": {
-    "bx": "./dist/bx.mjs",
-    "bordeaux": "./dist/bx.mjs"
+    "bdx": "./dist/bdx.mjs",
+    "bordeaux": "./dist/bdx.mjs"
   },
   "exports": {
     "./worker": "./src/worker/index.ts",

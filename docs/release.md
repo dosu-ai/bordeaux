@@ -7,9 +7,9 @@ depends on it.
 2. Set one version in `packages/bordeaux/package.json`, `packages/create-bordeaux/package.json`,
    and the template's `@dosu/bordeaux` dependency (`packages/create-bordeaux/template/package.json`).
    Below 1.0 a caret range pins the minor version, so the template must name the new one.
-3. Check what ships: `pnpm --filter @dosu/bordeaux pack`. `prepack` builds `bx` into
-   `dist/bx.mjs`, since Node won't run TypeScript from `node_modules`, and copies `LICENSE`
+3. Check what ships: `pnpm --filter @dosu/bordeaux pack`. `prepack` builds `bdx` into
+   `dist/bdx.mjs`, since Node won't run TypeScript from `node_modules`, and copies `LICENSE`
    and `NOTICE` from the repo root. Install the tarball in an empty directory and run
-   `npx bx --help`.
+   `npx bdx --help`.
 4. Publish both: `pnpm -r publish --access public`.
 5. Make a board from the published template (`npm create @dosu/bordeaux`) and deploy it.

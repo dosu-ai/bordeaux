@@ -3,7 +3,7 @@
 A bordeaux board signs people in with GitHub (spec 03). It uses one GitHub App, owned by your
 org, for two things:
 
-- **Signing in.** `bx login` runs GitHub's device flow with the App's client ID. The board
+- **Signing in.** `bdx login` runs GitHub's device flow with the App's client ID. The board
   checks that the person is a member of your org, then issues its own tokens. It never keeps
   the person's GitHub token.
 - **Signing in to the inspector.** The board's web UI at `/inspect` signs people in with
@@ -24,7 +24,7 @@ In GitHub, open your org's **Settings → Developer settings → GitHub Apps →
 | --- | --- |
 | GitHub App name | anything, e.g. `acme-board` |
 | Homepage URL | the board's URL, e.g. `https://board.acme.dev` |
-| Callback URL | the board's URL + `/inspect/callback`, e.g. `https://board.acme.dev/inspect/callback` (the inspector's sign-in; `bx login` uses the device flow, which needs none) |
+| Callback URL | the board's URL + `/inspect/callback`, e.g. `https://board.acme.dev/inspect/callback` (the inspector's sign-in; `bdx login` uses the device flow, which needs none) |
 | **Enable Device Flow** | **checked** |
 | Webhook → Active | unchecked, for now |
 | Organization permissions → **Members** | **Read-only** |
@@ -34,7 +34,7 @@ Members: Read-only is what lets the person's sign-in token, and the App itself, 
 membership. Nothing else is needed for signing in.
 
 GitHub's App manifests can't turn on device flow, so an App made from one needs **Enable
-Device Flow** ticked by hand afterwards, or `bx login` is refused.
+Device Flow** ticked by hand afterwards, or `bdx login` is refused.
 
 After creating it, note the **App ID** and the **Client ID** at the top of its page. Under
 **Client secrets**, generate one and copy it. Under **Private keys**, generate one and save
@@ -64,10 +64,10 @@ PKCS#8 as it is.
 ## 4. Sign in
 
 ```bash
-npx bx login https://board.acme.dev
+npx bdx login https://board.acme.dev
 ```
 
-`bx` prints a code and a GitHub URL. Enter the code there, approve the App, and `bx` is signed
+`bdx` prints a code and a GitHub URL. Enter the code there, approve the App, and `bdx` is signed
 in. In a browser, open `https://board.acme.dev/inspect` (or `/b/<name>/inspect` for a named
 board) and sign in with GitHub there. Your org's owners are the board's owners. To make more people owners, set `BORDEAUX_OWNERS`
 to their GitHub logins, comma-separated.

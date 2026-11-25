@@ -107,20 +107,20 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
   remembered per inbox (the board's own, or each registrant's, as upstream keeps them) in
   `bx_inbox_seen` for 30 days. Upstream keeps every ID in its inbox sessions
   forever. Before this, a repeat was dropped only while the first was still queued, and a
-  Slack reaction resent 200 ms later landed twice. `bx export` doesn't carry the table, so a
+  Slack reaction resent 200 ms later landed twice. `bdx export` doesn't carry the table, so a
   board moved within a platform's retry window may take a resend again.
 - GitHub and Linear ran live too: issues, a PR, comments both ways, a board root opening a
   Linear issue, and no echo of either app's own writes.
 - **Gotcha (Linear).** Linear sends an app's webhooks only after the app's first token, so
   a new deployment hears nothing from Linear until the app signs in. The sync check
-  (`bx health`, and the Worker's cron) readies each provider, which fetches that token. Not
+  (`bdx health`, and the Worker's cron) readies each provider, which fetches that token. Not
   checked live: the test app already had its first token when the check was built.
 - **Failures and dead letters.** The board keeps its last 50 failures (`BoardDO.ownFailures()`):
   its own runs that threw, and events matching couldn't handle, which are passed so they
   never hold up the rest. What a queue gives up on (10 tries for the board's own runs, 5 for
   a registrant's, as upstream) is kept with its event in `bx_dead` (`deadLetters()`), and
-  `replayDead(id)` puts it back on its queue. `bx dead-letters` lists them and `--retry <id>`
-  replays one; `bx health` shows the count and the latest failure.
+  `replayDead(id)` puts it back on its queue. `bdx dead-letters` lists them and `--retry <id>`
+  replays one; `bdx health` shows the count and the latest failure.
 - **Slow runs.** A run of the board's own code that outlasts a minute keeps its lease while
   the runner moves on, and is acked when it settles: it's never run twice at once.
 - **A sync whose secrets aren't set is left out**, with an error in the logs; the boards

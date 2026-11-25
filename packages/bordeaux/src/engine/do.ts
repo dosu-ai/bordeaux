@@ -238,7 +238,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     })
   }
 
-  /** Runs retention now (`bx gc`, and the Worker's daily cron). */
+  /** Runs retention now (`bdx gc`, and the Worker's daily cron). */
   async gc(): Promise<Collected> {
     await this.engine.ready
     return this.reloader.spell(() => this.engine.gc())
@@ -252,7 +252,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     })
   }
 
-  /** Scrubs a message out of the board (spec 02, "Redaction"; `bx redact`). */
+  /** Scrubs a message out of the board (spec 02, "Redaction"; `bdx redact`). */
   async redact(by: Author, id: string, reason: string): Promise<Envelope> {
     return this.reloader.spell(async () => {
       try {
@@ -328,7 +328,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     }
   }
 
-  /** The board's whole log as JSON lines, a page at a time (`bx export`). */
+  /** The board's whole log as JSON lines, a page at a time (`bdx export`). */
   async exportPage(after: { session: string; index: number } | null) {
     return this.reloader.spell(async () => {
       await this.engine.ready
@@ -336,7 +336,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     })
   }
 
-  /** An export, into this board while it's empty (`bx import`). */
+  /** An export, into this board while it's empty (`bdx import`). */
   async importLines(lines: string[]): Promise<Envelope> {
     return this.reloader.spell(async () => {
       try {

@@ -10,7 +10,7 @@ npx wrangler secret put GITHUB_PRIVATE_KEY
 npx wrangler secret put GITHUB_INSTALLATION_ID
 npx wrangler secret put GITHUB_CLIENT_SECRET
 npm run deploy
-npx bx login {{url}}
+npx bdx login {{url}}
 ```
 
 The GitHub App these come from, and how to make it: bordeaux's `docs/github-app.md`. The

@@ -194,7 +194,7 @@ open waits when the Worker's version changes (M4).
 - **Downloads.** `attachment` is authorized in the DO, which streams the R2 object back to
   board() over RPC.
 - **Deletes.** Deleting a message hides its files. The bytes are deleted only by
-  `bx gc`, which removes unreferenced attachments that are more than 30 days old. This is
+  `bdx gc`, which removes unreferenced attachments that are more than 30 days old. This is
   **Δ**: upstream never deletes bytes. **As built (M4):** see
   [02](02-model.md#retention-δ-decided-q9); the Worker's cron runs it daily.
 
@@ -202,14 +202,14 @@ open waits when the Worker's version changes (M4).
 
 - **Default board.** The DirectoryDO maps names to board IDs. A missing default board is
   created on first use, as on Vercel.
-- **Named boards.** `board({ name })` and `bx boards create` add more boards.
+- **Named boards.** `board({ name })` and `bdx boards create` add more boards.
 - **Routing.** The URL path selects the board: `https://board.acme.dev/` is the default board,
   and `https://board.acme.dev/b/<name>/` is a named one.
   - Each board's discovery `url` and `audience` is its own URL. A token for one board can't be
     replayed against another. `POST /auth/token` takes an `audience` (one of the team's boards)
-    and `bx` keeps an access token per board; `/admin/tokens` takes the `board` a service's
+    and `bdx` keeps an access token per board; `/admin/tokens` takes the `board` a service's
     token is for.
-  - The DirectoryDO keeps the board names (`bx boards create`, `bx list`). Anyone the default
+  - The DirectoryDO keeps the board names (`bdx boards create`, `bdx list`). Anyone the default
     board lets in makes one, as `ensure` does on Vercel; deleting one takes `manage` at `*` and
     leaves its Durable Object's data in place. Another isolate can serve a deleted board for up
     to 5 minutes.
@@ -221,7 +221,7 @@ open waits when the Worker's version changes (M4).
 
 | Concern | Expectation | Mitigation |
 | --- | --- | --- |
-| DO SQLite size | about 10 GB per object | `board_versions` keeps a full copy per change. Compact versions below the slowest consumer position, keeping the latest plus any still needed for before-state matching. Cap the inbox raw payloads. `bx export` lets you archive. |
+| DO SQLite size | about 10 GB per object | `board_versions` keeps a full copy per change. Compact versions below the slowest consumer position, keeping the latest plus any still needed for before-state matching. Cap the inbox raw payloads. `bdx export` lets you archive. |
 | DO throughput | roughly 500–1,000 writes/s for small transactions | far above a team board's needs. A 100-task batch is one transaction. |
 | Alarms | one per object | multiplexed through the `timers` table |
 | Queue delays | up to 12 h per message | waits longer than 1 hour don't occur (the wake backoff caps at 1 h). Schedules use alarms, not Queues. |
@@ -251,17 +251,17 @@ that adds it can't reload a busy board yet: the DO it would reach still runs the
 before.
 
 `GET /admin/health` answers the version the board's DO runs (`version`) and the Worker's that
-answered (`worker`); `bx health` prints them as `code`. A health call carries no caller version,
+answered (`worker`); `bdx health` prints them as `code`. A health call carries no caller version,
 so looking never reloads a board.
 
 **Checked live (2026-11-25)** on the test deployment's default board: an SSE tail
-(`curl -N /events?channel=reload-check`) held open, and posts with `bx post`.
-- Version A deployed; `bx health` showed the board on A. A post reached the tail.
-- Version B deployed with the tail still open. `bx health` showed the board still on A and the
+(`curl -N /events?channel=reload-check`) held open, and posts with `bdx post`.
+- Version A deployed; `bdx health` showed the board on A. A post reached the tail.
+- Version B deployed with the tail still open. `bdx health` showed the board still on A and the
   Worker on B.
-- A post from B landed, and the board reloaded: the next `bx health` showed it on B.
+- A post from B landed, and the board reloaded: the next `bdx health` showed it on B.
 - Two more posts, the second after 30 s (past the TailDO's 20 s follow), reached the same
-  stream. The stream never closed and carried no error, and `bx health` showed no failures.
+  stream. The stream never closed and carried no error, and `bdx health` showed no failures.
 - Not seen directly: the TailDO's own reset. Nothing reports its version; the stream carrying
   posts after the board reloaded is all this showed.
 
@@ -271,7 +271,7 @@ so looking never reloads a board.
 - Workers Analytics Engine for request, consumer-lag, and queue-depth metrics.
 - `GET /admin/health` (requires `manage` at `*`) reports consumer positions against the head,
   dead letters, the oldest pending timer, and the wake backlog.
-  **As built:** `GET /admin/health[?board=<name>]` and `bx health` report each queue with work
+  **As built:** `GET /admin/health[?board=<name>]` and `bdx health` report each queue with work
   in it (pending, leased, and retrying items per registrant, the board's own as `@board`), the
   dead-letter count and the latest one, the latest failure, and the timers, with how many are
   more than a minute past due (the alarm isn't running them). Matching runs inside each write,
@@ -349,8 +349,8 @@ measured: more than 50 tails, tails from more than one machine, and 100k message
 
 | | Scope | Exit criterion |
 | --- | --- | --- |
-| **M0 spike** (done, [report](../spike/m0/REPORT.md)) | Upstream `board()` default build in workerd with a stub backend. Confirm the `nodejs_compat` needs, `ctx.props` on entrypoints, R2 presigned checksum, and whether Chat SDK runs on Workers. Run `bx` (embedded `createApp`) and upstream `vb` against it: `BOARD_URL`/`BOARD_TOKEN` pickup, token refresh during `tail`, and intercepting `list`/`--name`. | A spike report that answers every **(verify)** in this spec, and says whether `bx` stays embedded ([07](07-clients.md#fallback-a-standalone-bx)) |
-| **M1 core** (done) | BoardDO log, tables, messages, labels, reactions, channels, actors, `/events` with SSE, the verifier chain, the token broker, and `bx` (login, token refresh, embedded commands) | conformance `core`, `paging`, and `search` pass |
-| **M2 platform** (done) | grants, schemas, R2 files, schedules (alarms), tasks, registered watchers, wake-ups, `@dosu/bordeaux/app`, `npm create @dosu/bordeaux`, GitHub App setup guide, agent skill | all groups except `sync` pass. `bx export` and import work. |
+| **M0 spike** (done, [report](../spike/m0/REPORT.md)) | Upstream `board()` default build in workerd with a stub backend. Confirm the `nodejs_compat` needs, `ctx.props` on entrypoints, R2 presigned checksum, and whether Chat SDK runs on Workers. Run `bdx` (embedded `createApp`) and upstream `vb` against it: `BOARD_URL`/`BOARD_TOKEN` pickup, token refresh during `tail`, and intercepting `list`/`--name`. | A spike report that answers every **(verify)** in this spec, and says whether `bdx` stays embedded ([07](07-clients.md#fallback-a-standalone-bdx)) |
+| **M1 core** (done) | BoardDO log, tables, messages, labels, reactions, channels, actors, `/events` with SSE, the verifier chain, the token broker, and `bdx` (login, token refresh, embedded commands) | conformance `core`, `paging`, and `search` pass |
+| **M2 platform** (done) | grants, schemas, R2 files, schedules (alarms), tasks, registered watchers, wake-ups, `@dosu/bordeaux/app`, `npm create @dosu/bordeaux`, GitHub App setup guide, agent skill | all groups except `sync` pass. `bdx export` and import work. |
 | **M3 sync** (done: the live Slack round trip passed 2026-11-25, [docs/sync.md](../docs/sync.md#checking-a-live-round-trip-m3s-exit-check)) | Slack, GitHub, and Linear with secrets; inbox and outbound consumers; the hosted inspector | the `sync` group passes. A live Slack ↔ board round trip works. |
 | **M4 1.0** | dead-letter UI and CLI, health, gc, load tests, full docs | the benchmarks are met |

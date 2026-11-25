@@ -61,7 +61,7 @@ OIDC, so there is no ID token to verify. Instead bordeaux checks the GitHub acce
 against GitHub's API once, then issues its own JWT:
 
 ```
-person ──(1) GitHub device flow (bx login)──▶ github.com/login/device
+person ──(1) GitHub device flow (bdx login)──▶ github.com/login/device
        ◀─(2) GitHub user access token ────────────
        ──(3) POST /auth/token {github token}──▶ bordeaux: GET /user, check org membership
        ◀─(4) bordeaux JWT (aud = board URL, sub = user:<github id>, ≤12h) + refresh token ──
@@ -81,7 +81,7 @@ person ──(1) GitHub device flow (bx login)──▶ github.com/login/device
     people no avatar.
   - Grants name a user by ID, `{ kind: 'user', userId: '<github id>' }`. Upstream's
     `userIdOf` reads the segment after `:user:`.
-  - `bx grants create --github-user ada` resolves the login to its ID.
+  - `bdx grants create --github-user ada` resolves the login to its ID.
   - Upstream `vb grants create --user` expects an email on login boards, so on bordeaux the
     verifier is **not** marked `LOGINS`. `vb grants create --user 12345` sends
     `{ kind: 'user', userId: '12345' }` (confirmed in [M0](../spike/m0/REPORT.md)).
@@ -104,7 +104,7 @@ person ──(1) GitHub device flow (bx login)──▶ github.com/login/device
   - Anyone who isn't a member is refused at step (3).
   - **Δ** Upstream treats every verified person as a member. bordeaux keeps that, but only
     lets org members get verified.
-- **Refresh.** `bx login` keeps a refresh token in the OS keychain (or in
+- **Refresh.** `bdx login` keeps a refresh token in the OS keychain (or in
   `~/.config/bordeaux/`, mode 0600). Refresh tokens are kept by bordeaux's DirectoryDO and
   revocable there. Each lasts 30 days, sliding.
 - **Owners (decided, Q2a).** GitHub org owners (membership role `admin`) are board owners,
@@ -132,7 +132,7 @@ understands.
 | Path | How | Principal |
 | --- | --- | --- |
 | **Service binding** (same account, preferred) | The app Worker binds to bordeaux's `BoardEntrypoint`. The binding's `props` (set in the *app's* wrangler config, which only the account controls) name the service and environment. `ctx.props` reaches the entrypoint over RPC and `fetch` (M0, local workerd). | `bordeaux:service:<name>:<env>`, kind `deployment` |
-| **Service token** (any host) | `bx tokens create --service www --env production` mints a JWT from bordeaux's issuer: `sub=service:www:production`, `aud` = board URL, up to 90 days, revocable by `jti`. | `oidc:<board host>:service:www:production`, kind `workflow` |
+| **Service token** (any host) | `bdx tokens create --service www --env production` mints a JWT from bordeaux's issuer: `sub=service:www:production`, `aud` = board URL, up to 90 days, revocable by `jti`. | `oidc:<board host>:service:www:production`, kind `workflow` |
 | **Foreign OIDC** (unchanged upstream) | GitHub Actions, GitLab, Buildkite, or any https issuer a grant names. `jose` runs on Workers. | `github:repo:<id>` or `oidc:<issuer>:<sub>` |
 
 Grants for services use upstream's `oidc` principal form, which already supports a `sub`
@@ -151,11 +151,11 @@ first-class `service` principal kind was considered and rejected
 **The `--service` shorthand (decided, Q3).**
 
 ```bash
-bx grants create --service www --env production --can 'deploys=post'
+bdx grants create --service www --env production --can 'deploys=post'
 ```
 
 This expands to the `oidc` grant above, with
-`sub = service:www:production` (or `service:www:*` when `--env` is left out). `bx grants`
+`sub = service:www:production` (or `service:www:*` when `--env` is left out). `bdx grants`
 shows such grants back as `service www (production)`.
 
 **Starting grants.** These come from upstream's trust fold and need no write:
@@ -206,7 +206,7 @@ whitespace. Host principals MUST NOT start with `board:`.
   `https` on a public host, so a local `http://127.0.0.1` board can mint service tokens but
   can't verify them. Person tokens work everywhere.
 - **g4 names the URL the board started with.** A board that moves to a new URL needs a new
-  service grant (`bx grants create --service '*'`… on the new issuer) and new service tokens.
+  service grant (`bdx grants create --service '*'`… on the new issuer) and new service tokens.
 
 ## Edge protection
 

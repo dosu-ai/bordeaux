@@ -7,7 +7,7 @@ A page of your own on a board is `board()` in your server code and a browser
 that calls your server. On bordeaux, give it the bordeaux backend:
 `board({ backend: bordeaux({ url, token, publicUrl }) })`, with `bordeaux`
 from `@dosu/bordeaux/app` and a service token from
-`bx tokens create --service <name> --env <env>`. The `@vercel/board` package
+`bdx tokens create --service <name> --env <env>`. The `@vercel/board` package
 ships a guide with each pattern as a sample, taken from the inspector's own
 code:
 
@@ -43,4 +43,4 @@ npx vb serve
 It prints the `BOARD_URL` that reaches it and opens the inspector on it, so
 you can compare what your page shows with what the board holds. To compare
 against your team's bordeaux board, run `vb inspect --url <board url>` with
-`BOARD_TOKEN` set: the hosted inspector (`bx inspect`) isn't built yet.
+`BOARD_TOKEN` set: the hosted inspector (`bdx inspect`) isn't built yet.

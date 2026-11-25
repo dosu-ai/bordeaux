@@ -59,7 +59,7 @@ A feature is at parity when all of the following hold:
 
 ```
           upstream clients (unmodified)                   bordeaux app-side package
-   bx · vb · board() over http() · inspector page        @dosu/bordeaux/app: board() backend for
+   bdx · vb · board() over http() · inspector page       @dosu/bordeaux/app: board() backend for
                     │  HTTPS, Bearer JWT                  Workers/Node apps, wake-ups, tokens
                     ▼                                                │
  ┌──────────────────────────── bordeaux Worker (stateless) ─────────┴─────────────┐
@@ -114,15 +114,15 @@ tools it may use, in order of preference:
    reviews the diff.
 4. **Re-host an upstream asset.** Ship upstream's prebuilt files, such as the inspector's
    `app.js`, from our own handler. That is allowed under Apache-2.0, with upstream's NOTICE.
-5. **Write our own code around upstream's.** For example: the `bx` CLI (around `createApp`), `@dosu/bordeaux/app`,
+5. **Write our own code around upstream's.** For example: the `bdx` CLI (around `createApp`), `@dosu/bordeaux/app`,
    and the hosted inspector handler.
 6. **Last resort: an install-time patch** (`pnpm patch`). Each patch is listed in
    `PATCHES.md` with the reason it exists. The upgrade automation fails if a patch no longer
    applies.
 
 A hard fork of `@vercel/board` is out of scope: we would own every upstream change from then
-on. Our own CLI is not a fork; `bx` embeds upstream's commands through the public
-`createApp()` ([07](07-clients.md#bx)).
+on. Our own CLI is not a fork; `bdx` embeds upstream's commands through the public
+`createApp()` ([07](07-clients.md#bdx)).
 
 ## Tracking upstream
 
@@ -137,7 +137,7 @@ release and keeps up through two pieces (decided, Q11):
   - rerunning `scripts/vendor-upstream.mjs` and reviewing what changed in the copied files and
     in the `a2.ts` and `writes.ts` functions `src/engine/engine.ts` ports;
   - re-checking every build-time alias and `PATCHES.md` entry, and the upstream internals
-    `bx` relies on (`createApp` options, when `BOARD_TOKEN` is re-read);
+    `bdx` relies on (`createApp` options, when `BOARD_TOKEN` is re-read);
   - updating the spec's pinned version;
   - running conformance.
 - **Automation** that watches npm for new `@vercel/board` releases. For each one it runs the

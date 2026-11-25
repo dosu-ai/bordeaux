@@ -22,7 +22,7 @@
   "assets": { "directory": "./node_modules/@vercel/board/dist/inspect", "binding": "ASSETS", "run_worker_first": true },
   // Every 15 minutes, checks that sync reaches each platform, which also signs a new Linear app
   // in: Linear sends an app's webhooks only after its first token (docs/sync.md). Daily at 04:00
-  // UTC, runs retention on every board (`bx gc`, spec 02).
+  // UTC, runs retention on every board (`bdx gc`, spec 02).
   "triggers": { "crons": ["*/15 * * * *", "0 4 * * *"] },
   // This version's ID and upload time: a board's Durable Object reloads when a newer one calls it,
   // so a deploy reaches a board a client keeps busy (spec 08, "Deploys").
@@ -36,7 +36,7 @@
     "BORDEAUX_URL": "{{url}}",
     // The GitHub org whose members are the board's people. Its owners are board owners.
     "BORDEAUX_GITHUB_ORG": "{{org}}",
-    // The GitHub App's client ID, for `bx login` (docs/github-app.md).
+    // The GitHub App's client ID, for `bdx login` (docs/github-app.md).
     "GITHUB_CLIENT_ID": "{{clientId}}"
   }
 }

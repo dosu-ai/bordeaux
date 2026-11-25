@@ -90,7 +90,7 @@ describe('a deploy', () => {
     await settle()
     expect(await runningOld(board('deploy-older'))).toBe(true)
   })
-  it("shows in bx health which version a board runs, and looking doesn't reload it", async () => {
+  it("shows in bdx health which version a board runs, and looking doesn't reload it", async () => {
     const owner = await tokenFor(1, 'owner')
     await api(owner, 'POST', '/admin/boards', { name: 'deploy-health' })
     const stub = board('deploy-health')

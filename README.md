@@ -11,30 +11,30 @@ Objects**, with no Vercel account:
 
 ```bash
 npm i -g @dosu/bordeaux
-bx login                                     # GitHub device flow; remembers your board
-bx post errors-www "deploy failed on a1b2c3"
-bx tail errors-www
+bdx login                                    # GitHub device flow; remembers your board
+bdx post errors-www "deploy failed on a1b2c3"
+bdx tail errors-www
 ```
 
-`bx` embeds upstream's own board commands, so they behave exactly as `vb`'s do. Upstream `vb`
+`bdx` embeds upstream's own board commands, so they behave exactly as `vb`'s do. Upstream `vb`
 works unchanged too, which is what CI and existing agents use:
 
 ```bash
 export BOARD_URL=https://board.acme.dev      # your bordeaux deployment
-export BOARD_TOKEN=$(bx token)               # or any token your bordeaux trusts
+export BOARD_TOKEN=$(bdx token)              # or any token your bordeaux trusts
 npx @vercel/board post errors-www "deploy failed on a1b2c3"
 ```
 
 **Status: M3 (sync) done.** A board on Durable Objects
 passes every group of upstream's conformance kit: core, paging, search, grants, schemas,
-attachments, schedules, tasks, watchers, and sync. People sign in with GitHub (`bx login`, or
-the web UI at `/inspect`), services with tokens (`bx tokens create`); a team has named boards
-(`bx list`), and a board moves with `bx export` / `bx import`. A deployment syncs Slack,
+attachments, schedules, tasks, watchers, and sync. People sign in with GitHub (`bdx login`, or
+the web UI at `/inspect`), services with tokens (`bdx tokens create`); a team has named boards
+(`bdx list`), and a board moves with `bdx export` / `bdx import`. A deployment syncs Slack,
 GitHub, and Linear with its own apps' secrets ([docs/sync.md](docs/sync.md)): a live round
 trip passes with a real Slack workspace, a real GitHub repo, and a real Linear team.
-M4 (1.0) is under way: `bx health` and `bx dead-letters` show what a board's queues hold
-and gave up on, `bx gc` (and a daily cron) applies retention, `bx redact` scrubs a message that
-leaked a secret, `bx doctor` checks a setup, and a deploy reaches a board a client is
+M4 (1.0) is under way: `bdx health` and `bdx dead-letters` show what a board's queues hold
+and gave up on, `bdx gc` (and a daily cron) applies retention, `bdx redact` scrubs a message that
+leaked a secret, `bdx doctor` checks a setup, and a deploy reaches a board a client is
 long-polling, checked live. Nothing is published to npm yet ([docs/release.md](docs/release.md)).
 
 ## Make a board
@@ -65,7 +65,7 @@ refresh token without GitHub, for local work only.
 | `packages/bordeaux/src/worker/` | The Worker: upstream's `board()` on the `durable()` backend, the verifier, the token broker, the DirectoryDO |
 | `packages/bordeaux/src/engine/` | The board's Durable Object: its log, folds, and the protocol methods ported from upstream's engine |
 | `packages/bordeaux/src/upstream/` | Upstream's pure modules, copied byte for byte by `scripts/vendor-upstream.mjs`, plus marked shims |
-| `packages/bordeaux/src/cli/bx.ts` | `bx`, embedding upstream's commands through `createApp()` |
+| `packages/bordeaux/src/cli/bdx.ts` | `bdx`, embedding upstream's commands through `createApp()` |
 | `packages/bordeaux/src/app/` | `@dosu/bordeaux/app`: upstream's `board()` for apps on a bordeaux board, woken by URL |
 | `packages/create-bordeaux/` | `npm create @dosu/bordeaux`, and the template it makes a board's project from |
 | `docs/` | Setting a board up (the GitHub App, sync), and releasing |
