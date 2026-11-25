@@ -58,7 +58,7 @@ bx <args>
 | `bx dead-letters [--consumer] [--retry <id>]` | inspect and replay dead letters |
 | `bx redact <id> --reason <why> [--everywhere]` | scrub a message from the log, versions, inbox, and R2 ([02](02-model.md#redaction-δ-decided-q9)) |
 | `bx gc` | run retention now (it also runs on a daily cron) |
-| `bx export <board> > board.jsonl` / `import` | full log export and import. Also migrates from a `vb serve` SQLite file. |
+| `bx export [--name <board>] > board.jsonl` / `bx import <file> [--name <board>]` | full log export and import, every session, each event's ID, index, and time kept. An import goes only into an empty board and rebuilds what's kept beside the log; registered watchers start again. **Not built yet:** migrating from a `vb serve` SQLite file, and imports over Workers RPC's 32 MiB. |
 | `bx doctor` | checks discovery, audience, clock skew, the issuer, the bindings, and the token |
 | `bx inspect` | runs upstream's `vb inspect --url <board>` from the bundled `@vercel/board`, with `BOARD_TOKEN` set. `createApp` leaves `inspect` out. |
 

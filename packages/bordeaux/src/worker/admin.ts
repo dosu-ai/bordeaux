@@ -3,6 +3,8 @@
 import type { Me } from '@vercel/board'
 import { directory } from './auth.ts'
 import { BOARD_NAME, boardUrl, forget } from './boards.ts'
+import { boardKey } from './backend.ts'
+import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
 
 /** The longest a service token lasts (spec 03). */
@@ -44,6 +46,32 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
   }
 
   if (!manages(who)) return error(403, 'forbidden', "this token can't manage tokens: it needs manage at *")
+
+  // A board's whole log, out and in (spec 07): `?board=<name>` for a named one.
+  if (pathname === '/admin/export' || pathname === '/admin/import') {
+    const name = new URL(request.url).searchParams.get('board')
+    if (name !== null && (!BOARD_NAME.test(name) || !(await dir.hasBoard(name.toLowerCase())))) return error(404, 'no_board', `this team has no board named ${name}`)
+    const stub = env.BOARD.get(env.BOARD.idFromName(boardKey(name)))
+    if (pathname === '/admin/export' && request.method === 'GET') {
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const encoder = new TextEncoder()
+          for (let after: { session: string; index: number } | null = null; ; ) {
+            const page: { lines: string[]; next: { session: string; index: number } | null } = await stub.exportPage(after)
+            for (const line of page.lines) controller.enqueue(encoder.encode(`${line}\n`))
+            if (page.next === null) break
+            after = page.next
+          }
+          controller.close()
+        },
+      })
+      return new Response(body, { headers: { 'content-type': 'application/x-ndjson' } })
+    }
+    if (pathname === '/admin/import' && request.method === 'POST') {
+      const answer = (await stub.importLines((await request.text()).split('\n'))) as Envelope
+      return answer.ok ? Response.json(answer.value) : error(answer.error.status, answer.error.code, answer.error.message)
+    }
+  }
   if (pathname === '/admin/tokens' && request.method === 'POST') {
     const body = (await request.json().catch(() => ({}))) as { service?: string; env?: string; ttl?: number; board?: string }
     if (body.board !== undefined && (!BOARD_NAME.test(body.board) || !(await dir.hasBoard(body.board.toLowerCase())))) return error(404, 'no_board', `this team has no board named ${body.board}`)

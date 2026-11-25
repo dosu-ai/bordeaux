@@ -1061,6 +1061,64 @@ export class BoardEngine {
     return { attachment: found.attachment, data: await this.files.body(id) }
   }
 
+  // --- Export and import (spec 07, `bx export` / `bx import`) ---
+
+  /** A page of the log, every session's, as JSON lines: an export reads them all. */
+  exportPage(after: { session: string; index: number } | null, limit = 1000): { lines: string[]; next: { session: string; index: number } | null } {
+    const events = this.log.page(after, limit)
+    const lines = events.map((event) => JSON.stringify({ session: event.session, index: event.index, id: event.id, type: event.type, payload: event.payload, createdAt: event.createdAt.toISOString() }))
+    const last = events.at(-1)
+    return { lines, next: events.length === limit && last ? { session: last.session, index: last.index } : null }
+  }
+
+  /**
+   * Restores an export into an empty board, then works out everything kept beside the log from it
+   * again: who's who and the channels, the grants, schemas, and schedules, the tables, and the
+   * timers of the schedules still pending. Registered watchers start again from nothing.
+   */
+  importLines(lines: readonly string[]): Promise<{ events: number }> {
+    return this.exclusive(async () => {
+      if (!this.log.empty()) throw new HttpError(409, 'board_not_empty', 'a board takes an import only while it has nothing: import into a new board')
+      const events = lines.filter((line) => line.trim() !== '').map((line, at) => {
+        try {
+          return JSON.parse(line) as { session: string; index: number; id: string; type: string; payload: unknown; createdAt: string }
+        } catch {
+          throw new HttpError(400, 'invalid_import', `line ${at + 1} isn't JSON`)
+        }
+      })
+      this.storage.transactionSync(() => {
+        for (const event of events) this.log.restore(event)
+        for (const key of ['access', 'schemas', 'schedules', 'registry', 'watch-position']) this.storage.sql.exec('delete from bx_state where key = ?', key)
+      })
+      this.views = new Views(this.storage)
+      this.access = startingAccess()
+      this.schemaState = emptySchemas()
+      this.scheduleState = emptySchedules()
+      this.registry = { byOwner: {} }
+      for (const session of [BOARD_SESSION, ACCESS_SESSION, SCHEMAS_SESSION, SCHEDULES_SESSION]) {
+        for (let from = 1; ; ) {
+          const page = this.log.history({ gte: from, lte: from + 499 }, session)
+          if (page.length === 0) break
+          this.storage.transactionSync(() => {
+            if (session === BOARD_SESSION) this.views.fold(page)
+            for (const row of page) {
+              if (session === ACCESS_SESSION) foldAccess(this.access, row as never)
+              if (session === SCHEMAS_SESSION) foldSchemas(this.schemaState, row as never)
+              if (session === SCHEDULES_SESSION) foldSchedules(this.scheduleState, row as never)
+            }
+          })
+          from = page.at(-1)!.index + 1
+        }
+      }
+      for (const [key, state] of [['access', this.access], ['schemas', this.schemaState], ['schedules', this.scheduleState]] as const)
+        this.storage.sql.exec('insert into bx_state (key, data) values (?, ?) on conflict (key) do update set data = excluded.data', key, JSON.stringify(state))
+      await this.catchUp()
+      for (const schedule of Object.values(this.scheduleState.byId))
+        if (schedule.next !== null) this.arm(`import-${schedule.id}-${schedule.sent}`, schedule.next, { kind: 'schedule.due', payload: { id: schedule.id, n: schedule.sent, at: schedule.next } })
+      return { events: events.length }
+    })
+  }
+
   // --- Registered watchers (upstream a2.ts watchers, register, matches, ack) ---
 
   /** A caller narrowed with x-board-can doesn't run its principal's watchers (upstream `ownWatchers`). */

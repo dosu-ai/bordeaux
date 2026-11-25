@@ -161,6 +161,25 @@ async function boards(url: string, args: string[]) {
   fail('usage: bx list | bx boards create <name> | bx boards delete <name>')
 }
 
+/** `bx export [--name <board>] > board.jsonl` and `bx import <file> [--name <board>]`: a board's whole log. */
+async function exporting(url: string, args: string[]) {
+  const deployment = deploymentOf(url)
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const query = board ? `?board=${encodeURIComponent(board)}` : ''
+  const headers = { authorization: `Bearer ${await accessToken(deployment)}` }
+  if (args.includes('export')) {
+    const response = await fetch(`${deployment}/admin/export${query}`, { headers })
+    if (!response.ok || !response.body) fail(((await response.json().catch(() => ({}))) as { error?: { message?: string } }).error?.message ?? `export: ${response.status}`)
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) process.stdout.write(chunk)
+    return
+  }
+  const file = args[args.indexOf('import') + 1] ?? fail('usage: bx import <file.jsonl> [--name <board>]')
+  const response = await fetch(`${deployment}/admin/import${query}`, { method: 'POST', headers, body: readFileSync(file, 'utf8') })
+  const json = (await response.json().catch(() => ({}))) as { events?: number; error?: { message?: string } }
+  if (!response.ok) fail(json.error?.message ?? `import: ${response.status}`)
+  process.stderr.write(`imported ${json.events} events\n`)
+}
+
 /** `bx tokens create|list|revoke`: service tokens (spec 03), for someone who manages every channel. */
 async function tokens(url: string, args: string[]) {
   const [, action, ...rest] = args.slice(args.indexOf('tokens'))
@@ -217,6 +236,8 @@ bordeaux:
   logout [url]                        forget your sign-in
   list                                the team's boards (--name <board> picks one for any command)
   boards create|delete <name>         make or delete a named board
+  export > board.jsonl                a board's whole log (--name <board> for a named one)
+  import <file>                       an export, into a board that has nothing yet
   token                               print a fresh access token (export BOARD_TOKEN=$(bx token))
   tokens create --service <name>      a service's token, up to 90 days [--env <env>] [--ttl 30d]
   tokens list | revoke <id>           the service tokens, and revoking one
@@ -265,6 +286,7 @@ async function main(argv: string[]) {
   // Upstream sends these to Vercel's API; a bordeaux deployment keeps its team's boards itself.
   if (argv.includes('--scope')) fail('--scope names a Vercel team: a bordeaux deployment is one team')
   if (word === 'list' || word === 'boards') return boards(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'export' || word === 'import') return exporting(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'tokens') return tokens(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
 
   const app = createApp({ appName: 'bx' })

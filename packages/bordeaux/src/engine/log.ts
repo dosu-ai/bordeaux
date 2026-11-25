@@ -90,6 +90,29 @@ export class Log {
     return rows
   }
 
+  /** A page of every session's events, by session then index: what an export writes. */
+  page(after: { session: string; index: number } | null, limit: number): (BoardEvent & { session: string })[] {
+    const rows = after
+      ? this.storage.sql.exec<Row>('select * from bx_log where (session, idx) > (?, ?) order by session, idx limit ?', after.session, after.index, limit).toArray()
+      : this.storage.sql.exec<Row>('select * from bx_log order by session, idx limit ?', limit).toArray()
+    return rows.map((row) => ({ ...toEvent(row), session: row.session }))
+  }
+
+  /** Whether the log has nothing in any session: only an empty board takes an import. */
+  empty(): boolean {
+    return this.storage.sql.exec('select 1 from bx_log limit 1').toArray().length === 0
+  }
+
+  /**
+   * An exported event, as it was: its session, index, ID, and time kept. Each session's must come
+   * in order from 1, and each is checked as an append's is.
+   */
+  restore(event: { session: string; index: number; id: string; type: string; payload: unknown; createdAt: string }) {
+    if (event.index !== this.head(event.session) + 1) throw new HttpError(400, 'invalid_import', `${event.session} #${event.index} comes after #${this.head(event.session)}: an export's events come in order`)
+    const payload = checked(event.session, event)
+    this.storage.sql.exec('insert into bx_log (session, idx, id, type, payload, created_at) values (?, ?, ?, ?, ?, ?)', event.session, event.index, event.id, event.type, JSON.stringify(payload), Date.parse(event.createdAt))
+  }
+
   /** Events of `session` with index in [gte, lte], in order. */
   history(range: { gte: number; lte: number }, session = BOARD_SESSION): BoardEvent[] {
     return this.storage.sql

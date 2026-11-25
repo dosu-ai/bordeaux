@@ -139,6 +139,21 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     }
   }
 
+  /** The board's whole log as JSON lines, a page at a time (`bx export`). */
+  async exportPage(after: { session: string; index: number } | null) {
+    await this.engine.ready
+    return this.engine.exportPage(after)
+  }
+
+  /** An export, into this board while it's empty (`bx import`). */
+  async importLines(lines: string[]): Promise<Envelope> {
+    try {
+      return { ok: true, value: await this.engine.importLines(lines) }
+    } catch (error) {
+      return { ok: false, error: toWireError(error) }
+    }
+  }
+
   async call(method: string, wire: WireIdentity, input: unknown, board?: string | null): Promise<Envelope> {
     try {
       this.named(board)
