@@ -19,9 +19,9 @@ pnpm test                                    # vitest, in workerd
 pnpm --filter @dosu/bordeaux conformance     # upstream's conformance kit against a local board
 ```
 
-There's no CI yet: run all three before you push. Conformance starts a fresh `wrangler dev`
-per run and prints why each skipped check skipped. Every group passes today, `sync`
-included; keep it that way.
+CI (`.github/workflows/ci.yml`) runs all three on every pull request, and requires every
+conformance group, `sync` included; run them before you push. Conformance starts a fresh
+`wrangler dev` per run and prints why each skipped check skipped.
 
 Tests run in workerd through `@cloudflare/vitest-pool-workers`, on `test/wrangler.jsonc`
 (main `test/worker.ts`, which calls `configure()` with `test/config.ts`). Nothing leaves the
