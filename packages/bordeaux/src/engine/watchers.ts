@@ -174,6 +174,9 @@ export async function matchesFor(event: BoardEvent, registrations: readonly Regi
   const { id, before, after } = foldEvent(messages, structuredClone(actors), event)
   const message = after ?? before
   const thread = (event.payload as { thread?: string }).thread ?? event.id
+  const by = (event.payload as { by?: { actor?: string } }).by?.actor
+  // A schedule's send is how a watcher asks to be woken later: its own still wakes it.
+  const scheduled = event.type === 'message.posted' && event.payload.schedule !== undefined
   for (const registration of registrations) {
     const access = compileAccess(registration.can)
     // An event about a message only where it reads the message's channel, one about none only if it reads all.
@@ -185,6 +188,8 @@ export async function matchesFor(event: BoardEvent, registrations: readonly Regi
       } catch {
         continue
       }
+      // A watcher's own writes don't wake it (upstream watch.ts): it writes as `<owner>+<id>`.
+      if (by === `${registration.owner}+${watcherId.toLowerCase()}` && !scheduled) continue
       if (RECEIPTS.has(event.type) && !compiled.all) continue
       const match = compileFilter(compiled.filters, { me: null, actors, messages, access })
       if (!(compiled.criteria ? match(before) || match(after) : id !== null)) continue
