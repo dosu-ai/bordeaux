@@ -79,6 +79,17 @@ export class TailDO extends DurableObject<BordeauxEnv> {
     })
   }
 
+  /**
+   * Forgets the events and board reads it keeps: a message was redacted, and what it said may be
+   * among them. What it follows from here, and reads again, is as the board has it now.
+   */
+  async forget() {
+    return this.reloader.spell(async () => {
+      this.kept = []
+      this.reads.clear()
+    })
+  }
+
   /** Starts following the board, once: from its head, with who's who as of it. */
   private async follow() {
     this.starting ??= (async () => {

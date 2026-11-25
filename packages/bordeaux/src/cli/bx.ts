@@ -7,6 +7,8 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createApp } from '@vercel/board/cli'
 import type { Collected, DeadLetter, Health as BoardHealth } from '../engine/engine.ts'
+import type { Redacted, Redaction } from '../engine/redact.ts'
+import type { Everywhere } from '../worker/admin.ts'
 import type { SyncHealth } from '../worker/health.ts'
 
 /** What `GET /admin/health` answers. */
@@ -237,6 +239,40 @@ async function gc(url: string, args: string[]) {
   for (const [label, count] of rows) process.stdout.write(`${label.padEnd(15)} ${count} removed\n`)
 }
 
+/** `bx redact <id> --reason <why> [--everywhere] [--name <board>] [--json]`: scrubs a message that leaked a secret. */
+async function redact(url: string, args: string[]) {
+  const usage = 'usage: bx redact <id> --reason <why> [--everywhere]'
+  const id = args[args.indexOf('redact') + 1]
+  if (id === undefined || id.startsWith('--')) fail(usage)
+  const reason = flag(args, '--reason') ?? fail(usage)
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const everywhere = args.includes('--everywhere')
+  const found = (await asYou(url, 'POST', `/admin/messages/${encodeURIComponent(id.replace(/^#/, ''))}/redact${board ? `?board=${encodeURIComponent(board)}` : ''}`, { reason, everywhere })) as unknown as { redacted: Redacted; everywhere?: Everywhere }
+  if (args.includes('--json')) return void process.stdout.write(`${JSON.stringify(found)}\n`)
+  const { redacted } = found
+  const rows: [string, string][] = [
+    ['events', `${redacted.events} rewritten`],
+    ['copies', `${redacted.copies} removed`],
+    ['queued', `${redacted.queued} removed`],
+    ['files', `${redacted.files} deleted`],
+  ]
+  if (found.everywhere) rows.push(['origin', found.everywhere.deleted ? `${found.everywhere.target} deleted` : `not deleted: ${found.everywhere.error}`])
+  else if (redacted.origin) rows.push(['origin', `${redacted.origin.subthread ?? redacted.origin.thread} kept (--everywhere deletes it)`])
+  process.stderr.write(`#${redacted.id} redacted\n`)
+  for (const [label, text] of rows) process.stdout.write(`${label.padEnd(7)} ${text}\n`)
+  if (found.everywhere && !found.everywhere.deleted && redacted.origin) process.exitCode = 1
+}
+
+/** `bx redactions [--name <board>] [--json]`: every redaction on a board, oldest first. */
+async function redactions(url: string, args: string[]) {
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const { redactions } = (await asYou(url, 'GET', `/admin/redactions${board ? `?board=${encodeURIComponent(board)}` : ''}`)) as unknown as { redactions: Redaction[] }
+  if (args.includes('--json')) return void process.stdout.write(`${JSON.stringify({ redactions })}\n`)
+  if (redactions.length === 0) return void process.stderr.write('no redactions\n')
+  const width = Math.max(...redactions.map((one) => one.id.length)) + 1
+  for (const one of redactions) process.stdout.write(`${`#${one.id}`.padEnd(width)}  ${one.at}  ${one.by.actor}  ${one.reason}\n`)
+}
+
 /** `bx tokens create|list|revoke`: service tokens (spec 03), for someone who manages every channel. */
 async function tokens(url: string, args: string[]) {
   const [, action, ...rest] = args.slice(args.indexOf('tokens'))
@@ -299,6 +335,8 @@ bordeaux:
   health                              a board's queues, dead letters, and sync [--json]
   dead-letters [--retry <id>]         what its queues gave up on [--consumer <owner>], or retry one
   gc                                  run a board's retention now (it also runs daily)
+  redact <id> --reason <why>          scrub a message that leaked a secret [--everywhere]
+  redactions                          what's been redacted, and why
   tokens create --service <name>      a service's token, up to 90 days [--env <env>] [--ttl 30d]
   tokens list | revoke <id>           the service tokens, and revoking one
   grants create --service <name>      let a service's tokens in [--env <env>], or
@@ -348,6 +386,8 @@ async function main(argv: string[]) {
   if (word === 'list' || word === 'boards') return boards(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'export' || word === 'import') return exporting(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'dead-letters') return deadLetters(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'redact') return redact(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'redactions') return redactions(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'gc') return gc(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'health') return health(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'tokens') return tokens(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)

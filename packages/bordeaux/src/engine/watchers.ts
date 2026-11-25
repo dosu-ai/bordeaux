@@ -95,6 +95,13 @@ function remove(state: QueueState, id: string) {
   else delete state.queues[key]
 }
 
+/** Takes every item `test` picks out of a queue, wherever it waits: how many it took. */
+export function dropWhere(state: QueueState, test: (item: Pending) => boolean): number {
+  const doomed = Object.values(state.pending).filter(test)
+  for (const item of doomed) remove(state, item.id)
+  return doomed.length
+}
+
 export function foldQueue(state: QueueState, event: QueueEvent): QueueState {
   switch (event.type) {
     case 'watch.matched': {

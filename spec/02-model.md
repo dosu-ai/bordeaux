@@ -229,7 +229,7 @@ Worker's daily cron (`0 4 * * *`, every board). It removes:
   out before it finished. A file stored before upload times were kept counts from its first gc.
 
 Raw payloads are capped as they're pushed: one whose JSON is over 256 KB is kept as
-`{ truncated: true, bytes, json }`, its JSON cut short. Redaction isn't built yet.
+`{ truncated: true, bytes, json }`, its JSON cut short.
 
 ## Redaction (Δ, decided Q9)
 
@@ -260,6 +260,33 @@ secret.
   exports.
 - This departs from upstream's "the log is immutable", on purpose, and only through this one
   admin path.
+
+**As built (M4).** `engine.redact()` (`src/engine/redact.ts`), from `POST /admin/messages/:id/redact[?board=]`
+(manage at `*` on the default board, as for every admin route) and `bx redact`. It differs from the steps above where
+upstream's contract or bordeaux's storage asks it to:
+- **Text becomes `[redacted]`, not empty.** Upstream's schema refuses an edit with empty text, and
+  its clients parse what the feed sends, so an empty edit would break an export's import and a
+  `vb tail` reading from before. A post reads the same, for one rule. Label values become empty,
+  links and attachments go, and the origin's `context` (platform text) becomes null.
+- **Queued items, not an inbox session.** bordeaux keeps a raw platform payload only while a
+  queue holds it, so step 4 drops the queued items and dead letters that say anything of the
+  message: an inbox's platform events about it (by its `board_external_messages` keys), and
+  watcher and sync matches about it. A match for its `message.deleted` stays: a sync needs it to
+  delete the board's copies.
+- **The platform copies.** Upstream's sync already deletes, on each platform, the copies the
+  board made when the message is deleted (step 1), so every redaction does. It never deletes the
+  original a platform sent, so `--everywhere` deletes that one, through the board's own sync's
+  provider. A message a sync elsewhere imported (`importedBy`) is that sync's to delete: the
+  answer says so.
+- **Files.** Its attachments' bytes and records go at once, unless another message carries one.
+- **The TailDO forgets.** It keeps the newest events and board reads in memory for its readers
+  (spec 08), so the route has it drop them.
+- `GET /admin/redactions[?board=]` and `bx redactions` list them. An export carries session
+  `admin`; an import keeps the rewritten payloads but not their `redacted: true`, which upstream's
+  schema strips.
+- Not covered: a schedule's own text (session `schedules`) when a schedule posted it. Cancel the
+  schedule too.
+
 
 ## Limits
 

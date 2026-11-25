@@ -91,6 +91,14 @@ export class Files {
     return collected
   }
 
+  /** Deletes a file's bytes and record now (redaction, spec 02). */
+  async remove(id: string) {
+    if (!this.row(id)) return false
+    await this.bucket?.delete(this.key(id))
+    this.storage.sql.exec('delete from bx_files where id = ?', id)
+    return true
+  }
+
   /** An upload sent in the request, up to 4 MB: stored under a fresh ID (upstream `writeUpload`). */
   async upload(input: { data: Uint8Array; name: string | null; type: string | null; uploadedBy: string }, max = ATTACHMENT_BYTES_MAX): Promise<AttachmentType> {
     const bucket = this.bucketOrFail()

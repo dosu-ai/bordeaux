@@ -12,6 +12,8 @@ import { bindingOf } from '../worker/backend.ts'
 import { boardOf } from '../worker/boards.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
 import type { Collected, DeadLetter, Failure, Health } from './engine.ts'
+import type { Redaction } from './redact.ts'
+import type { Author } from '../upstream/contract/schemas.ts'
 
 /** What a run that's still going when the runner moves on resolves to. */
 const SLOW = Symbol('slow')
@@ -247,6 +249,26 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     return this.reloader.spell(async () => {
       await this.engine.ready
       return this.engine.deadLetters()
+    })
+  }
+
+  /** Scrubs a message out of the board (spec 02, "Redaction"; `bx redact`). */
+  async redact(by: Author, id: string, reason: string): Promise<Envelope> {
+    return this.reloader.spell(async () => {
+      try {
+        await this.engine.ready
+        return { ok: true, value: await this.engine.redact(by, id, reason) }
+      } catch (error) {
+        return { ok: false, error: toWireError(error) }
+      }
+    })
+  }
+
+  /** Every redaction on this board, oldest first. */
+  async redactions(): Promise<Redaction[]> {
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.redactions()
     })
   }
 

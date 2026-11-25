@@ -35,6 +35,7 @@ Status key:
 | Dead letters | not exposed | `/admin/dead-letters`, `bx dead-letters` | + | 4 |
 | Health | – | `/admin/health`, `bx health`: queues, dead letters, timers, the code version a board runs, whether sync reaches each platform | + | 4 |
 | Retention | keeps everything | 30 days for inbox payloads (capped at 256 KB each), dead letters, message copies, and deleted messages' files; messages and the log are kept (`bx gc`, daily) | Δ | 4 |
+| Redaction | the log is immutable | `bx redact <id> --reason`: deletes the message and rewrites what its events said to `[redacted]`; drops its copies, queued items, and files; `--everywhere` deletes the platform original (`bx redactions` lists them) | Δ | 4 |
 | Export / import | – | `bx export` / `import` (JSONL; also reads `vb serve` SQLite) | + | 2 |
 
 ## Identity and access

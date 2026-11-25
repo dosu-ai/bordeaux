@@ -32,6 +32,7 @@ import { emptySchemas, findSchema, foldSchemas, listSchemas, registering, schema
 registerSession(ACCESS_SESSION, accessEvents)
 registerSession(SCHEMAS_SESSION, schemaEvents)
 registerSession(SCHEDULES_SESSION, scheduleEvents)
+registerSession(ADMIN_SESSION, adminEvents)
 
 /** A timer the DO's alarm runs: a schedule's send due at `at`, or the end of a task's lease. */
 export type Timer =
@@ -57,7 +58,8 @@ import type { Actor, ExternalCopy } from '../upstream/contract/folds.ts'
 import { INBOX_EVENT_ID_MAX } from '../upstream/api/routes.ts'
 import type { SyncEntrySpec } from '../upstream/server/watchers-hash.ts'
 import { pullInbox } from './watchers.ts'
-import { ack as ackMatch, emptyQueue, foldQueue, leaseAll, matchesFor, nextDue, OWN, pull, revive, viewOf, watchersHash, type Pending, type QueueState, type Registration, type RegistryState } from './watchers.ts'
+import { ADMIN_SESSION, about, adminEvents, CONTENT_EVENTS, scrubbed, type Redacted, type Redaction } from './redact.ts'
+import { ack as ackMatch, dropWhere, emptyQueue, foldQueue, leaseAll, matchesFor, nextDue, OWN, pull, revive, viewOf, watchersHash, type Pending, type QueueState, type Registration, type RegistryState } from './watchers.ts'
 import { compileWatcher } from '../upstream/server/watch-spec.ts'
 import { RemoteWatcherId } from '../upstream/contract/schemas.ts'
 import { TASK_BATCH_MAX } from '../upstream/contract/schemas.ts'
@@ -503,6 +505,68 @@ export class BoardEngine {
       if (row.owner === OWN) this.arm('run', Date.now(), { kind: 'run', payload: {} })
       else if (this.registry.byOwner[row.owner]?.url) this.arm(`wake-${row.owner}`, Date.now(), { kind: 'wake', payload: { owner: row.owner } })
       return true
+    })
+  }
+
+  /**
+   * Scrubs message `id` out of the board (spec 02, "Redaction"; Δ upstream's log is immutable):
+   * deletes it as a delete does, then, in one transaction, rewrites what its events said, drops
+   * its copies, terms, and the queued items and dead letters that hold what it said, and records
+   * the redaction in session `admin`. Its files' bytes go after, unless another message uses one.
+   */
+  async redact(by: Author, value: string, reason: string): Promise<Redacted> {
+    const id = messageAt(value)
+    const message = await this.found(id)
+    // A delete first, as anyone's: feeds and watchers see it go, and sync deletes the board's copies.
+    await this.delete({ author: by } as Caller, { id: value }, { trusted: true, asAuthor: false })
+    return this.exclusive(async () => {
+      const [posted] = this.log.history({ gte: id, lte: id })
+      const files = new Set(((posted?.payload as { attachments?: Attachment[] } | undefined)?.attachments ?? []).map((file) => file.id))
+      const keys = new Set(this.storage.sql.exec<{ key: string }>('select key from board_external_messages where message_id = ?', id).toArray().map((row) => row.key))
+      let events = 0
+      let copies = 0
+      let queued = 0
+      const at = new Date().toISOString()
+      this.log.append(ADMIN_SESSION, [{ type: 'message.redacted', payload: { id, by, reason, at } }], () => {
+        const rows = this.storage.sql
+          .exec<{ idx: number; type: string; payload: string }>(
+            `select idx, type, payload from bx_log where session = ? and ((idx = ? and type = 'message.posted') or (type in (${CONTENT_EVENTS.map(() => '?').join(', ')}) and json_extract(payload, '$.id') = ?))`,
+            BOARD_SESSION,
+            id,
+            ...CONTENT_EVENTS,
+            id,
+          )
+          .toArray()
+        for (const row of rows) {
+          this.storage.sql.exec('update bx_log set payload = ? where session = ? and idx = ?', JSON.stringify(scrubbed(row.type, JSON.parse(row.payload))), BOARD_SESSION, row.idx)
+          events++
+        }
+        copies = this.storage.sql.exec('delete from board_versions where message_id = ?', id).rowsWritten
+        this.storage.sql.exec('delete from board_terms where message_id = ?', id)
+        for (const { owner } of this.storage.sql.exec<{ owner: string }>('select owner from bx_queues').toArray()) {
+          const state = this.queueOf(owner)
+          const dropped = dropWhere(state, (item) => about(item.event, id, keys))
+          if (dropped > 0) this.saveQueue(owner, state)
+          queued += dropped
+        }
+        for (const row of this.storage.sql.exec<{ id: string; item: string }>('select id, item from bx_dead').toArray())
+          if (about((JSON.parse(row.item) as Pending).event, id, keys)) {
+            this.storage.sql.exec('delete from bx_dead where id = ?', row.id)
+            queued++
+          }
+      })
+      let removed = 0
+      for (const file of files) if ((await this.tables.withAttachment(file)).every((using) => using.id === id) && (await this.files.remove(file))) removed++
+      const origin = message.origin ? { thread: message.origin.thread, subthread: message.origin.subthread, message: message.origin.message } : null
+      return { id, events, copies, queued, files: removed, origin, importedBy: (posted?.payload as { importedBy?: string } | undefined)?.importedBy ?? null }
+    })
+  }
+
+  /** Every redaction, oldest first. */
+  redactions(): Redaction[] {
+    return this.log.history({ gte: 1, lte: this.log.head(ADMIN_SESSION) }, ADMIN_SESSION).map((event) => {
+      const { id, by, reason, at } = event.payload as unknown as { id: number; by: Author; reason: string; at: string }
+      return { id: ref(id), by, reason, at }
     })
   }
 
