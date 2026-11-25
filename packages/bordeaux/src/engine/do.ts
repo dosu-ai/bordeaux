@@ -40,8 +40,15 @@ export function toWireError(error: unknown): WireError {
   return { status: 500, code: 'internal', message: 'internal error' }
 }
 
+/** The Worker version a call comes from (`version_metadata`). */
+export type CallerVersion = { id: string; timestamp: string }
+
 export class BoardDO extends DurableObject<BordeauxEnv> {
   private readonly engine: BoardEngine
+  /** Calls and alarms running now: a reload waits for none. */
+  private busy = 0
+  /** Set once a newer Worker version called: this instance resets when it's next idle. */
+  private reloading = false
 
   constructor(ctx: DurableObjectState, env: BordeauxEnv) {
     super(ctx, env)
@@ -103,6 +110,10 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
 
   /** Runs every timer that's due: a schedule's send (spec 05). A send that fails is tried again later. */
   async alarm() {
+    return this.spell(() => this.alarmed())
+  }
+
+  private async alarmed() {
     await this.engine.ready
     for (const timer of this.engine.takeDue(Date.now())) {
       try {
@@ -248,7 +259,48 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     }
   }
 
-  async call(method: string, wire: WireIdentity, input: unknown, board?: string | null): Promise<Envelope> {
+  /**
+   * Notes a call from a newer Worker version than this instance runs. Δ (upstream runs on
+   * Vercel, where a deploy starts fresh functions): a DO keeps its code and env while it's in
+   * use, and a board a client long-polls is always in use, so a deploy, or a new secret, never
+   * reached it. This instance resets itself once it's idle, and its next request loads the new
+   * version. It resets once per newer version, so a DO a gradual deployment keeps on the old
+   * version doesn't reset over and over.
+   */
+  private newer(version: CallerVersion | undefined) {
+    const own = this.env.CF_VERSION_METADATA
+    if (!version || !own || this.reloading || version.id === own.id || !(version.timestamp > own.timestamp)) return
+    const [row] = this.ctx.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'reloaded-for'").toArray()
+    if (row && JSON.parse(row.data) === version.id) return
+    this.ctx.storage.sql.exec("insert into bx_state (key, data) values ('reloaded-for', ?) on conflict (key) do update set data = excluded.data", JSON.stringify(version.id))
+    this.reloading = true
+    // A long-poll keeps this instance busy for as long as it waits: they answer now instead.
+    this.engine.hurry()
+  }
+
+  /** Runs `work` as one of this instance's busy spells; a reload that's waiting happens after the last. */
+  private async spell<T>(work: () => Promise<T>): Promise<T> {
+    this.busy++
+    try {
+      return await work()
+    } finally {
+      this.busy--
+      // After this answer has gone: an abort ends every request still running here.
+      if (this.reloading && this.busy === 0)
+        setTimeout(() => {
+          if (this.busy > 0) return
+          console.log(`[bordeaux] a newer Worker version called: reloading`)
+          this.ctx.abort('a newer Worker version is deployed')
+        }, 0)
+    }
+  }
+
+  async call(method: string, wire: WireIdentity, input: unknown, board?: string | null, version?: CallerVersion): Promise<Envelope> {
+    this.newer(version)
+    return this.spell(() => this.answer(method, wire, input, board))
+  }
+
+  private async answer(method: string, wire: WireIdentity, input: unknown, board?: string | null): Promise<Envelope> {
     try {
       this.named(board)
       if (!isKept(method)) throw notKeptHere(method)

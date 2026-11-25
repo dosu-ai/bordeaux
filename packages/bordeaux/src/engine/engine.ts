@@ -234,6 +234,14 @@ export class BoardEngine {
   private scheduleState: SchedulesState
   /** Registered watchers, by owner (upstream's registry). */
   private registry: RegistryState
+  /** Aborted once the board is about to reload: its long-polls answer at once from then on. */
+  private readonly hurried = new AbortController()
+
+  /** Ends every long-poll waiting here, and keeps new ones from waiting (spec 08, "Deploys"). */
+  hurry() {
+    this.hurried.abort()
+  }
+
   /** Whether matching is running now: one run at a time, from the stored position. */
   private matching: Promise<void> | null = null
   /** Resolves once the tables have every event the log has. */
@@ -1917,8 +1925,10 @@ export class BoardEngine {
       actors: structuredClone(this.views.actors),
       access: principal.access,
     }
-    const waitMs = (query.wait ?? 0) * 1000
-    const signal = AbortSignal.timeout(waitMs + 30_000)
+    // Δ A board about to reload answers its long-polls now, so their clients come back to the new version.
+    const hurried = this.hurried.signal.aborted
+    const waitMs = hurried ? 0 : (query.wait ?? 0) * 1000
+    const signal = hurried ? AbortSignal.timeout(30_000) : AbortSignal.any([AbortSignal.timeout(waitMs + 30_000), this.hurried.signal])
     const { events, cursor } = query.last !== undefined ? await lastFeed(feed, query.last, signal) : await pollFeed(feed, waitMs, signal)
     return { events, cursor: ref(cursor) }
   }

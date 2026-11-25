@@ -18,6 +18,9 @@
   // Checks every 15 minutes that sync reaches each platform, which also signs a new Linear
   // app in: Linear sends an app's webhooks only after its first token (docs/sync.md).
   "triggers": { "crons": ["*/15 * * * *"] },
+  // This version's ID and upload time: a board's Durable Object reloads when a newer one calls it,
+  // so a deploy reaches a board a client keeps busy (spec 08, "Deploys").
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "{{name}}-files" }],
   // Upstream's Slack, GitHub, and Linear sync import Vercel Connect even when given their own
   // adapter: bordeaux's stand-in is never called (spec 06, Q7).

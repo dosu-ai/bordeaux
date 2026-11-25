@@ -183,9 +183,11 @@ Worker → upstream `board()` → `durable()` backend → the board's Durable Ob
 Linear apps. [docs/sync.md](./docs/sync.md) has the setup and the last live run. What it
 taught:
 
-- **A deploy doesn't reach a busy board.** While a client long-polls a board (an open
-  inspector, `vb tail`), its DO keeps running the code and the secrets it started with.
-  Close those clients, then check, before concluding a fix or a new secret didn't work.
+- **A deploy reaches a busy board by reloading it.** While a client long-polls a board (an
+  open inspector, `vb tail`), its DO would keep the code and secrets it started with, so it
+  resets itself once a newer Worker version calls it and it's idle (spec 08, "Deploys"). A
+  deployment without the `version_metadata` binding doesn't: close those clients, then
+  check, before concluding a fix or a new secret didn't work.
 - **`wrangler tail` drops events**, whole webhooks and DO calls included: its silence proves
   nothing. Record what you need where you can read it back, such as R2, `bx health` (queues,
   the latest failure, sync), `bx dead-letters` (what the queues gave up on, `--retry <id>`),

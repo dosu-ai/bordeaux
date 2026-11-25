@@ -205,6 +205,23 @@ open waits when the Worker's version changes (M4).
 | RPC payload | 32 MiB | uploads go Worker → R2 directly, never through the DO |
 | Cold start | the DO loads SQLite lazily | channel and actor folds are cached in memory after first use |
 
+## Deploys
+
+A board's Durable Object keeps the code and env it started with while it's in use. A board a
+client long-polls (an open inspector, `vb tail`) is never idle, so in the live run of
+2026-11-25 a deploy, and a fixed secret, didn't reach it until the inspector closed.
+
+**As built:** each protocol call carries the calling Worker's version (`version_metadata`).
+When one is newer than the DO's own, the DO answers its waiting long-polls (`/events?wait=`)
+at once and stops new ones from waiting, then resets itself (`ctx.abort()`) once no call or
+alarm is running there, after the last answer has gone; its next request loads the new
+version, and long-polling clients poll again as they always do. It resets at most once per newer version (`bx_state` `reloaded-for`), so a DO that
+a gradual deployment keeps on the old version doesn't reset over and over. A run of the
+board's own code that outlasted its minute isn't waited for: it's cut short, and its item
+runs again when its lease runs out. Without the binding, nothing changes. The first deploy
+that adds it can't reload a busy board yet: the DO it would reach still runs the code from
+before. Not checked live yet.
+
 ## Observability
 
 - Workers Logs with structured fields `{board, principal, route, code, ms}`.

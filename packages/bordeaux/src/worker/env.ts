@@ -27,6 +27,12 @@ export interface BordeauxEnv {
   GITHUB_PRIVATE_KEY?: string
   /** The App's installation on the board's org. */
   GITHUB_INSTALLATION_ID?: string
+  /**
+   * This Worker version's ID and upload time (`version_metadata` in wrangler.jsonc). A board's
+   * Durable Object that a newer version calls resets itself once it's idle, so a deploy reaches
+   * a board that's always busy (spec 08, "Deploys").
+   */
+  CF_VERSION_METADATA?: WorkerVersionMetadata
   /** How long one of the board's own runs holds up the next before the runner moves on, in ms (default 60000). For tests. */
   BORDEAUX_RUN_TIMEOUT_MS?: string
   /** "1" turns on `POST /__dev/token`, which mints a person token with no sign-in: local development and tests only. */

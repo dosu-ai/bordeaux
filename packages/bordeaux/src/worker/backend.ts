@@ -24,6 +24,8 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
   let binding: BoardBinding | null = null
   const url = name === null ? env.BORDEAUX_URL : `${env.BORDEAUX_URL}/b/${name.toLowerCase()}`
   const stub = () => env.BOARD.get(env.BOARD.idFromName(boardKey(name)))
+  // Which code is calling: the board's DO reloads when this is newer than its own.
+  const version = env.CF_VERSION_METADATA ? { id: env.CF_VERSION_METADATA.id, timestamp: env.CF_VERSION_METADATA.timestamp } : undefined
 
   const discovery = async (): Promise<Discovery> => ({
     version: UPSTREAM_VERSION,
@@ -67,7 +69,7 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
   }
 
   const remote = (method: string) => async (caller: Caller, input: unknown) => {
-    const answer = (await stub().call(method, toWire(caller), input, name)) as Envelope
+    const answer = (await stub().call(method, toWire(caller), input, name, version)) as Envelope
     if (!answer.ok) throw new HttpError(answer.error.status, answer.error.code, answer.error.message, answer.error.hint !== undefined ? { hint: answer.error.hint } : {})
     return answer.value
   }
