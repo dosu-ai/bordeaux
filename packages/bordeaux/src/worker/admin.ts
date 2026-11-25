@@ -6,6 +6,7 @@ import { BOARD_NAME, boardUrl, forget } from './boards.ts'
 import { boardKey } from './backend.ts'
 import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
+import { checkSync } from './health.ts'
 
 /** The longest a service token lasts (spec 03). */
 const SERVICE_TTL_MAX = 90 * 24 * 3600
@@ -47,11 +48,26 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
 
   if (!manages(who)) return error(403, 'forbidden', "this token can't manage tokens: it needs manage at *")
 
-  // A board's whole log, out and in (spec 07): `?board=<name>` for a named one.
-  if (pathname === '/admin/export' || pathname === '/admin/import') {
-    const name = new URL(request.url).searchParams.get('board')
+  // `?board=<name>` names the board a route is about: the default board without it.
+  const name = new URL(request.url).searchParams.get('board')
+  const named = async () => {
     if (name !== null && (!BOARD_NAME.test(name) || !(await dir.hasBoard(name.toLowerCase())))) return error(404, 'no_board', `this team has no board named ${name}`)
-    const stub = env.BOARD.get(env.BOARD.idFromName(boardKey(name)))
+    return env.BOARD.get(env.BOARD.idFromName(boardKey(name)))
+  }
+
+  // How a board stands (spec 08, "Health"): its queues, dead letters, failures, and timers, and
+  // for the default board whether its sync reaches each platform, which signs each one in.
+  if (pathname === '/admin/health' && request.method === 'GET') {
+    const stub = await named()
+    if (stub instanceof Response) return stub
+    const [health, sync] = await Promise.all([stub.health(), name === null ? checkSync(env) : Promise.resolve([])])
+    return Response.json({ board: name?.toLowerCase() ?? null, ...health, sync })
+  }
+
+  // A board's whole log, out and in (spec 07).
+  if (pathname === '/admin/export' || pathname === '/admin/import') {
+    const stub = await named()
+    if (stub instanceof Response) return stub
     if (pathname === '/admin/export' && request.method === 'GET') {
       const body = new ReadableStream<Uint8Array>({
         async start(controller) {

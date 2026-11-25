@@ -15,6 +15,9 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO"] }],
   // Upstream's prebuilt inspector page, served at /inspect by the Worker (never straight from assets).
   "assets": { "directory": "./node_modules/@vercel/board/dist/inspect", "binding": "ASSETS", "run_worker_first": true },
+  // Checks every 15 minutes that sync reaches each platform, which also signs a new Linear
+  // app in: Linear sends an app's webhooks only after its first token (docs/sync.md).
+  "triggers": { "crons": ["*/15 * * * *"] },
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "{{name}}-files" }],
   // Upstream's Slack, GitHub, and Linear sync import Vercel Connect even when given their own
   // adapter: bordeaux's stand-in is never called (spec 06, Q7).

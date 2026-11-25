@@ -210,6 +210,13 @@ export type Failure = { at: string; queue: string; item: string; attempt: number
 const FAILURES_KEPT = 50
 /** An item a queue gave up on after its last try, kept so it can be replayed (spec 06, the dead-letter table). */
 export type DeadLetter = { id: string; owner: string; queue: string; thread: string; error: string; at: string; attempts: number }
+/** A board's bookkeeping at a glance (`engine.health()`). */
+export type Health = {
+  queues: { owner: string; pending: number; leased: number; retrying: number }[]
+  dead: { count: number; latest: string | null }
+  failures: { kept: number; latest: { at: string; queue: string; error: string } | null }
+  timers: { count: number; next: string | null; late: number }
+}
 
 /** How long an inbox remembers an event it took, to drop a platform's resend: 30 days. */
 const INBOX_SEEN_MS = 30 * 86_400_000
@@ -385,6 +392,31 @@ export class BoardEngine {
   failures(): Failure[] {
     const [row] = this.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'own-failures'").toArray()
     return row ? (JSON.parse(row.data) as Failure[]) : []
+  }
+
+  /**
+   * How the board's bookkeeping stands, for an operator: each queue with work in it, what the
+   * queues gave up on, the latest failure, and its timers. A timer past due by more than a
+   * minute means the alarm isn't running it.
+   */
+  health(now = Date.now()): Health {
+    const queues = this.storage.sql
+      .exec<{ owner: string; data: string }>('select owner, data from bx_queues')
+      .toArray()
+      .flatMap((row) => {
+        const items = Object.values((JSON.parse(row.data) as QueueState).pending)
+        if (items.length === 0) return []
+        return [{ owner: row.owner, pending: items.length, leased: items.filter((item) => item.lease !== null && item.lease.until > now).length, retrying: items.filter((item) => item.attempts > 0).length }]
+      })
+    const [dead] = this.storage.sql.exec<{ count: number; at: number | null }>('select count(*) as count, max(at) as at from bx_dead').toArray()
+    const [timers] = this.storage.sql.exec<{ count: number; next: number | null; late: number }>('select count(*) as count, min(due_at) as next, sum(case when due_at < ? then 1 else 0 end) as late from bx_timers', now - 60_000).toArray()
+    const latest = this.failures()[0]
+    return {
+      queues,
+      dead: { count: Number(dead?.count ?? 0), latest: dead?.at ? new Date(Number(dead.at)).toISOString() : null },
+      failures: { kept: this.failures().length, latest: latest ? { at: latest.at, queue: latest.queue, error: latest.error } : null },
+      timers: { count: Number(timers?.count ?? 0), next: timers?.next ? new Date(Number(timers.next)).toISOString() : null, late: Number(timers?.late ?? 0) },
+    }
   }
 
   /** What the queues gave up on, newest first. */

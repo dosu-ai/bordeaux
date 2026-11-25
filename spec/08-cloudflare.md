@@ -211,6 +211,15 @@ open waits when the Worker's version changes (M4).
 - Workers Analytics Engine for request, consumer-lag, and queue-depth metrics.
 - `GET /admin/health` (requires `manage` at `*`) reports consumer positions against the head,
   dead letters, the oldest pending timer, and the wake backlog.
+  **As built:** `GET /admin/health[?board=<name>]` and `bx health` report each queue with work
+  in it (pending, leased, and retrying items per registrant, the board's own as `@board`), the
+  dead-letter count and the latest one, the latest failure, and the timers, with how many are
+  more than a minute past due (the alarm isn't running them). Matching runs inside each write,
+  so there's no consumer position to lag. For the default board it also readies each sync's
+  provider, as upstream does on first use, and says whether it reached its platform. A cron
+  (`triggers.crons`, every 15 minutes in the template) runs the same sync check and logs what
+  failed. Readying is also what signs a new Linear app in, so its webhooks start without a
+  first post from the board.
 
 ## Testing
 

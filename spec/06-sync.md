@@ -111,7 +111,9 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
 - GitHub and Linear ran live too: issues, a PR, comments both ways, a board root opening a
   Linear issue, and no echo of either app's own writes.
 - **Gotcha (Linear).** Linear sends an app's webhooks only after the app's first token, so
-  a new deployment hears nothing from Linear until the board delivers something there.
+  a new deployment hears nothing from Linear until the app signs in. The sync check
+  (`bx health`, and the Worker's cron) readies each provider, which fetches that token. Not
+  checked live: the test app already had its first token when the check was built.
 - **Failures and dead letters.** The board keeps its last 50 failures (`BoardDO.ownFailures()`):
   its own runs that threw, and events matching couldn't handle, which are passed so they
   never hold up the rest. What a queue gives up on (10 tries for the board's own runs, 5 for

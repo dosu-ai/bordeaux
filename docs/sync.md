@@ -86,7 +86,8 @@ npx wrangler secret put GITHUB_WEBHOOK_SECRET
 
 `GITHUB_APP_ID`, `GITHUB_PRIVATE_KEY`, and `GITHUB_INSTALLATION_ID` are already set for
 sign-in. `githubSync` needs `userName`, the App's bot login (`<app-slug>[bot]`), so its own
-comments don't come back.
+comments don't come back. It finds the bot's user ID from GraphQL's `viewer` once per isolate,
+as upstream does for a connector; `botUserId` skips that call.
 
 A repo mapped to a board channel (`'acme/www': 'prs'`) brings its PRs and issues in and sends
 nothing back: GitHub is often public. `mirror('prs')` (from `@dosu/bordeaux/sync`) sends every
@@ -111,10 +112,11 @@ under **Repository access**.
    npx wrangler secret put LINEAR_WEBHOOK_SECRET
    ```
 
-4. **Make the board sign in once.** Linear sends an app's webhooks only after the app has had
-   its first token, so nothing that happens in Linear reaches the board until then. Post a
-   root on the board in a mapped channel: delivering it opens a Linear issue, which signs
-   the app in. Issues and comments made in Linear before that never arrive.
+4. **Check it with `bx health`.** Linear sends an app's webhooks only after the app has had
+   its first token, so nothing that happens in Linear reaches the board until then. The
+   board's sync check signs the app in: `bx health` runs it at once (`sync  linear  ok`),
+   and the template's cron runs it every 15 minutes. Issues and comments made in Linear
+   before that never arrive.
 
 ```ts
 // A team key mapped to a channel mirrors it: issues and comments both ways, and a board root

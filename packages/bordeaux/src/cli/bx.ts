@@ -6,6 +6,11 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'n
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createApp } from '@vercel/board/cli'
+import type { Health as BoardHealth } from '../engine/engine.ts'
+import type { SyncHealth } from '../worker/health.ts'
+
+/** What `GET /admin/health` answers. */
+type Health = BoardHealth & { board: string | null; sync: SyncHealth[] }
 
 /** A sign-in to a deployment, and the access tokens it got for each of the team's boards. */
 type Saved = { url: string; login: string; refresh_token: string; tokens?: Record<string, { access_token: string; expires_at: string }> }
@@ -180,6 +185,23 @@ async function exporting(url: string, args: string[]) {
   process.stderr.write(`imported ${json.events} events\n`)
 }
 
+/** `bx health [--name <board>] [--json]`: how a board stands, and whether its sync reaches each platform. */
+async function health(url: string, args: string[]) {
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const found = (await asYou(url, 'GET', `/admin/health${board ? `?board=${encodeURIComponent(board)}` : ''}`)) as unknown as Health
+  if (args.includes('--json')) return void process.stdout.write(`${JSON.stringify(found)}\n`)
+  const rows: [string, string][] = []
+  for (const queue of found.queues) rows.push(['queue', `${queue.owner}  ${queue.pending} pending, ${queue.leased} leased, ${queue.retrying} retrying`])
+  if (found.queues.length === 0) rows.push(['queue', 'nothing waiting'])
+  rows.push(['dead', found.dead.count === 0 ? 'none' : `${found.dead.count}, latest ${found.dead.latest} (bx dead-letters)`])
+  const failed = found.failures.latest
+  rows.push(['failed', failed ? `${failed.at}  ${failed.queue}  ${failed.error}` : 'nothing lately'])
+  rows.push(['timers', `${found.timers.count}${found.timers.next ? `, next ${found.timers.next}` : ''}${found.timers.late ? `, ${found.timers.late} late: the alarm isn't running them` : ''}`])
+  for (const sync of found.sync) rows.push(['sync', `${sync.key.padEnd(12)} ${sync.ok ? 'ok' : sync.error}`])
+  for (const [label, text] of rows) process.stdout.write(`${label.padEnd(7)} ${text}\n`)
+  if (found.sync.some((sync) => !sync.ok) || found.timers.late > 0) process.exitCode = 1
+}
+
 /** `bx tokens create|list|revoke`: service tokens (spec 03), for someone who manages every channel. */
 async function tokens(url: string, args: string[]) {
   const [, action, ...rest] = args.slice(args.indexOf('tokens'))
@@ -239,6 +261,7 @@ bordeaux:
   export > board.jsonl                a board's whole log (--name <board> for a named one)
   import <file>                       an export, into a board that has nothing yet
   token                               print a fresh access token (export BOARD_TOKEN=$(bx token))
+  health                              a board's queues, dead letters, and sync [--json]
   tokens create --service <name>      a service's token, up to 90 days [--env <env>] [--ttl 30d]
   tokens list | revoke <id>           the service tokens, and revoking one
   grants create --service <name>      let a service's tokens in [--env <env>], or
@@ -287,6 +310,7 @@ async function main(argv: string[]) {
   if (argv.includes('--scope')) fail('--scope names a Vercel team: a bordeaux deployment is one team')
   if (word === 'list' || word === 'boards') return boards(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'export' || word === 'import') return exporting(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'health') return health(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'tokens') return tokens(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
 
   const app = createApp({ appName: 'bx' })
