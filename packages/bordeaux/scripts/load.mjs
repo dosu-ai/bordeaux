@@ -65,7 +65,17 @@ const ms = (value) => `${value.toFixed(1)} ms`
 
 let token = ''
 const request = async (method, path, body) => {
-  const response = await fetch(`${url}${path}`, { method, headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
+  const send = () => fetch(`${url}${path}`, { method, headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
+  // A server closes a connection now and then (HTTP/2 GOAWAY): that's the network, so send again.
+  let response
+  for (let tries = 1; ; tries++) {
+    try {
+      response = await send()
+      break
+    } catch (error) {
+      if (tries === 3) throw error
+    }
+  }
   if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${await response.text()}`)
   return response.json()
 }

@@ -273,8 +273,25 @@ messages across 10 channels, a root in every five; 200 samples each.
 - The first run, before the fix, found that a busy feed ran the DO out of workerd's 10,000
   active timers (`AbortSignal.timeout()` outlives its call) and every feed answered 500;
   `test/feed-load.test.ts` covers it.
-- Not measured: a deployed board (Cloudflare's network, a DO on its own machine), tails on
-  other machines, 100k messages with tails, and append throughput.
+- Not measured: tails on other machines, 100k messages with tails, and append throughput.
+
+**On a deployed board, the same day.** `pnpm load --url` against the test deployment on
+workers.dev, a named board of about 10,000 messages, from one laptop over the internet (about
+120 ms there and back). 200 samples, then two repeats of 0 against 50 tails at 300.
+
+| | Post p50 / p99 |
+| --- | --- |
+| 0 tails | 118–145 / 161–205 ms |
+| 1 tail | 148 / 251 ms |
+| 10 tails | 139 / 531 ms |
+| 50 tails | 133–149 / 252–866 ms |
+
+Thread reads and a channel's threads answered in 121–122 ms p50, 160–177 ms p99, so the board
+itself adds little over the round trip. Each run's two baselines differ by up to 16 ms at
+p99; 50 tails add 13–15 ms at p50 and 90–660 ms at p99 in every run. The network makes p99
+noisy, and a laptop holding 50 streams isn't 50 clients, but the trend is the local run's:
+tails cost every post, and 50 of them pass the TailDO's 5 ms. The board's own time per
+request wasn't measured: it has no server timing to read.
 
 ## Milestones
 
