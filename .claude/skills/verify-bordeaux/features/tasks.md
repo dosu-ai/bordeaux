@@ -37,12 +37,16 @@ Preconditions:
 - **Complete.** Run `$V bdx --as 2:bea -- tasks complete <fix> "fixed in a1b2c3"`. Exit 0.
 - **What it unblocked.** Run `$V bdx -- tasks work --state all`. `<fix>` is `completed` with its
   result, `<review>` is `ready`.
-- **Claim the next ready one.** Run `$V bdx -- tasks claim --ready work/ --json`. Exit 0, the task
-  is `<review>`.
+- **Ready claims take your own tasks.** Run `$V bdx --as 2:bea -- tasks claim --ready work --json`.
+  Exit 1, `nothing_ready`: `<review>` is ready, but it's ada's.
+- **Claim another owner's.** Run
+  `$V bdx --as 2:bea -- tasks claim --ready work --from bordeaux:user:1 --json`. Exit 0, the task is
+  `<review>`.
 
 ## Gotchas
 
-- `tasks claim --ready work` (no slash) answered `nothing_ready` while a task in `work` was ready;
-  `--ready work/` claimed it. Pass the channel with its trailing slash.
+- `--ready` claims only the caller's own tasks, and those of owners named by ID with `--from`, as
+  upstream's does. `nothing_ready` while a task is ready usually means someone else owns it.
+- `--ready work` is the channel `work` alone; `--ready work/` is every channel under it too.
 - `tasks work` lists open tasks only. Add `--state all` to see completed ones.
 - A claim is a lease. A recipe that pauses for minutes should `tasks renew` before it completes.
