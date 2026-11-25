@@ -55,7 +55,7 @@ export async function renewed(env: BordeauxEnv, session: Session, send: Fetch): 
   const org = env.BORDEAUX_GITHUB_ORG
   if (!org) return oauthError(500, 'server_error', 'this board has no GitHub org to check members against: set BORDEAUX_GITHUB_ORG')
   const membership = await membershipOf(env, org, session.login, send)
-  if (membership === 'unknown') return oauthError(401, 'invalid_grant', "this board can't check you're still in its org without its GitHub App: run bx login")
+  if (membership === 'unknown') return oauthError(401, 'invalid_grant', "this board can't check you're still in its org without its GitHub App: run bdx login")
   if (membership === null) return oauthError(403, 'access_denied', `${session.login} isn't a member of ${org} on GitHub any more`)
   return { ...next, owner: ownerOf(env, session.login, membership.role), checkedAt: Date.now() }
 }
@@ -103,7 +103,7 @@ export async function broker(request: Request, env: BordeauxEnv, send: Fetch = f
   if (body.grant_type === 'refresh_token') {
     if (!body.refresh_token) return oauthError(400, 'invalid_request', 'refresh_token is required')
     const session = await directory(env).takeSession(body.refresh_token)
-    if (!session) return oauthError(401, 'invalid_grant', 'that sign-in has ended: run bx login')
+    if (!session) return oauthError(401, 'invalid_grant', 'that sign-in has ended: run bdx login')
     const next = await renewed(env, session, send)
     return next instanceof Response ? next : issue(env, next, body.audience)
   }

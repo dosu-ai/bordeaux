@@ -61,7 +61,7 @@ export function about(item: unknown, id: number, externalKeys: ReadonlySet<strin
   return view.cursor === ref(id) || view.message?.id === ref(id) || view.payload?.id === id || view.payload?.id === ref(id)
 }
 
-/** What one redaction did (`bx redact`). */
+/** What one redaction did (`bdx redact`). */
 export type Redacted = {
   id: number
   /** Log events rewritten: the post and its edits, links, and label changes. */

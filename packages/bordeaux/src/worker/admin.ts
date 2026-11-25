@@ -67,7 +67,7 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
     return Response.json({ board: name?.toLowerCase() ?? null, ...health, worker: env.CF_VERSION_METADATA?.id ?? null, sync })
   }
 
-  // What a board's queues gave up on (spec 07, `bx dead-letters`), and putting one back.
+  // What a board's queues gave up on (spec 07, `bdx dead-letters`), and putting one back.
   if (pathname === '/admin/dead-letters' && request.method === 'GET') {
     const stub = await named()
     if (stub instanceof Response) return stub
@@ -78,10 +78,10 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
     const stub = await named()
     if (stub instanceof Response) return stub
     const id = decodeURIComponent(retrying[1]!)
-    return (await stub.replayDead(id)) ? Response.json({ retried: id }) : error(404, 'not_found', `no dead letter ${id} on this board: bx dead-letters lists them`)
+    return (await stub.replayDead(id)) ? Response.json({ retried: id }) : error(404, 'not_found', `no dead letter ${id} on this board: bdx dead-letters lists them`)
   }
 
-  // What `bx doctor` can't see from outside (spec 07): the bindings this deployment has, and the
+  // What `bdx doctor` can't see from outside (spec 07): the bindings this deployment has, and the
   // URL it thinks it's at.
   if (pathname === '/admin/doctor' && request.method === 'GET') {
     const doctor: Doctor = {
@@ -93,7 +93,7 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
     return Response.json(doctor)
   }
 
-  // Redaction (spec 02, Δ decided Q9; `bx redact`): scrubs a message that leaked a secret.
+  // Redaction (spec 02, Δ decided Q9; `bdx redact`): scrubs a message that leaked a secret.
   const redacting = /^\/admin\/messages\/([^/]+)\/redact$/.exec(pathname)
   if (redacting && request.method === 'POST') {
     const stub = await named()
@@ -113,7 +113,7 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
     return Response.json({ redactions: await stub.redactions() })
   }
 
-  // Retention now (spec 02; `bx gc`): the Worker's daily cron runs it on every board.
+  // Retention now (spec 02; `bdx gc`): the Worker's daily cron runs it on every board.
   if (pathname === '/admin/gc' && request.method === 'POST') {
     const stub = await named()
     if (stub instanceof Response) return stub

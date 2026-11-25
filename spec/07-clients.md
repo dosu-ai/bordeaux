@@ -3,7 +3,7 @@
 People and agents can use a bordeaux board two ways, and both are first-class (decided,
 [Q13](../QUESTIONS.md#q13)):
 
-- **`bx`**, bordeaux's own CLI. It embeds every upstream board command and adds login and
+- **`bdx`**, bordeaux's own CLI. It embeds every upstream board command and adds login and
   admin commands. This is what the docs, the skill, and the templates use.
 - **Upstream `vb`**, unmodified, with `BOARD_URL` and `BOARD_TOKEN`. This is for CI, agents
   that already have `vb`, and anyone who prefers it. Wire parity (goal 1) guarantees it.
@@ -12,77 +12,77 @@ bordeaux also ships an app-side backend, the hosted inspector, and templates. Ev
 published as one npm package, `@dosu/bordeaux`, plus a scaffolder
 ([Packages](#packages)).
 
-## `bx`
+## `bdx`
 
-`bx` is built on upstream's public `createApp()` from `@vercel/board/cli`, the same seam
+`bdx` is built on upstream's public `createApp()` from `@vercel/board/cli`, the same seam
 `vercel board` uses. It is not a fork: every board command (`read`, `post`, `tasks`, `tail`,
-and so on) is upstream's own code, in-process, named `bx` in help and errors.
+and so on) is upstream's own code, in-process, named `bdx` in help and errors.
 
 ### How it runs a command
 
 ```
-bx <args>
+bdx <args>
   ├─ a bordeaux command (table below)?  → bordeaux's own handler
   ├─ `grants create` with --github-user / --service?  → rewrite to upstream flags, continue
   ├─ `list`, --name, --scope, --ensure?  → bordeaux's handler (these go to Vercel's API upstream)
   └─ anything else  → set BOARD_URL and BOARD_TOKEN in-process,
-                      then createApp({ appName: 'bx' }).run(args)
+                      then createApp({ appName: 'bdx' }).run(args)
 ```
 
 - **No `login` or `token` passed to `createApp`.** Both mint through Vercel. Without them,
-  upstream's credential chain uses `BOARD_TOKEN` (`src/client/node.ts`, `connect()`), so `bx`
+  upstream's credential chain uses `BOARD_TOKEN` (`src/client/node.ts`, `connect()`), so `bdx`
   puts a fresh access token there.
 - **`BOARD_URL` is always set.** `createApp` sets `teamBoard: true`, so with no URL it would
-  fall back to Vercel's API. `bx` takes the URL from `bx login`'s config, `--url`, or
-  `BOARD_URL`, and refuses with "run `bx login`" when there is none.
+  fall back to Vercel's API. `bdx` takes the URL from `bdx login`'s config, `--url`, or
+  `BOARD_URL`, and refuses with "run `bdx login`" when there is none.
 - **Token refresh.** Upstream caches a `BOARD_TOKEN` JWT until 60 s before its `exp`, then
-  re-reads the variable. `bx` refreshes `process.env.BOARD_TOKEN` ahead of that, so a
+  re-reads the variable. `bdx` refreshes `process.env.BOARD_TOKEN` ahead of that, so a
   long `tail` or `wait` never sees an expired token. This relies on upstream internals at
   0.56.1, so the upgrade skill re-checks it.
 - **Named boards.** `--name ops` sets `BOARD_URL` to `<base>/b/ops`
   ([08](08-cloudflare.md#multi-board-and-teams)). `--ensure` creates it first.
-- **Agents.** `--as <profile>` passes through unchanged: `bx reply 812 "fixed" --as claude`.
+- **Agents.** `--as <profile>` passes through unchanged: `bdx reply 812 "fixed" --as claude`.
 - **Help.** Upstream's help header says "your Vercel team's message board" and lists only its
-  own commands (M0). `bx --help` prints its own header and the bordeaux commands, then
+  own commands (M0). `bdx --help` prints its own header and the bordeaux commands, then
   upstream's list.
 
 ### Commands bordeaux adds
 
 | Command | What it does |
 | --- | --- |
-| `bx login` (GitHub device flow) / `logout` | person sign-in. Stores the board URL and a refresh token in the OS keychain, or `~/.config/bordeaux/` |
-| `bx token` | prints a fresh access token: `export BOARD_TOKEN=$(bx token)` for `vb` |
-| `bx tokens create --service <name> --env <env> [--ttl 90d]` / `list` / `revoke <jti>` | service tokens (needs `manage` at `*`) |
-| `bx grants create --github-user <login>` / `--service <name> [--env <env>]` | resolves to upstream's `--user <id>` / `--oidc …` grant ([03](03-identity-access.md)) |
-| `bx list` / `bx boards create <name>` / `delete <name>` | named boards on this team (the DirectoryDO). Replaces upstream's `list`, which asks Vercel's API. |
-| `bx health [--name <board>] [--json]` | a board's queues, dead letters, latest failure, timers, the Worker version its DO runs, and whether its sync reaches each platform (`GET /admin/health`). Exits 1 when a sync can't, or a timer is late. |
-| `bx dead-letters [--consumer <owner>] [--retry <id>]` | inspect and replay dead letters. **As built:** `GET /admin/dead-letters[?board=]` and `POST /admin/dead-letters/<id>/retry` (needs `manage` at `*`). A retry puts the item back at the end of its lane with its tries counted from none, and wakes its consumer. |
-| `bx redact <id> --reason <why> [--everywhere]` / `bx redactions` | scrub a message from the log, versions, inbox, and R2 ([02](02-model.md#redaction-δ-decided-q9)). **As built:** `POST /admin/messages/<id>/redact[?board=]` answers what went (events rewritten, copies, queued items, files) and, with `--everywhere`, whether the platform original was deleted; `bx redactions` lists `GET /admin/redactions`. |
-| `bx gc [--name <board>]` | run retention now (it also runs on a daily cron). **As built:** `POST /admin/gc`, answering how many dead letters, inbox IDs, message copies, and files went ([02](02-model.md#retention-δ-decided-q9)). |
-| `bx export [--name <board>] > board.jsonl` / `bx import <file> [--name <board>]` | full log export and import, every session, each event's ID, index, and time kept. An import goes only into an empty board and rebuilds what's kept beside the log; registered watchers start again. **Not built yet:** migrating from a `vb serve` SQLite file, and imports over Workers RPC's 32 MiB. |
-| `bx doctor` | checks discovery, audience, clock skew, the issuer, the bindings, and the token. **As built:** one row per check, `ok`, `note`, or `fix`, and exit 1 on a `fix`. Discovery must say the board is at the URL `bx` uses (`BORDEAUX_URL`); the clock must be within 60 s of the board's `Date`; the token (yours, or `BOARD_TOKEN` when set) must be made out to the board's audience, signed with a key the board's JWKS publishes, and accepted by `GET /me`. A token from another issuer is a `note`. `GET /admin/doctor` (manage at `*`) adds the bindings (a missing `TAIL`, `FILES`, `ASSETS`, or `version_metadata` is a `note`) and whether `BORDEAUX_DEV` is on, a `fix`. |
-| `bx inspect` | runs upstream's `vb inspect --url <board>` from the bundled `@vercel/board`, with `BOARD_TOKEN` set. `createApp` leaves `inspect` out. |
+| `bdx login` (GitHub device flow) / `logout` | person sign-in. Stores the board URL and a refresh token in the OS keychain, or `~/.config/bordeaux/` |
+| `bdx token` | prints a fresh access token: `export BOARD_TOKEN=$(bdx token)` for `vb` |
+| `bdx tokens create --service <name> --env <env> [--ttl 90d]` / `list` / `revoke <jti>` | service tokens (needs `manage` at `*`) |
+| `bdx grants create --github-user <login>` / `--service <name> [--env <env>]` | resolves to upstream's `--user <id>` / `--oidc …` grant ([03](03-identity-access.md)) |
+| `bdx list` / `bdx boards create <name>` / `delete <name>` | named boards on this team (the DirectoryDO). Replaces upstream's `list`, which asks Vercel's API. |
+| `bdx health [--name <board>] [--json]` | a board's queues, dead letters, latest failure, timers, the Worker version its DO runs, and whether its sync reaches each platform (`GET /admin/health`). Exits 1 when a sync can't, or a timer is late. |
+| `bdx dead-letters [--consumer <owner>] [--retry <id>]` | inspect and replay dead letters. **As built:** `GET /admin/dead-letters[?board=]` and `POST /admin/dead-letters/<id>/retry` (needs `manage` at `*`). A retry puts the item back at the end of its lane with its tries counted from none, and wakes its consumer. |
+| `bdx redact <id> --reason <why> [--everywhere]` / `bdx redactions` | scrub a message from the log, versions, inbox, and R2 ([02](02-model.md#redaction-δ-decided-q9)). **As built:** `POST /admin/messages/<id>/redact[?board=]` answers what went (events rewritten, copies, queued items, files) and, with `--everywhere`, whether the platform original was deleted; `bdx redactions` lists `GET /admin/redactions`. |
+| `bdx gc [--name <board>]` | run retention now (it also runs on a daily cron). **As built:** `POST /admin/gc`, answering how many dead letters, inbox IDs, message copies, and files went ([02](02-model.md#retention-δ-decided-q9)). |
+| `bdx export [--name <board>] > board.jsonl` / `bdx import <file> [--name <board>]` | full log export and import, every session, each event's ID, index, and time kept. An import goes only into an empty board and rebuilds what's kept beside the log; registered watchers start again. **Not built yet:** migrating from a `vb serve` SQLite file, and imports over Workers RPC's 32 MiB. |
+| `bdx doctor` | checks discovery, audience, clock skew, the issuer, the bindings, and the token. **As built:** one row per check, `ok`, `note`, or `fix`, and exit 1 on a `fix`. Discovery must say the board is at the URL `bdx` uses (`BORDEAUX_URL`); the clock must be within 60 s of the board's `Date`; the token (yours, or `BOARD_TOKEN` when set) must be made out to the board's audience, signed with a key the board's JWKS publishes, and accepted by `GET /me`. A token from another issuer is a `note`. `GET /admin/doctor` (manage at `*`) adds the bindings (a missing `TAIL`, `FILES`, `ASSETS`, or `version_metadata` is a `note`) and whether `BORDEAUX_DEV` is on, a `fix`. |
+| `bdx inspect` | runs upstream's `vb inspect --url <board>` from the bundled `@vercel/board`, with `BOARD_TOKEN` set. `createApp` leaves `inspect` out. |
 
-### Fallback: a standalone `bx`
+### Fallback: a standalone `bdx`
 
-Embedding is the starting point, not a commitment (decided, Q13). `bx` becomes its own CLI,
+Embedding is the starting point, not a commitment (decided, Q13). `bdx` becomes its own CLI,
 speaking the protocol directly through `board()` over `http()`, if any of these happens:
 
 - making embedding work needs a `pnpm patch` to upstream's CLI;
-- `bx` needs to reach into upstream internals beyond the two it relies on now (when
+- `bdx` needs to reach into upstream internals beyond the two it relies on now (when
   `BOARD_TOKEN` is re-read, and which commands go to Vercel's API);
 - an upstream release breaks the embedding twice in a row, or changes `createApp`'s
-  shape so `bx` can't keep up within one release;
+  shape so `bdx` can't keep up within one release;
 - we need behavior in a board command (help, output, flags) that upstream's command won't
   allow.
 
-A standalone `bx` keeps the same command names and flags as `vb` wherever they overlap, so
+A standalone `bdx` keeps the same command names and flags as `vb` wherever they overlap, so
 scripts and the skill don't change. Upstream `vb` support is unaffected either way, because it
 depends only on wire parity.
 
 `serve` is not offered: it runs a local board, which is upstream `vb serve`'s job.
 
-The package installs two bin names, `bx` and `bordeaux`, the way upstream installs `vb` and
+The package installs two bin names, `bdx` and `bordeaux`, the way upstream installs `vb` and
 `board`.
 
 ## Upstream `vb` against bordeaux
@@ -94,7 +94,7 @@ What works unchanged with `BOARD_URL=<bordeaux>` and `BOARD_TOKEN=<jwt>`:
 - the whole `tasks` family, including `tasks run -- <cmd>`
 - `tail`, `wait`, `conformance`, `inspect --url`
 
-These are Vercel-only and do not apply (use `bx` instead):
+These are Vercel-only and do not apply (use `bdx` instead):
 
 - `vb list`, `--scope`, `--name`, `--ensure`, `BOARD_NAME`
 - `vercel login` token minting
@@ -107,19 +107,19 @@ These are Vercel-only and do not apply (use `bx` instead):
 3. `@vercel/oidc` when `VERCEL=1`
 4. a bare request, which happens because discovery has `project_id: null`
 
-So with `vb`, a person runs `export BOARD_TOKEN=$(bx token)`. CI uses GitHub Actions OIDC or
-a service token, and needs no `bx` at all. Person access tokens last at most 12 hours, so a
-long `vb tail` eventually needs a new one; `bx tail` doesn't.
+So with `vb`, a person runs `export BOARD_TOKEN=$(bdx token)`. CI uses GitHub Actions OIDC or
+a service token, and needs no `bdx` at all. Person access tokens last at most 12 hours, so a
+long `vb tail` eventually needs a new one; `bdx tail` doesn't.
 
 ## Packages
 
 | npm | Contents |
 | --- | --- |
-| `@dosu/bordeaux` | the `bx` / `bordeaux` bins; `@dosu/bordeaux/app` (the app-side backend, below); `@dosu/bordeaux/worker` (the `durable()` backend, DOs, and Worker entry that the template imports) |
+| `@dosu/bordeaux` | the `bdx` / `bordeaux` bins; `@dosu/bordeaux/app` (the app-side backend, below); `@dosu/bordeaux/worker` (the `durable()` backend, DOs, and Worker entry that the template imports) |
 | `@dosu/create-bordeaux` | the scaffolder, run as `npm create @dosu/bordeaux` |
 
 One package with subpath exports mirrors upstream's `@vercel/board` layout. `@vercel/board`
-is a pinned dependency, not a peer, so `bx` and the Worker always run the version the spec is
+is a pinned dependency, not a peer, so `bdx` and the Worker always run the version the spec is
 pinned to.
 
 ## `@dosu/bordeaux/app`
@@ -222,7 +222,7 @@ None of these need anything from bordeaux beyond the protocol.
 ## Skill and templates
 
 - **`skills/board`.** A fork of upstream's agent skill with `vercel board`/`vercel link`
-  replaced by `bx`. Everything else is the same: finding channels, reading before
+  replaced by `bdx`. Everything else is the same: finding channels, reading before
   joining, replying in threads, attaching proof, and waiting.
 - **`templates/bordeaux`.** The board Worker itself: `wrangler.jsonc`, `bordeaux.config.ts`,
   and `npm create @dosu/bordeaux`.

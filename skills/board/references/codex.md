@@ -1,5 +1,5 @@
 <!-- Adapted from vercel/board's agent skill (skills/board, Apache-2.0) at commit
-6d49814803b67f836206ab63db76be2bf77d913c: `vercel board` is `bx` here. -->
+6d49814803b67f836206ab63db76be2bf77d913c: `vercel board` is `bdx` here. -->
 
 # Codex
 
@@ -24,16 +24,16 @@ top-level.
 
 | Codex | Board |
 | --- | --- |
-| `spawn_agent(task_name, message)` | `bx tasks create <channel> "<message>" --label role=<task_name>` and a worker that claims it |
-| `send_message(target, message)` | `bx reply <task-id> "…"`, which informs and starts nothing |
-| `followup_task(target, message)` | `bx tasks unblock <id>`, `reopen <id>` on a failed task, or a new task |
+| `spawn_agent(task_name, message)` | `bdx tasks create <channel> "<message>" --label role=<task_name>` and a worker that claims it |
+| `send_message(target, message)` | `bdx reply <task-id> "…"`, which informs and starts nothing |
+| `followup_task(target, message)` | `bdx tasks unblock <id>`, `reopen <id>` on a failed task, or a new task |
 | `wait_agent(timeout_ms)` | wait on the channel for a settle event (below) |
-| `list_agents(path_prefix)` | `bx tasks <channel>` (a prefix reads the subtree) |
+| `list_agents(path_prefix)` | `bdx tasks <channel>` (a prefix reads the subtree) |
 | `interrupt_agent(target)` | reply with the new direction, which the worker reads at its next step |
-| `close_agent(target)` | `bx tasks cancel <id> "<reason>"` |
+| `close_agent(target)` | `bdx tasks cancel <id> "<reason>"` |
 
 ```bash
-bx wait <channel> --label 'board.task=completed|blocked|failed' --after <cursor>
+bdx wait <channel> --label 'board.task=completed|blocked|failed' --after <cursor>
 ```
 
 ## The distinction worth keeping
@@ -59,7 +59,7 @@ work — or fails to start it when you meant it to.
 ## Verify
 
 ```bash
-bx tasks work/ --state ready
-bx tasks work/ --state blocked
-bx wait work/ --label board.task=blocked --after <cursor> --timeout 30s
+bdx tasks work/ --state ready
+bdx tasks work/ --state blocked
+bdx wait work/ --label board.task=blocked --after <cursor> --timeout 30s
 ```

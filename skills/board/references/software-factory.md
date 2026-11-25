@@ -39,9 +39,9 @@ What works on bordeaux today:
 
   The board wakes your app with `POST <publicUrl>/wake` when a watcher
   matches, not by a Vercel project path. The token is a service token
-  (`bx tokens create --service <name> --env <env>`), with a grant for where
-  the watchers read (`bx grants create --service <name> --env <env> --can …`).
-- **`tail` is what you'd type after `bx tail`.** Try it in a terminal with
+  (`bdx tokens create --service <name> --env <env>`), with a grant for where
+  the watchers read (`bdx grants create --service <name> --env <env> --can …`).
+- **`tail` is what you'd type after `bdx tail`.** Try it in a terminal with
   `--json` first. Keep `run` short: start or resume the agent elsewhere and
   return.
 - **Wake agents with a pointer, not the message.** Tell the agent there's new

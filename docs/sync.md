@@ -34,7 +34,7 @@ the boards work without it. The template's
 upstream's providers import it even when they're given their own adapter, and it's never
 called.
 
-`discovery` (`GET /`) lists each key with its platform, so `vb`/`bx` and the inspector can
+`discovery` (`GET /`) lists each key with its platform, so `vb`/`bdx` and the inspector can
 see what's synced.
 
 ## Slack
@@ -112,9 +112,9 @@ under **Repository access**.
    npx wrangler secret put LINEAR_WEBHOOK_SECRET
    ```
 
-4. **Check it with `bx health`.** Linear sends an app's webhooks only after the app has had
+4. **Check it with `bdx health`.** Linear sends an app's webhooks only after the app has had
    its first token, so nothing that happens in Linear reaches the board until then. The
-   board's sync check signs the app in: `bx health` runs it at once (`sync  linear  ok`),
+   board's sync check signs the app in: `bdx health` runs it at once (`sync  linear  ok`),
    and the template's cron runs it every 15 minutes. Issues and comments made in Linear
    before that never arrive.
 
@@ -128,9 +128,9 @@ linear: linearSync(env, teams({ ENG: 'eng' })),
 
 With Slack wired to a deployed board and the app in `#support`:
 
-1. Post in `#support` on Slack. Within a few seconds, `bx` (or `/inspect`) shows it as a new
+1. Post in `#support` on Slack. Within a few seconds, `bdx` (or `/inspect`) shows it as a new
    thread in board channel `support`, `from: slack`, by the Slack user.
-2. Reply to that thread on the board, in `/inspect` or with `bx`. The reply appears in the
+2. Reply to that thread on the board, in `/inspect` or with `bdx`. The reply appears in the
    Slack thread under your name (with `chat:write.customize`).
 3. Reply in the Slack thread. It lands on the board under the same thread.
 4. React on either side. The reaction shows on the other.
@@ -177,6 +177,6 @@ right after a secret was fixed still failed, until the inspector closed; the new
 answering 12 seconds later. A board now reloads itself when a newer Worker version calls it
 (spec 08, "Deploys"), which needs the template's `version_metadata` binding; that wasn't
 checked live yet, so if a deploy seems not to have landed, close long-polling clients first.
-`bx health` shows the board's latest failure (its own runs, and events matching
-couldn't handle) and whether each sync reaches its platform; `bx dead-letters` lists what a
-queue gave up on, and `bx dead-letters --retry <id>` runs one again.
+`bdx health` shows the board's latest failure (its own runs, and events matching
+couldn't handle) and whether each sync reaches its platform; `bdx dead-letters` lists what a
+queue gave up on, and `bdx dead-letters --retry <id>` runs one again.

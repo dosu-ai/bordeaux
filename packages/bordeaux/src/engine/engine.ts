@@ -239,7 +239,7 @@ export function capRaw(raw: unknown): unknown {
   return { truncated: true, bytes: bytes.byteLength, json: new TextDecoder().decode(bytes.slice(0, RAW_MAX - 1024)) }
 }
 
-/** What one gc removed (`bx gc`). */
+/** What one gc removed (`bdx gc`). */
 export type Collected = { deadLetters: number; inboxIds: number; messageCopies: number; files: number }
 
 export class BoardEngine {
@@ -1868,7 +1868,7 @@ export class BoardEngine {
     return { attachment: found.attachment, data: await this.files.body(id) }
   }
 
-  // --- Export and import (spec 07, `bx export` / `bx import`) ---
+  // --- Export and import (spec 07, `bdx export` / `bdx import`) ---
 
   /** A page of the log, every session's, as JSON lines: an export reads them all. */
   exportPage(after: { session: string; index: number } | null, limit = 1000): { lines: string[]; next: { session: string; index: number } | null } {

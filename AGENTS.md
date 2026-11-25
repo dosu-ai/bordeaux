@@ -47,7 +47,7 @@ the earliest that works:
    `wrangler.jsonc` and in `vitest.config.ts`;
 3. a pure module copied byte for byte into `src/upstream/` by `pnpm vendor <checkout>`;
 4. re-hosting a prebuilt asset (the inspector's `app.js`, from Static Assets);
-5. our own code around upstream's (`bx`, `@dosu/bordeaux/app`, the hosted inspector);
+5. our own code around upstream's (`bdx`, `@dosu/bordeaux/app`, the hosted inspector);
 6. last, a `pnpm patch`, listed with its reason in `PATCHES.md`.
 
 - **`src/upstream/` is upstream's.** Never edit a vendored file by hand: add it to the
@@ -121,7 +121,7 @@ the board's API.
 
 ## cli design (`src/cli/`)
 
-`bx` embeds upstream's commands through `createApp()`, so it reads like `vb`: plain and
+`bdx` embeds upstream's commands through `createApp()`, so it reads like `vb`: plain and
 quiet, for a person at a terminal first, `--json` for programs. What bordeaux adds (`login`,
 `token`, `tokens`, `boards`, `export`/`import`) follows the same rules.
 
@@ -131,7 +131,7 @@ quiet, for a person at a terminal first, `--json` for programs. What bordeaux ad
   80 columns.
 - **Errors are data**, shaped like upstream's: what failed and why, then at most two ways
   out. `--json` is one document.
-- **Never print a secret.** A token goes where it's asked for (`bx token` prints the one
+- **Never print a secret.** A token goes where it's asked for (`bdx token` prints the one
   you asked for), never into a log line or an error.
 
 ## layering
@@ -169,7 +169,7 @@ Worker → upstream `board()` → `durable()` backend → the board's Durable Ob
   `board`, `access`, `schemas`, `schedules`, or `admin` (redactions). Tables and folds are
   built from it with upstream's code (`src/upstream/store/sql.ts`, `contract/folds.ts`);
   nothing else writes them, except retention pruning old `board_versions` copies and
-  redaction (spec 02). The log is append-only but for that one path: `bx redact` rewrites
+  redaction (spec 02). The log is append-only but for that one path: `bdx redact` rewrites
   what one message's events said. Bookkeeping people don't read (queues, timers, seen inbox
   IDs, failures) lives in `bx_*` side tables, never in the log.
 - **Writes are exclusive.** A check-then-append runs inside the engine's `exclusive()` lock,
@@ -194,8 +194,8 @@ taught:
   deployment without the `version_metadata` binding doesn't: close those clients, then
   check, before concluding a fix or a new secret didn't work.
 - **`wrangler tail` drops events**, whole webhooks and DO calls included: its silence proves
-  nothing. Record what you need where you can read it back, such as R2, `bx health` (queues,
-  the latest failure, sync), `bx dead-letters` (what the queues gave up on, `--retry <id>`),
+  nothing. Record what you need where you can read it back, such as R2, `bdx health` (queues,
+  the latest failure, sync), `bdx dead-letters` (what the queues gave up on, `--retry <id>`),
   or the DO's `ownFailures()` (its last 50 failures), and remove your own instrumentation
   afterwards.
 - **A secret check right after `wrangler secret put`** can still hit the old version. Wait a
