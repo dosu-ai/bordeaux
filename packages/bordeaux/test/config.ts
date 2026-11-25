@@ -10,6 +10,13 @@ export const platform = fakePlatform('chat')
 /** The deployment config the tests run with: a watcher that answers anything posted in `ops`, `support` synced with the platform's C1, and Slack from secrets. */
 export const testConfig = (env: BordeauxEnv): BordeauxConfig => ({
   watch: {
+    // Fails every time: what the board keeps of its own failed runs.
+    broken: {
+      tail: 'broken',
+      run: async () => {
+        throw new Error('the broken watcher broke')
+      },
+    },
     pager: {
       tail: 'ops',
       run: async ({ event, board }) => {

@@ -137,6 +137,13 @@ For v1, waiters stay in the DO. It is simple, and boards are team-sized. For **v
 15 minutes. Clients reconnect with `after` either way. Workers have no wall-clock limit while
 the client stays connected, and CPU time counts only active work, resetting on each request (confirmed in [M0](../spike/m0/REPORT.md)).
 
+
+**As built (M3, live).** A deploy doesn't reach a board's Durable Object while a long-poll or
+SSE request is open on it: the instance keeps its old code, and its old secrets, until it's
+idle. With the inspector open, a board ran the previous version for minutes after a deploy,
+and switched 12 s after the inspector closed. Since the inspector re-polls continuously, an
+open inspector can hold a board on old code indefinitely. Not yet handled: the fix is to end
+open waits when the Worker's version changes (M4).
 ## Wake-ups
 
 - **Coalescing.** On a new `watch.matched` for a registrant that has a `url` or `binding` and

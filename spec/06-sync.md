@@ -107,8 +107,12 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
   forever. Before this, a repeat was dropped only while the first was still queued, and a
   Slack reaction resent 200 ms later landed twice. `bx export` doesn't carry the table, so a
   board moved within a platform's retry window may take a resend again.
-- GitHub ran live too (issues, a PR, comments both ways, no echo of the App's own comment).
-  Linear hasn't.
+- GitHub and Linear ran live too: issues, a PR, comments both ways, a board root opening a
+  Linear issue, and no echo of either app's own writes.
+- **Gotcha (Linear).** Linear sends an app's webhooks only after the app's first token, so
+  a new deployment hears nothing from Linear until the board delivers something there.
+- **Own failures.** The board keeps its last 50 failed own runs (`BoardDO.ownFailures()`):
+  queue, item, attempt, error. A first step toward M4's dead letters.
 - Upstream's intake drops an event whose channel the routing doesn't map, without a log
   line. `slackSync(…, { debug: true })` logs the adapter's side.
 - **Gotcha.** A provider that can't reach its platform's API at startup can hold up the

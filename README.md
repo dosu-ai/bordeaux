@@ -31,8 +31,7 @@ attachments, schedules, tasks, watchers, and sync. People sign in with GitHub (`
 the web UI at `/inspect`), services with tokens (`bx tokens create`); a team has named boards
 (`bx list`), and a board moves with `bx export` / `bx import`. A deployment syncs Slack,
 GitHub, and Linear with its own apps' secrets ([docs/sync.md](docs/sync.md)): a live round
-trip passes with a real Slack workspace and a real GitHub repo. Linear is wired but not yet
-run live.
+trip passes with a real Slack workspace, a real GitHub repo, and a real Linear team.
 Nothing is published to npm yet.
 
 ## Make a board

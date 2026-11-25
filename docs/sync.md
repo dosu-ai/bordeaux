@@ -96,11 +96,12 @@ under **Repository access**.
 
 ## Linear
 
-1. Create a Linear app (**Settings → API → Applications**) with the `read`, `write`,
-   `comments:create`, and `issues:create` scopes, installed as the app (`actor=app`).
-2. Webhook: **Issues** and **Comments**, for the teams you map, at
-   `https://<board>/webhooks/linear`.
-3. Secrets: the app's client credentials, or a personal API key instead.
+1. Create a Linear app (**Settings → API → Applications → New**). Leave the redirect URIs
+   empty and turn on **Client credentials**: the board signs in as the app itself.
+2. Turn on **Webhooks**: URL `https://<board>/webhooks/linear`, events **Issues** and
+   **Comments**.
+3. Secrets: the app's client credentials (or a personal API key instead), and the webhook's
+   signing secret, all from the app's page.
 
    ```bash
    npx wrangler secret put LINEAR_CLIENT_ID
@@ -108,7 +109,14 @@ under **Repository access**.
    npx wrangler secret put LINEAR_WEBHOOK_SECRET
    ```
 
+4. **Make the board sign in once.** Linear sends an app's webhooks only after the app has had
+   its first token, so nothing that happens in Linear reaches the board until then. Post a
+   root on the board in a mapped channel: delivering it opens a Linear issue, which signs
+   the app in. Issues and comments made in Linear before that never arrive.
+
 ```ts
+// A team key mapped to a channel mirrors it: issues and comments both ways, and a board root
+// in that channel opens an issue.
 linear: linearSync(env, teams({ ENG: 'eng' })),
 ```
 
@@ -153,4 +161,15 @@ and a PR each became a board root (`Issue #1: …`, `PR #2: …`, labeled `issue
 `state=open`, and the PR's `head`), a board reply became a comment by the App, a GitHub
 comment came back into the board thread, and the App's own comment didn't echo back.
 
-Linear hasn't been run live.
+**Linear, the same day,** against a Bordeaux Test team (`BXT`) mapped to `linear-test`: a
+board root opened BXT-2, created by the app; a Linear comment on it came back into the board
+thread; and a board reply became a comment by the app, with the author's name first. Linear
+sent no webhooks at all until the app's first token (see Linear, step 4).
+
+**Deploys and open clients.** While a client holds a long-poll open on a board (the
+inspector's live feed, `vb tail`), the board's Durable Object keeps running the code and
+secrets it started with: a deploy reaches it only once it's idle. In this run, roots posted
+right after a secret was fixed still failed, until the inspector closed; the new code was
+answering 12 seconds later. Close long-polling clients to pick up a deploy or a new secret
+at once. `BoardDO.ownFailures()` lists the board's own failed runs (config watchers, its
+sync), newest first.

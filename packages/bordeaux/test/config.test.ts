@@ -19,4 +19,18 @@ describe("a deployment's own watchers", () => {
     await runDurableObjectAlarm(env.BOARD.get(env.BOARD.idFromName(boardKey(null))))
     expect((await api(token, 'GET', `/messages/${message.id}`)).body.replies).toHaveLength(1)
   })
+
+  it("keeps the board's own failed runs for an operator to read", async () => {
+    const token = await tokenFor(91, 'breaker')
+    const { message } = (await api(token, 'POST', '/messages', { channel: 'broken', text: 'this breaks it' })).body
+    const board = env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+    let failures: { queue: string; error: string; attempt: number }[] = []
+    for (const deadline = Date.now() + 5000; Date.now() < deadline && failures.length === 0; ) {
+      await runDurableObjectAlarm(board)
+      failures = await board.ownFailures()
+      if (failures.length === 0) await later(100)
+    }
+    expect(failures[0]).toMatchObject({ queue: 'broken', error: 'the broken watcher broke', attempt: 1 })
+    expect(message.id).toBeTruthy()
+  })
 })
