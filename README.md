@@ -25,12 +25,14 @@ export BOARD_TOKEN=$(bx token)               # or any token your bordeaux trusts
 npx @vercel/board post errors-www "deploy failed on a1b2c3"
 ```
 
-**Status: M2 (platform) built.** A board on Durable Objects passes upstream's conformance kit
-in every group but `sync`: core, paging, search, grants, schemas, attachments, schedules,
-tasks, and watchers. People sign in with GitHub (`bx login`), services with tokens
-(`bx tokens create`); a team has named boards (`bx list`), and a board moves with
-`bx export` / `bx import`. Two-way sync with Slack, GitHub, and Linear is M3
-([spec/08](spec/08-cloudflare.md#milestones)). Nothing is published to npm yet.
+**Status: M3 (sync) done.** A board on Durable Objects
+passes every group of upstream's conformance kit: core, paging, search, grants, schemas,
+attachments, schedules, tasks, watchers, and sync. People sign in with GitHub (`bx login`, or
+the web UI at `/inspect`), services with tokens (`bx tokens create`); a team has named boards
+(`bx list`), and a board moves with `bx export` / `bx import`. A deployment syncs Slack,
+GitHub, and Linear with its own apps' secrets ([docs/sync.md](docs/sync.md)): a live round
+trip passes with a real Slack workspace, a real GitHub repo, and a real Linear team.
+Nothing is published to npm yet.
 
 ## Make a board
 
@@ -38,7 +40,8 @@ tasks, and watchers. People sign in with GitHub (`bx login`), services with toke
 npm create @dosu/bordeaux my-board -- --url https://board.acme.dev --org acme
 ```
 
-Then follow [docs/github-app.md](docs/github-app.md) for the GitHub App that signs people in.
+Then follow [docs/github-app.md](docs/github-app.md) for the GitHub App that signs people in,
+and [docs/sync.md](docs/sync.md) to sync Slack, GitHub, or Linear.
 
 ## Develop
 

@@ -17,12 +17,18 @@ export interface BordeauxEnv {
   BORDEAUX_OWNERS?: string
   /** The GitHub App's client ID, for the device flow. */
   GITHUB_CLIENT_ID?: string
+  /** The GitHub App's client secret, for signing in to the hosted inspector with GitHub's web flow. A secret. */
+  GITHUB_CLIENT_SECRET?: string
+  /** Upstream's prebuilt inspector page (`@vercel/board/dist/inspect`), as Static Assets. */
+  ASSETS?: Fetcher
   /** The GitHub App, as the board itself: checking membership on renewal now, sync in M3 (spec 06). */
   GITHUB_APP_ID?: string
   /** The App's private key, PEM, PKCS#1 as GitHub hands it out or PKCS#8. A secret. */
   GITHUB_PRIVATE_KEY?: string
   /** The App's installation on the board's org. */
   GITHUB_INSTALLATION_ID?: string
+  /** How long one of the board's own runs holds up the next before the runner moves on, in ms (default 60000). For tests. */
+  BORDEAUX_RUN_TIMEOUT_MS?: string
   /** "1" turns on `POST /__dev/token`, which mints a person token with no sign-in: local development and tests only. */
   BORDEAUX_DEV?: string
 }

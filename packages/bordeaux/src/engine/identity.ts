@@ -14,6 +14,8 @@ export type WireIdentity = {
   request: boolean
   /** Set when a schedule's send posts. */
   schedule?: { id: number; n: number }
+  /** How the board's own code is writing, when it is: `engine` is board()'s own sync. */
+  via?: string
 }
 
 /** The board's own code, through its handle: `board:client`, or `board:client:<profile>` with `as(profile)`. */
@@ -65,10 +67,11 @@ export function toWire(caller: Caller): WireIdentity {
     actor,
     request: fromRequest(caller),
     ...(schedule && !fromRequest(caller) ? { schedule } : {}),
+    ...(caller.origin.via?.kind ? { via: caller.origin.via.kind } : {}),
   }
 }
 
-export function fromWire(wire: WireIdentity): Identity & { request: boolean; schedule?: { id: number; n: number } } {
+export function fromWire(wire: WireIdentity): Identity & { request: boolean; schedule?: { id: number; n: number }; via?: string } {
   const { can, ...principal } = wire.principal
   return {
     principal: { ...principal, access: compileAccess(can) },
@@ -76,5 +79,6 @@ export function fromWire(wire: WireIdentity): Identity & { request: boolean; sch
     actor: wire.actor,
     request: wire.request,
     ...(wire.schedule ? { schedule: wire.schedule } : {}),
+    ...(wire.via ? { via: wire.via } : {}),
   }
 }

@@ -32,8 +32,23 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
     team_id: null,
     // No Vercel project: clients send the token they have rather than mint one through Vercel.
     project_id: null,
-    sync: [],
+    sync: await syncEntries(),
   })
+
+  /**
+   * The sync entries discovery lists: this board's own sync's, then those of the syncs registered
+   * here that may still sync. A key its own sync has is its own (upstream `syncEntries`).
+   */
+  async function syncEntries(): Promise<Discovery['sync']> {
+    const found = new Map<string, { key: string; platform: string }>()
+    for (const { key, platform } of binding?.sync ?? []) found.set(key, { key, platform })
+    for (const { principal, sync } of await stub().registeredSync()) {
+      // Worked out again from its facts, as the board judges any principal it stored.
+      if (!(await binding?.accessNow(principal as Parameters<BoardBinding['accessNow']>[0]))?.anywhere('sync')) continue
+      for (const { key, platform } of sync) if (!found.has(key)) found.set(key, { key, platform })
+    }
+    return [...found.values()]
+  }
 
   const me = async (caller: Caller): Promise<Me> => {
     const { principal, author, actor } = identityOf(caller)

@@ -1,5 +1,6 @@
 // A bordeaux board: one team's boards on Cloudflare Workers and Durable Objects.
-// Secrets (set with `wrangler secret put`): GITHUB_APP_ID, GITHUB_PRIVATE_KEY, GITHUB_INSTALLATION_ID.
+// Secrets (set with `wrangler secret put`): GITHUB_APP_ID, GITHUB_PRIVATE_KEY, GITHUB_INSTALLATION_ID,
+// and GITHUB_CLIENT_SECRET for signing in to the hosted inspector at /inspect.
 {
   "name": "{{name}}",
   "main": "src/index.ts",
@@ -12,7 +13,12 @@
     ]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO"] }],
+  // Upstream's prebuilt inspector page, served at /inspect by the Worker (never straight from assets).
+  "assets": { "directory": "./node_modules/@vercel/board/dist/inspect", "binding": "ASSETS", "run_worker_first": true },
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "{{name}}-files" }],
+  // Upstream's Slack, GitHub, and Linear sync import Vercel Connect even when given their own
+  // adapter: bordeaux's stand-in is never called (spec 06, Q7).
+  "alias": { "@vercel/connect/chat": "@dosu/bordeaux/connect-chat" },
   "vars": {
     // The board's public URL: every token is made out to it, so it must be the one people use.
     "BORDEAUX_URL": "{{url}}",

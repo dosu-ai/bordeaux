@@ -8,7 +8,9 @@ import { putUpload, UPLOADS } from './uploads.ts'
 import { broker } from './broker.ts'
 import type { BordeauxEnv } from './env.ts'
 
+import { inspect } from './inspect.ts'
 export { BoardDO } from '../engine/do.ts'
+export { configure, type BordeauxConfig } from './config.ts'
 export { DirectoryDO } from './directory.ts'
 
 // Upstream's waitUntil looks up Vercel's request context: it gets the Worker's own (spec 08, M0).
@@ -53,9 +55,24 @@ export default {
           return Response.json({ error: { code: 'no_board', message: `this team has no board named ${name}: bx boards create ${name}` } }, { status: 404 })
         const rest = pathname.slice(`/b/${name}`.length)
         if (rest.startsWith(UPLOADS)) return putUpload(request, env, name.toLowerCase(), rest.slice(UPLOADS.length))
+        if (rest === '/inspect' || rest.startsWith('/inspect/')) {
+          const lower = name.toLowerCase()
+          // One path per board, as its sign-in cookies are: `/b/Ops/inspect` is `/b/ops/inspect`.
+          if (name !== lower) {
+            const url = new URL(request.url)
+            url.pathname = `/b/${lower}${rest}`
+            return Response.redirect(url.toString(), 301)
+          }
+          const board = boardOf(env, name)
+          return inspect(request, env, { name: lower, url: `${env.BORDEAUX_URL}/b/${lower}`, base: `/b/${lower}/inspect`, fetch: (asked) => board.fetch(asked) })
+        }
         return boardOf(env, name).fetch(request)
       }
       if (pathname.startsWith(UPLOADS)) return putUpload(request, env, null, pathname.slice(UPLOADS.length))
+      if (pathname === '/inspect' || pathname.startsWith('/inspect/')) {
+        const board = boardOf(env, null)
+        return inspect(request, env, { name: null, url: env.BORDEAUX_URL, base: '/inspect', fetch: (asked) => board.fetch(asked) })
+      }
       return boardOf(env, null).fetch(request)
     })
   },

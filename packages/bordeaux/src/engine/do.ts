@@ -11,13 +11,24 @@ import { indexOf } from '../upstream/server/feed.ts'
 import { bindingOf } from '../worker/backend.ts'
 import { boardOf } from '../worker/boards.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
+import type { DeadLetter, Failure } from './engine.ts'
+
+/** What a run that's still going when the runner moves on resolves to. */
+const SLOW = Symbol('slow')
 import type { BordeauxEnv } from '../worker/env.ts'
+
+/**
+ * How long one run of the board's own code (a watcher, a delivery, a platform event) holds up
+ * the next before the runner moves on. The run isn't stopped: it keeps its lease, and its
+ * outcome is recorded when it settles. `BORDEAUX_RUN_TIMEOUT_MS` changes it, for tests.
+ */
+const RUN_MS = 60_000
 
 export type WireError = { status: number; code: string; message: string; hint?: string }
 export type Envelope = { ok: true; value: unknown } | { ok: false; error: WireError }
 
 /** The methods this board answers itself; the rest answer 501 until their milestone. */
-const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule', 'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask', 'watchers', 'register', 'matches', 'ack'] as const
+const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule', 'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask', 'watchers', 'register', 'matches', 'ack', 'synced', 'linked', 'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox', 'typing', 'readSource', 'joinSource'] as const
 type Kept = (typeof KEPT)[number]
 const isKept = (method: string): method is Kept => (KEPT as readonly string[]).includes(method)
 
@@ -34,7 +45,16 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
 
   constructor(ctx: DurableObjectState, env: BordeauxEnv) {
     super(ctx, env)
-    this.engine = new BoardEngine(ctx.storage, { bucket: env.FILES ?? null, prefix: ctx.id.toString() })
+    this.engine = new BoardEngine(ctx.storage, {
+      bucket: env.FILES ?? null,
+      prefix: ctx.id.toString(),
+      // board() for this board, in this isolate: its own sync's entries, links, and typing.
+      binding: () => {
+        const name = this.boardName()
+        boardOf(this.env, name)
+        return bindingOf(name)
+      },
+    })
     // Nothing runs until the tables have what the log has.
     void ctx.blockConcurrencyWhile(() => this.engine.ready)
   }
@@ -51,6 +71,12 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     } catch (error) {
       return { ok: false, error: toWireError(error) }
     }
+  }
+
+  /** The syncs registered here, for the Worker's discovery to list. */
+  async registeredSync() {
+    await this.engine.ready
+    return this.engine.registeredSync()
   }
 
   /** Where the Worker streams a direct upload's bytes: the key in R2, and how many it may take. */
@@ -82,6 +108,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       try {
         if (timer.kind === 'lease.due') await this.engine.leaseDue(timer.payload, timer.name)
         else if (timer.kind === 'wake') await this.wake(timer.payload.owner)
+        else if (timer.kind === 'run') await this.runOwn()
         else await this.send(timer)
       } catch (error) {
         console.error(`[bordeaux] ${timer.name} failed:`, (error as Error).message)
@@ -89,6 +116,67 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       }
     }
     await this.engine.rearm()
+  }
+
+  /**
+   * Runs the board's own work that's due (spec 04 config watchers, spec 06 sync): each watcher's
+   * match and each sync delivery through board()'s `run`, and each platform event through its
+   * `receive`, one item per lane at a time. One that throws is tried again later.
+   */
+  private async runOwn() {
+    const name = this.boardName()
+    boardOf(this.env, name)
+    const binding = bindingOf(name)
+    if (!binding) return
+    const until = Date.now() + 10 * 60_000
+    const runMs = Number(this.env.BORDEAUX_RUN_TIMEOUT_MS) || RUN_MS
+    while (Date.now() < until) {
+      const items = await this.engine.leaseOwn(10)
+      if (items.length === 0) return
+      for (const item of items) {
+        const meta = { trigger: item.id, attempt: item.attempt + 1 }
+        const signal = AbortSignal.timeout(runMs)
+        const ran = (item.queue.startsWith('@inbox:')
+          ? binding.receive(item.queue.slice('@inbox:'.length), item.event as never, { id: item.id, attempt: item.attempt + 1, signal })
+          : binding.run(item.queue, item.event as never, meta)
+        ).then(
+          () => undefined,
+          (error: unknown) => error ?? new Error('failed'),
+        )
+        const outcome = await Promise.race([ran, new Promise<typeof SLOW>((resolve) => setTimeout(() => resolve(SLOW), runMs))])
+        if (outcome === SLOW) {
+          // Still running: it keeps its lease, so nothing runs it twice, and it's acked when it settles.
+          this.ctx.waitUntil(ran.then((error) => this.finish(item, error)))
+          continue
+        }
+        await this.finish(item, outcome)
+      }
+    }
+  }
+
+  /** Records how a run of the board's own code went: done, or an error it's tried again for. */
+  private async finish(item: { id: string; queue: string; lease: string; attempt: number }, error: unknown) {
+    if (error === undefined) return this.engine.ackOwn(item.id, item.lease)
+    this.engine.noteFailure(item.queue, item.id, item.attempt + 1, error)
+    await this.engine.ackOwn(item.id, item.lease, (((error as Error)?.message || String(error)) || 'failed').slice(0, 500))
+  }
+
+  /** The board's own runs, and matches, that failed lately, newest first, for an operator to read. */
+  async ownFailures(): Promise<Failure[]> {
+    await this.engine.ready
+    return this.engine.failures()
+  }
+
+  /** What the board's queues gave up on after their last try, newest first. */
+  async deadLetters(): Promise<DeadLetter[]> {
+    await this.engine.ready
+    return this.engine.deadLetters()
+  }
+
+  /** Puts a dead letter back on its queue: false when there's no such one. */
+  async replayDead(id: string): Promise<boolean> {
+    await this.engine.ready
+    return this.engine.replayDead(id)
   }
 
   /**

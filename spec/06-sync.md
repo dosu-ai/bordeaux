@@ -84,6 +84,48 @@ See [QUESTIONS Q7](../QUESTIONS.md#q7) and
 Both queues reuse the registered-watcher queue machinery (leases, acks, and per-thread order)
 from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registrant.
 
+**As built (M3).**
+- The pipelines run in the board's DO, not the Worker ([08](08-cloudflare.md#consumers-and-the-worker)).
+- The inbox is queue `@inbox:<key>` in `bx_queues`, not a table of its own. Raw payloads are
+  kept as upstream keeps them: the 256 KB cap and 30-day retention aren't built yet (M4).
+- Credentials: `@dosu/bordeaux/sync` builds each provider from Worker secrets (`slackSync`,
+  `githubSync`, `linearSync`). `configure()` takes `(env) => config`, so a deployment's sync
+  can read them. Setup: [docs/sync.md](../docs/sync.md).
+- Linear also takes `LINEAR_API_KEY` in place of the client credentials.
+- Tested end to end with Chat SDK's fake platform (`test/own-sync.test.ts`), and Slack's
+  webhook verification with a real `slackSync` provider. A live round trip with a real Slack
+  workspace passed on a deployed board (2026-11-25).
+- **Gotcha (live).** Upstream caps the Slack client it builds for a Connect connector (3
+  retries, 30 s per request) because the client's default, 10 retries over about 30 minutes
+  with no timeout, outlives any function. An adapter you pass yourself gets no such cap, so
+  `slackSync` sets the same one (`SLACK_CLIENT`). The live check's first two events, sent within two minutes of installing the app, never
+  landed in time; a stalled Slack call under the uncapped default would explain it, but it
+  wasn't caught in the act. Every later event (six of them, five before the cap) landed in
+  under 2 s, routed by `#name` or by ID.
+- **Inbox dedupe (Δ retention).** An inbox takes a platform event once by its derived ID,
+  remembered per inbox (the board's own, or each registrant's, as upstream keeps them) in
+  `bx_inbox_seen` for 30 days. Upstream keeps every ID in its inbox sessions
+  forever. Before this, a repeat was dropped only while the first was still queued, and a
+  Slack reaction resent 200 ms later landed twice. `bx export` doesn't carry the table, so a
+  board moved within a platform's retry window may take a resend again.
+- GitHub and Linear ran live too: issues, a PR, comments both ways, a board root opening a
+  Linear issue, and no echo of either app's own writes.
+- **Gotcha (Linear).** Linear sends an app's webhooks only after the app's first token, so
+  a new deployment hears nothing from Linear until the board delivers something there.
+- **Failures and dead letters.** The board keeps its last 50 failures (`BoardDO.ownFailures()`):
+  its own runs that threw, and events matching couldn't handle, which are passed so they
+  never hold up the rest. What a queue gives up on (10 tries for the board's own runs, 5 for
+  a registrant's, as upstream) is kept with its event in `bx_dead` (`deadLetters()`), and
+  `replayDead(id)` puts it back on its queue. A UI and `bx` commands for them are M4.
+- **Slow runs.** A run of the board's own code that outlasts a minute keeps its lease while
+  the runner moves on, and is acked when it settles: it's never run twice at once.
+- **A sync whose secrets aren't set is left out**, with an error in the logs; the boards
+  work without it.
+- Upstream's intake drops an event whose channel the routing doesn't map, without a log
+  line. `slackSync(…, { debug: true })` logs the adapter's side.
+- **Gotcha.** A provider that can't reach its platform's API at startup can hold up the
+  others in the same isolate, because board() starts every provider on the first webhook.
+
 ### Runtime compatibility
 
 - The sync code needs `node:async_hooks` and `node:crypto`. Both work under the `nodejs_compat`

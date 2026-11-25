@@ -10,7 +10,9 @@
   },
   "exports": {
     "./worker": "./src/worker/index.ts",
-    "./app": "./src/app/index.ts"
+    "./app": "./src/app/index.ts",
+    "./sync": "./src/sync/index.ts",
+    "./connect-chat": "./src/sync/connect-chat.ts"
   },
   "scripts": {
     "dev": "wrangler dev",
@@ -20,11 +22,16 @@
     "vendor": "node scripts/vendor-upstream.mjs"
   },
   "dependencies": {
+    "@chat-adapter/github": "^4.45.0",
+    "@chat-adapter/linear": "^4.45.0",
+    "@chat-adapter/slack": "^4.45.0",
     "@vercel/board": "0.56.1",
+    "chat": "^4.45.0",
     "jose": "^6.2.12",
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@chat-adapter/tests": "^4.45.0",
     "@cloudflare/vitest-pool-workers": "^0.23.0",
     "@cloudflare/workers-types": "^5.20261123.1",
     "@types/node": "^24",
