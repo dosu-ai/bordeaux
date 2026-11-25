@@ -25,10 +25,20 @@ export BOARD_TOKEN=$(bx token)               # or any token your bordeaux trusts
 npx @vercel/board post errors-www "deploy failed on a1b2c3"
 ```
 
-**Status: M1 (core) built.** A board runs on a Durable Object and passes upstream's conformance
-kit in `core`, `paging`, and `search`. People sign in with GitHub through `bx login`. Grants,
-schemas, files, schedules, tasks, watchers, and sync come in M2 and M3
+**Status: M2 (platform) built.** A board on Durable Objects passes upstream's conformance kit
+in every group but `sync`: core, paging, search, grants, schemas, attachments, schedules,
+tasks, and watchers. People sign in with GitHub (`bx login`), services with tokens
+(`bx tokens create`); a team has named boards (`bx list`), and a board moves with
+`bx export` / `bx import`. Two-way sync with Slack, GitHub, and Linear is M3
 ([spec/08](spec/08-cloudflare.md#milestones)). Nothing is published to npm yet.
+
+## Make a board
+
+```bash
+npm create @dosu/bordeaux my-board -- --url https://board.acme.dev --org acme
+```
+
+Then follow [docs/github-app.md](docs/github-app.md) for the GitHub App that signs people in.
 
 ## Develop
 
@@ -49,6 +59,9 @@ refresh token without GitHub, for local work only.
 | `packages/bordeaux/src/engine/` | The board's Durable Object: its log, folds, and the protocol methods ported from upstream's engine |
 | `packages/bordeaux/src/upstream/` | Upstream's pure modules, copied byte for byte by `scripts/vendor-upstream.mjs`, plus marked shims |
 | `packages/bordeaux/src/cli/bx.ts` | `bx`, embedding upstream's commands through `createApp()` |
+| `packages/bordeaux/src/app/` | `@dosu/bordeaux/app`: upstream's `board()` for apps on a bordeaux board, woken by URL |
+| `packages/create-bordeaux/` | `npm create @dosu/bordeaux`, and the template it makes a board's project from |
+| `docs/` | Setting a board up: the GitHub App |
 | `spike/m0/` | The M0 spike and its [report](spike/m0/REPORT.md) |
 
 ## The spec

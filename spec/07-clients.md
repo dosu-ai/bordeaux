@@ -123,6 +123,10 @@ pinned to.
 
 ## `@dosu/bordeaux/app`
 
+**As built (M2):** `bordeaux({ url, token, publicUrl, fetch?, waitUntil? })`. In a Worker, pass
+`waitUntil` from `cloudflare:workers` so a wake that runs longer than 2 s keeps going after it
+answers. Not built yet: wake by service binding (`binding`), and `sandboxPolicy()`.
+
 This is the app-side package. It does for apps on bordeaux what `vercel()` does for apps on
 Vercel's board.
 
