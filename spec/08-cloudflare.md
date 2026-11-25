@@ -249,6 +249,33 @@ before. Not checked live yet.
 | Upstream drift | A nightly job runs the conformance kit from the newest `@vercel/board` against the latest preview. A failure opens an issue. |
 | Load | Before 1.0: post p99 at 10k and 100k messages, and 1/10/50 SSE tails. This mirrors upstream's benchmark table. |
 
+**Load, as measured (2026-11-25).** `pnpm load` (`scripts/load.mjs`) against a fresh local
+`wrangler dev` board (workerd and its SQLite) on one Apple M2 Max, with the client on the same
+machine. Every request goes through the Worker: auth, `board()`, RPC, and the DO. About 1 KB
+messages across 10 channels, a root in every five; 200 samples each.
+
+| Messages | Post p50 / p99 | Thread read p50 / p99 | Channel's threads p50 / p99 |
+| --- | --- | --- | --- |
+| 10,000 | 3.9 / 10.4 ms | 2.7 / 12.0 ms | 2.9 / 9.3 ms |
+| 100,000 | 3.6 / 12.3 ms | 2.8 / 17.7 ms | 3.0 / 19.0 ms |
+
+| SSE tails (10,000 messages) | Post p50 / p99 | p99 added |
+| --- | --- | --- |
+| 0 | 4.0 / 16.8 ms | |
+| 1 | 4.7 / 14.3 ms | none |
+| 10 | 11.7 / 32.0 ms | 15 ms |
+| 50 | 40.7 / 69.1 ms | 52 ms |
+
+- Message count doesn't move a post or a read: the tables index what they read, as upstream's
+  benchmark found for its own.
+- **50 tails add about 52 ms to a post's p99, past the 5 ms that triggers the TailDO.** Each
+  post wakes every tail's long-poll in the BoardDO, and each runs its feed read there.
+- The first run, before the fix, found that a busy feed ran the DO out of workerd's 10,000
+  active timers (`AbortSignal.timeout()` outlives its call) and every feed answered 500;
+  `test/feed-load.test.ts` covers it.
+- Not measured: a deployed board (Cloudflare's network, a DO on its own machine), tails on
+  other machines, 100k messages with tails, and append throughput.
+
 ## Milestones
 
 | | Scope | Exit criterion |
