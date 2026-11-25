@@ -325,7 +325,6 @@ async function doctor(args: string[]) {
     add('discovery', 'fix', `${board} doesn't answer: ${(error as Error).message}`)
   }
 
-  // The token: yours from bdx login, or BOARD_TOKEN as vb and CI use it.
   const given = process.env.BOARD_TOKEN
   const found = given ? { token: given } : await tokenOrWhy(board)
   if (!('token' in found)) add('token', 'fix', found.why)
