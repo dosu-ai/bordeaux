@@ -1963,26 +1963,64 @@ export class BoardEngine {
     })
   }
 
+  /**
+   * The feed (upstream a2.ts `events`, through feed.ts `pollFeed`/`lastFeed`). Δ The wait is
+   * the engine's, not `pollFeed`'s: `AbortSignal.timeout()` keeps its timer until it fires, even
+   * once the call has answered, and a board with many tails and steady posts piled up workerd's
+   * 10,000 active timeouts, failing every feed. Each read here is `pollFeed` with no wait; the
+   * engine waits for the next append with timers it clears when the call ends.
+   */
   async events(caller: Caller, query: In<'events'>): Promise<Out<'events'>> {
     const { principal, actor } = caller
     const after = query.after !== undefined ? cursorAt(query.after) : undefined
-    const feed = {
+    const feedFrom = (from: number | undefined) => ({
       session: this.session,
       reads: this.reads,
-      after,
+      after: from,
       filters: query,
       all: query.all ?? false,
       me: { id: actor.id, handle: actor.handle },
       // The feed folds who's who as it goes: its own copy.
       actors: structuredClone(this.views.actors),
       access: principal.access,
-    }
+    })
     // Δ A board about to reload answers its long-polls now, so their clients come back to the new version.
-    const hurried = this.hurried.signal.aborted
-    const waitMs = hurried ? 0 : (query.wait ?? 0) * 1000
-    const signal = hurried ? AbortSignal.timeout(30_000) : AbortSignal.any([AbortSignal.timeout(waitMs + 30_000), this.hurried.signal])
-    const { events, cursor } = query.last !== undefined ? await lastFeed(feed, query.last, signal) : await pollFeed(feed, waitMs, signal)
-    return { events, cursor: ref(cursor) }
+    const waitMs = this.hurried.signal.aborted ? 0 : (query.wait ?? 0) * 1000
+    const deadline = Date.now() + waitMs
+    const stop = new AbortController()
+    const hurry = () => stop.abort()
+    this.hurried.signal.addEventListener('abort', hurry, { once: true })
+    const guard = setTimeout(() => stop.abort(), waitMs + 30_000)
+    try {
+      if (query.last !== undefined) {
+        const { events, cursor } = await lastFeed(feedFrom(after), query.last, stop.signal)
+        return { events, cursor: ref(cursor) }
+      }
+      let page = await pollFeed(feedFrom(after), 0, stop.signal)
+      while (page.events.length === 0 && !stop.signal.aborted) {
+        // More of the log than one read takes, or an append since: read on without waiting.
+        if (this.log.head() <= page.cursor) {
+          const left = deadline - Date.now()
+          if (left <= 0) break
+          const woken = new AbortController()
+          const timer = setTimeout(() => woken.abort(), left)
+          const stopped = () => woken.abort()
+          stop.signal.addEventListener('abort', stopped, { once: true })
+          try {
+            await this.log.next(woken.signal)
+          } finally {
+            clearTimeout(timer)
+            stop.signal.removeEventListener('abort', stopped)
+          }
+          if (stop.signal.aborted || this.log.head() <= page.cursor) break
+        }
+        page = await pollFeed(feedFrom(page.cursor), 0, stop.signal)
+      }
+      return { events: page.events, cursor: ref(page.cursor) }
+    } finally {
+      clearTimeout(guard)
+      this.hurried.signal.removeEventListener('abort', hurry)
+    }
   }
 
   /** The IDs a write derives for itself, as upstream's do (exported for tasks and schedules in M2). */
