@@ -74,8 +74,36 @@ export function githubSync(env: Env, sync: Parameters<typeof github>[1], options
   const secrets = need(env, 'GitHub', 'GITHUB_APP_ID', 'GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID', 'GITHUB_WEBHOOK_SECRET')
   if (!secrets) return null
   const [appId, privateKey, installationId, webhookSecret] = secrets
-  const adapter = createGitHubAdapter({ appId: appId!, privateKey: toPkcs8(privateKey!), installationId: Number(installationId), webhookSecret: webhookSecret!, userName: options.userName })
-  return github({ adapter, ...(options.botUserId !== undefined ? { botUserId: options.botUserId } : {}) }, sync)
+  const botUserId = options.botUserId !== undefined ? { botUserId: options.botUserId } : {}
+  const adapter = createGitHubAdapter({ appId: appId!, privateKey: toPkcs8(privateKey!), installationId: Number(installationId), webhookSecret: webhookSecret!, userName: options.userName, ...botUserId })
+  viewerDetects(adapter)
+  return github({ adapter, ...botUserId }, sync)
+}
+
+/**
+ * Finds the App's bot user ID from GraphQL's `viewer`, as upstream does for a connector's
+ * adapter (upstream sync-github `fromConnector`). Chat SDK asks REST's `GET /user` first, which
+ * refuses an installation token with a 403 on every new client, then falls back to two more
+ * calls. `viewer` answers with the App's bot user for the same token, in one call.
+ */
+function viewerDetects(adapter: ReturnType<typeof createGitHubAdapter>) {
+  type Detecting = {
+    _botUserId: number | null
+    logger?: { info(message: string, data?: unknown): void; warn(message: string, data?: unknown): void }
+    detectBotUserId(octokit: { graphql?: (query: string) => Promise<unknown> }): Promise<void>
+  }
+  const detecting = adapter as unknown as Detecting
+  detecting.detectBotUserId = async (octokit) => {
+    if (detecting._botUserId !== null || !octokit.graphql) return
+    try {
+      const { viewer } = (await octokit.graphql('query { viewer { databaseId login } }')) as { viewer?: { databaseId?: number; login?: string } }
+      if (typeof viewer?.databaseId !== 'number') return
+      detecting._botUserId = viewer.databaseId
+      detecting.logger?.info('GitHub bot user ID detected from the GraphQL viewer', { botUserId: viewer.databaseId, login: viewer.login })
+    } catch (error) {
+      detecting.logger?.warn('Could not detect the GitHub bot user ID', { error })
+    }
+  }
 }
 
 /**

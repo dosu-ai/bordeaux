@@ -86,8 +86,9 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
 
 **As built (M3).**
 - The pipelines run in the board's DO, not the Worker ([08](08-cloudflare.md#consumers-and-the-worker)).
-- The inbox is queue `@inbox:<key>` in `bx_queues`, not a table of its own. Raw payloads are
-  kept as upstream keeps them: the 256 KB cap and 30-day retention aren't built yet (M4).
+- The inbox is queue `@inbox:<key>` in `bx_queues`, not a table of its own. A raw payload is
+  kept with its item until it's handled; one over 256 KB of JSON is cut short as it's pushed,
+  and a dead letter's goes after 30 days (spec 02, "Retention").
 - Credentials: `@dosu/bordeaux/sync` builds each provider from Worker secrets (`slackSync`,
   `githubSync`, `linearSync`). `configure()` takes `(env) => config`, so a deployment's sync
   can read them. Setup: [docs/sync.md](../docs/sync.md).
@@ -111,12 +112,15 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
 - GitHub and Linear ran live too: issues, a PR, comments both ways, a board root opening a
   Linear issue, and no echo of either app's own writes.
 - **Gotcha (Linear).** Linear sends an app's webhooks only after the app's first token, so
-  a new deployment hears nothing from Linear until the board delivers something there.
+  a new deployment hears nothing from Linear until the app signs in. The sync check
+  (`bx health`, and the Worker's cron) readies each provider, which fetches that token. Not
+  checked live: the test app already had its first token when the check was built.
 - **Failures and dead letters.** The board keeps its last 50 failures (`BoardDO.ownFailures()`):
   its own runs that threw, and events matching couldn't handle, which are passed so they
   never hold up the rest. What a queue gives up on (10 tries for the board's own runs, 5 for
   a registrant's, as upstream) is kept with its event in `bx_dead` (`deadLetters()`), and
-  `replayDead(id)` puts it back on its queue. A UI and `bx` commands for them are M4.
+  `replayDead(id)` puts it back on its queue. `bx dead-letters` lists them and `--retry <id>`
+  replays one; `bx health` shows the count and the latest failure.
 - **Slow runs.** A run of the board's own code that outlasts a minute keeps its lease while
   the runner moves on, and is acked when it settles: it's never run twice at once.
 - **A sync whose secrets aren't set is left out**, with an error in the logs; the boards

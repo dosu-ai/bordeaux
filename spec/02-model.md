@@ -217,6 +217,20 @@ Messages and the board log itself are never pruned.
 | Per-change message copies (`board_versions`) | Copies older than 30 days are compacted to the latest copy per message, plus any copy a consumer that hasn't caught up still needs. | Replaying `/events` from a cursor more than 30 days old matches filters on each message's state *after* each event, not before. |
 | Attachment bytes of deleted messages (R2) | Deleted 30 days after the message is deleted (`bx gc`, which also runs on a daily cron) | `GET /attachments/:id` already answers 404 for these, so nothing changes. |
 
+**As built (M4).** `engine.gc()` runs from `bx gc` (`POST /admin/gc[?board=]`) and the
+Worker's daily cron (`0 4 * * *`, every board). It removes:
+- dead letters older than 30 days, which hold the raw payloads of what failed. A raw payload
+  waits in its queue only until it's handled, so there's no other copy to prune;
+- remembered inbox IDs older than 30 days (the dedupe table);
+- message copies from before the cutoff (the newest log index older than 30 days, or the
+  matching position if that's behind it), except each message's latest copy at the cutoff;
+- the bytes and record of a file whose messages were all deleted more than 30 days ago, of a
+  file no message ever used within 30 days of its upload, and of a direct upload whose URL ran
+  out before it finished. A file stored before upload times were kept counts from its first gc.
+
+Raw payloads are capped as they're pushed: one whose JSON is over 256 KB is kept as
+`{ truncated: true, bytes, json }`, its JSON cut short.
+
 ## Redaction (Δ, decided Q9)
 
 Deleting a message leaves a tombstone, but the original text stays in the log's
@@ -246,6 +260,49 @@ secret.
   exports.
 - This departs from upstream's "the log is immutable", on purpose, and only through this one
   admin path.
+
+**As built (M4).** `engine.redact()` (`src/engine/redact.ts`), from `POST /admin/messages/:id/redact[?board=]`
+(manage at `*` on the default board, as for every admin route) and `bx redact`. It differs from the steps above where
+upstream's contract or bordeaux's storage asks it to:
+- **Text becomes `[redacted]`, not empty.** Upstream's schema refuses an edit with empty text, and
+  its clients parse what the feed sends, so an empty edit would break an export's import and a
+  `vb tail` reading from before. A post reads the same, for one rule. Label values become empty,
+  links and attachments go, and the origin's `context` (platform text) becomes null.
+- **Queued items, not an inbox session.** bordeaux keeps a raw platform payload only while a
+  queue holds it, so step 4 drops the queued items and dead letters that say anything of the
+  message: an inbox's platform events about it (by its `board_external_messages` keys), and
+  watcher and sync matches about it. A match for its `message.deleted` stays: a sync needs it to
+  delete the board's copies.
+- **The platform copies.** Upstream's sync already deletes, on each platform, the copies the
+  board made when the message is deleted (step 1), so every redaction does. It never deletes the
+  original a platform sent, so `--everywhere` tries that one, through the board's own sync's
+  provider. A platform may refuse: a Slack app's bot token deletes only the app's own messages,
+  so a person's Slack message answers `cant_delete_message`, and `bx redact` exits 1 and says
+  to delete it there. A message a sync elsewhere imported (`importedBy`) is that sync's to
+  delete: the answer says so.
+- **Files.** Its attachments' bytes and records go at once, unless another message carries one.
+- **The TailDO forgets.** It keeps the newest events and board reads in memory for its readers
+  (spec 08), so the route has it drop them.
+- `GET /admin/redactions[?board=]` and `bx redactions` list them. An export carries session
+  `admin`; an import keeps the rewritten payloads but not their `redacted: true`, which upstream's
+  schema strips.
+- Not covered: a schedule's own text (session `schedules`) when a schedule posted it. Cancel the
+  schedule too.
+
+**Checked live (2026-11-25)** on the test deployment's default board, synced with
+`#bordeaux-test` in a real Slack workspace. A person posted a fake key in the channel; it came
+onto the board as #38, and a board reply with the same key (#39) went back to the Slack thread
+as the app.
+- `bx redact 39`: one event rewritten, two copies removed. Upstream's sync deleted the app's
+  copy from the Slack thread within 10 s.
+- `bx redact 38 --everywhere`: the board side went as for #39; Slack refused to delete the
+  person's message (`cant_delete_message`), and `bx` said so and exited 1. The person deletes
+  it in Slack.
+- Afterwards `/events?after=37&all=true`, from the board and through the TailDO (`wait=2`),
+  showed the posts as `[redacted]` and both deletions; the board's export held no trace of the
+  key; `bx redactions` listed both.
+- Not checked live: files, queued inbox items, and GitHub or Linear originals.
+
 
 ## Limits
 

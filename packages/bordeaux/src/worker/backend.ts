@@ -1,5 +1,6 @@
 // `durable()`: bordeaux's Backend for upstream's board(). Each protocol method runs in the board's
 // Durable Object; `discovery` and `me` need nothing the board keeps, so the Worker answers them.
+import { retried } from '../engine/reload.ts'
 import { HttpError, type Backend, type BoardBinding, type Caller, type Discovery, type Me } from '@vercel/board'
 import { identityOf, toWire } from '../engine/identity.ts'
 import type { Envelope } from '../engine/do.ts'
@@ -23,7 +24,11 @@ export const boardKey = (name: string | null) => `default/${(name ?? 'default').
 export function durable(env: BordeauxEnv, name: string | null = null): Backend {
   let binding: BoardBinding | null = null
   const url = name === null ? env.BORDEAUX_URL : `${env.BORDEAUX_URL}/b/${name.toLowerCase()}`
-  const stub = () => env.BOARD.get(env.BOARD.idFromName(boardKey(name)))
+  // A board's DO resets when a newer version calls it: what was queued there is sent again.
+  const board = retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(name))))
+  const stub = () => board
+  // Which code is calling: the board's DO reloads when this is newer than its own.
+  const version = env.CF_VERSION_METADATA ? { id: env.CF_VERSION_METADATA.id, timestamp: env.CF_VERSION_METADATA.timestamp } : undefined
 
   const discovery = async (): Promise<Discovery> => ({
     version: UPSTREAM_VERSION,
@@ -66,8 +71,20 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
     }
   }
 
+  // A wait on the feed goes to the board's TailDO, where every tail's wait is: the board's DO
+  // serves it one follower, not one feed per tail (spec 08). A page that doesn't wait stays here.
+  const tailStub = env.TAIL ? retried(() => env.TAIL!.get(env.TAIL!.idFromName(boardKey(name)))) : null
+  const tail = () => tailStub!
+  const events = async (caller: Caller, input: unknown) => {
+    const query = input as { wait?: number; last?: number }
+    if (!env.TAIL || !query.wait || query.wait <= 0 || query.last !== undefined) return remote('events')(caller, input)
+    const answer = (await tail().events(toWire(caller), input as never, name, version)) as Envelope
+    if (!answer.ok) throw new HttpError(answer.error.status, answer.error.code, answer.error.message, answer.error.hint !== undefined ? { hint: answer.error.hint } : {})
+    return answer.value
+  }
+
   const remote = (method: string) => async (caller: Caller, input: unknown) => {
-    const answer = (await stub().call(method, toWire(caller), input, name)) as Envelope
+    const answer = (await stub().call(method, toWire(caller), input, name, version)) as Envelope
     if (!answer.ok) throw new HttpError(answer.error.status, answer.error.code, answer.error.message, answer.error.hint !== undefined ? { hint: answer.error.hint } : {})
     return answer.value
   }
@@ -83,7 +100,7 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
     isOwner: async (principal) => principal.kind === 'person' && principal.id.startsWith('bordeaux:user:') && (await directory(env).isOwner(principal.id)),
   })
   const GRANT_METHODS = ['grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant'] as const
-  const local: Record<string, (caller: Caller, input: never) => Promise<unknown>> = { discovery, me }
+  const local: Record<string, (caller: Caller, input: never) => Promise<unknown>> = { discovery, me, events }
   for (const method of GRANT_METHODS) local[method] = (caller, input) => (trust[method] as (identity: unknown, input: unknown) => Promise<unknown>)(identityOf(caller), input)
 
   // A direct upload's URL is the board's own: the Worker takes its bytes (spec 08, "Files").

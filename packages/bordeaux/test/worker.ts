@@ -3,4 +3,4 @@ import { configure } from '../src/worker/index.ts'
 import { testConfig } from './config.ts'
 
 configure(testConfig)
-export { default, BoardDO, DirectoryDO } from '../src/worker/index.ts'
+export { default, BoardDO, DirectoryDO, TailDO } from '../src/worker/index.ts'

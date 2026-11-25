@@ -6,3 +6,7 @@ dist-sync/
 
 # A personal test deployment of this checkout (see docs/sync.md)
 packages/bordeaux/deploy/
+
+# Copied from the repo root when the package is packed (scripts/build.mjs)
+packages/bordeaux/LICENSE
+packages/bordeaux/NOTICE

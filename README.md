@@ -32,7 +32,10 @@ the web UI at `/inspect`), services with tokens (`bx tokens create`); a team has
 (`bx list`), and a board moves with `bx export` / `bx import`. A deployment syncs Slack,
 GitHub, and Linear with its own apps' secrets ([docs/sync.md](docs/sync.md)): a live round
 trip passes with a real Slack workspace, a real GitHub repo, and a real Linear team.
-Nothing is published to npm yet.
+M4 (1.0) is under way: `bx health` and `bx dead-letters` show what a board's queues hold
+and gave up on, `bx gc` (and a daily cron) applies retention, `bx redact` scrubs a message that
+leaked a secret, `bx doctor` checks a setup, and a deploy reaches a board a client is
+long-polling, checked live. Nothing is published to npm yet ([docs/release.md](docs/release.md)).
 
 ## Make a board
 
@@ -50,7 +53,8 @@ pnpm install
 cd packages/bordeaux
 pnpm dev                  # the board on http://127.0.0.1:8790, with BORDEAUX_DEV=1
 pnpm test                 # integration tests in workerd
-pnpm conformance          # upstream's kit: core, paging, and search must pass
+pnpm conformance          # upstream's kit (CI requires every group: --groups core,…,sync)
+pnpm load                 # latency at 10k and 100k messages, and with 1/10/50 SSE tails
 ```
 
 With `BORDEAUX_DEV=1`, `POST /__dev/token {"id": 1, "login": "ada"}` returns a token and a
@@ -64,7 +68,7 @@ refresh token without GitHub, for local work only.
 | `packages/bordeaux/src/cli/bx.ts` | `bx`, embedding upstream's commands through `createApp()` |
 | `packages/bordeaux/src/app/` | `@dosu/bordeaux/app`: upstream's `board()` for apps on a bordeaux board, woken by URL |
 | `packages/create-bordeaux/` | `npm create @dosu/bordeaux`, and the template it makes a board's project from |
-| `docs/` | Setting a board up: the GitHub App |
+| `docs/` | Setting a board up (the GitHub App, sync), and releasing |
 | `spike/m0/` | The M0 spike and its [report](spike/m0/REPORT.md) |
 
 ## The spec

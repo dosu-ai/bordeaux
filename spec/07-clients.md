@@ -55,11 +55,12 @@ bx <args>
 | `bx tokens create --service <name> --env <env> [--ttl 90d]` / `list` / `revoke <jti>` | service tokens (needs `manage` at `*`) |
 | `bx grants create --github-user <login>` / `--service <name> [--env <env>]` | resolves to upstream's `--user <id>` / `--oidc …` grant ([03](03-identity-access.md)) |
 | `bx list` / `bx boards create <name>` / `delete <name>` | named boards on this team (the DirectoryDO). Replaces upstream's `list`, which asks Vercel's API. |
-| `bx dead-letters [--consumer] [--retry <id>]` | inspect and replay dead letters |
-| `bx redact <id> --reason <why> [--everywhere]` | scrub a message from the log, versions, inbox, and R2 ([02](02-model.md#redaction-δ-decided-q9)) |
-| `bx gc` | run retention now (it also runs on a daily cron) |
+| `bx health [--name <board>] [--json]` | a board's queues, dead letters, latest failure, timers, the Worker version its DO runs, and whether its sync reaches each platform (`GET /admin/health`). Exits 1 when a sync can't, or a timer is late. |
+| `bx dead-letters [--consumer <owner>] [--retry <id>]` | inspect and replay dead letters. **As built:** `GET /admin/dead-letters[?board=]` and `POST /admin/dead-letters/<id>/retry` (needs `manage` at `*`). A retry puts the item back at the end of its lane with its tries counted from none, and wakes its consumer. |
+| `bx redact <id> --reason <why> [--everywhere]` / `bx redactions` | scrub a message from the log, versions, inbox, and R2 ([02](02-model.md#redaction-δ-decided-q9)). **As built:** `POST /admin/messages/<id>/redact[?board=]` answers what went (events rewritten, copies, queued items, files) and, with `--everywhere`, whether the platform original was deleted; `bx redactions` lists `GET /admin/redactions`. |
+| `bx gc [--name <board>]` | run retention now (it also runs on a daily cron). **As built:** `POST /admin/gc`, answering how many dead letters, inbox IDs, message copies, and files went ([02](02-model.md#retention-δ-decided-q9)). |
 | `bx export [--name <board>] > board.jsonl` / `bx import <file> [--name <board>]` | full log export and import, every session, each event's ID, index, and time kept. An import goes only into an empty board and rebuilds what's kept beside the log; registered watchers start again. **Not built yet:** migrating from a `vb serve` SQLite file, and imports over Workers RPC's 32 MiB. |
-| `bx doctor` | checks discovery, audience, clock skew, the issuer, the bindings, and the token |
+| `bx doctor` | checks discovery, audience, clock skew, the issuer, the bindings, and the token. **As built:** one row per check, `ok`, `note`, or `fix`, and exit 1 on a `fix`. Discovery must say the board is at the URL `bx` uses (`BORDEAUX_URL`); the clock must be within 60 s of the board's `Date`; the token (yours, or `BOARD_TOKEN` when set) must be made out to the board's audience, signed with a key the board's JWKS publishes, and accepted by `GET /me`. A token from another issuer is a `note`. `GET /admin/doctor` (manage at `*`) adds the bindings (a missing `TAIL`, `FILES`, `ASSETS`, or `version_metadata` is a `note`) and whether `BORDEAUX_DEV` is on, a `fix`. |
 | `bx inspect` | runs upstream's `vb inspect --url <board>` from the bundled `@vercel/board`, with `BOARD_TOKEN` set. `createApp` leaves `inspect` out. |
 
 ### Fallback: a standalone `bx`

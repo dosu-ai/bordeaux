@@ -1,0 +1,35 @@
+# Typecheck, tests, and upstream's conformance kit on every push and pull request (AGENTS.md, "run it").
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.6.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm test
+      # Every group must pass, sync included: a fresh `wrangler dev` board per run.
+      - run: pnpm --filter @dosu/bordeaux conformance --groups core,paging,search,schedules,tasks,grants,schemas,attachments,watchers,sync
+        env:
+          WRANGLER_SEND_METRICS: 'false'

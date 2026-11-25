@@ -7,13 +7,21 @@
   "durable_objects": {
     "bindings": [
       { "name": "BOARD", "class_name": "BoardDO" },
-      { "name": "DIRECTORY", "class_name": "DirectoryDO" }
+      { "name": "DIRECTORY", "class_name": "DirectoryDO" },
+      { "name": "TAIL", "class_name": "TailDO" }
     ]
   },
   // Upstream's prebuilt inspector page, served at /inspect by the Worker (never straight from assets).
   "assets": { "directory": "./node_modules/@vercel/board/dist/inspect", "binding": "ASSETS", "run_worker_first": true },
+  // This version's ID and upload time: a board's Durable Object reloads when a newer one calls it,
+  // so a deploy reaches a board a client keeps busy (spec 08, "Deploys").
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "bordeaux-files" }],
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO"] },
+    // Each board's SSE tails and feed long-polls (spec 08).
+    { "tag": "v2", "new_sqlite_classes": ["TailDO"] }
+  ],
   // Upstream's Slack, GitHub, and Linear sync import Vercel Connect even when given their own
   // adapter: bordeaux's stand-in is never called (spec 06, Q7).
   "alias": { "@vercel/connect/chat": "./src/sync/connect-chat.ts" },

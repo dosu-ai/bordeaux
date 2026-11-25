@@ -6,6 +6,19 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'n
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createApp } from '@vercel/board/cli'
+import type { Collected, DeadLetter, Health as BoardHealth } from '../engine/engine.ts'
+import type { Redacted, Redaction } from '../engine/redact.ts'
+import type { Doctor, Everywhere } from '../worker/admin.ts'
+import type { SyncHealth } from '../worker/health.ts'
+
+/** What `GET /admin/health` answers. */
+type Health = BoardHealth & {
+  board: string | null
+  /** The Worker version the board's Durable Object runs, and the one that answered. */
+  version: string | null
+  worker: string | null
+  sync: SyncHealth[]
+}
 
 /** A sign-in to a deployment, and the access tokens it got for each of the team's boards. */
 type Saved = { url: string; login: string; refresh_token: string; tokens?: Record<string, { access_token: string; expires_at: string }> }
@@ -100,18 +113,24 @@ function boardUrl(args: string[]): string | null {
  * another's), renewing the sign-in when the one kept is close to running out.
  */
 async function accessToken(url: string, force = false): Promise<string> {
+  const found = await tokenOrWhy(url, force)
+  return 'token' in found ? found.token : fail(found.why)
+}
+
+/** `accessToken`, saying why there's none instead of exiting: what `bx doctor` reports. */
+async function tokenOrWhy(url: string, force = false): Promise<{ token: string } | { why: string }> {
   const deployment = deploymentOf(url)
   const store = load()
   const saved = store.boards[deployment]
-  if (!saved) return fail(`you aren't signed in to ${deployment}: run bx login ${deployment}`)
+  if (!saved) return { why: `you aren't signed in to ${deployment}: run bx login ${deployment}` }
   const kept = saved.tokens?.[url]
-  if (!force && kept && Date.parse(kept.expires_at) - Date.now() > EARLY_MS) return kept.access_token
+  if (!force && kept && Date.parse(kept.expires_at) - Date.now() > EARLY_MS) return { token: kept.access_token }
   const renewed = await post(`${deployment}/auth/token`, { grant_type: 'refresh_token', refresh_token: saved.refresh_token, ...(url !== deployment ? { audience: url } : {}) })
-  if (renewed.status !== 200) return fail(String((renewed.json as { error_description?: string }).error_description ?? `your sign-in to ${deployment} has ended: run bx login ${deployment}`))
+  if (renewed.status !== 200) return { why: String((renewed.json as { error_description?: string }).error_description ?? `your sign-in to ${deployment} has ended: run bx login ${deployment}`) }
   const issued = renewed.json as { access_token: string; refresh_token: string; expires_at: string }
   store.boards[deployment] = { ...saved, refresh_token: issued.refresh_token, tokens: { ...saved.tokens, [url]: { access_token: issued.access_token, expires_at: issued.expires_at } } }
   save(store)
-  return issued.access_token
+  return { token: issued.access_token }
 }
 
 /** A request to the deployment's admin routes as you, with your default board's token (spec 07). */
@@ -180,6 +199,179 @@ async function exporting(url: string, args: string[]) {
   process.stderr.write(`imported ${json.events} events\n`)
 }
 
+/** `bx health [--name <board>] [--json]`: how a board stands, and whether its sync reaches each platform. */
+async function health(url: string, args: string[]) {
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const found = (await asYou(url, 'GET', `/admin/health${board ? `?board=${encodeURIComponent(board)}` : ''}`)) as unknown as Health
+  if (args.includes('--json')) return void process.stdout.write(`${JSON.stringify(found)}\n`)
+  const rows: [string, string][] = []
+  for (const queue of found.queues) rows.push(['queue', `${queue.owner}  ${queue.pending} pending, ${queue.leased} leased, ${queue.retrying} retrying`])
+  if (found.queues.length === 0) rows.push(['queue', 'nothing waiting'])
+  rows.push(['dead', found.dead.count === 0 ? 'none' : `${found.dead.count}, latest ${found.dead.latest} (bx dead-letters)`])
+  const failed = found.failures.latest
+  rows.push(['failed', failed ? `${failed.at}  ${failed.queue}  ${failed.error}` : 'nothing lately'])
+  rows.push(['timers', `${found.timers.count}${found.timers.next ? `, next ${found.timers.next}` : ''}${found.timers.late ? `, ${found.timers.late} late: the alarm isn't running them` : ''}`])
+  for (const sync of found.sync) rows.push(['sync', `${sync.key.padEnd(12)} ${sync.ok ? 'ok' : sync.error}`])
+  if (found.board === null && found.sync.length === 0) rows.push(['sync', 'none configured'])
+  if (found.version !== null) rows.push(['code', found.version === found.worker ? found.version : `${found.version} (the Worker that answered runs ${found.worker})`])
+  for (const [label, text] of rows) process.stdout.write(`${label.padEnd(7)} ${text}\n`)
+  if (found.sync.some((sync) => !sync.ok) || found.timers.late > 0) process.exitCode = 1
+}
+
+/** `bx dead-letters [--consumer <owner>] [--retry <id>] [--name <board>] [--json]`: what a board's queues gave up on. */
+async function deadLetters(url: string, args: string[]) {
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const query = board ? `?board=${encodeURIComponent(board)}` : ''
+  const retry = flag(args, '--retry')
+  if (retry !== undefined) {
+    await asYou(url, 'POST', `/admin/dead-letters/${encodeURIComponent(retry)}/retry${query}`)
+    process.stderr.write(`${retry} is back on its queue\n`)
+    return
+  }
+  const consumer = flag(args, '--consumer')
+  const { dead } = (await asYou(url, 'GET', `/admin/dead-letters${query}`)) as unknown as { dead: DeadLetter[] }
+  const found = consumer === undefined ? dead : dead.filter((letter) => letter.owner === consumer)
+  if (args.includes('--json')) return void process.stdout.write(`${JSON.stringify({ dead: found })}\n`)
+  if (found.length === 0) return void process.stderr.write('no dead letters\n')
+  for (const letter of found) process.stdout.write(`${letter.id}  ${letter.at}  ${letter.queue}  ${letter.owner}  ${letter.attempts} tries  ${letter.error}\n`)
+}
+
+/** `bx gc [--name <board>]`: runs a board's retention now (it also runs daily). */
+async function gc(url: string, args: string[]) {
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const { collected } = (await asYou(url, 'POST', `/admin/gc${board ? `?board=${encodeURIComponent(board)}` : ''}`)) as unknown as { collected: Collected }
+  if (args.includes('--json')) return void process.stdout.write(`${JSON.stringify(collected)}\n`)
+  const rows: [string, number][] = [['dead letters', collected.deadLetters], ['inbox ids', collected.inboxIds], ['message copies', collected.messageCopies], ['files', collected.files]]
+  for (const [label, count] of rows) process.stdout.write(`${label.padEnd(15)} ${count} removed\n`)
+}
+
+/** `bx redact <id> --reason <why> [--everywhere] [--name <board>] [--json]`: scrubs a message that leaked a secret. */
+async function redact(url: string, args: string[]) {
+  const usage = 'usage: bx redact <id> --reason <why> [--everywhere]'
+  const id = args[args.indexOf('redact') + 1]
+  if (id === undefined || id.startsWith('--')) fail(usage)
+  const reason = flag(args, '--reason') ?? fail(usage)
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const everywhere = args.includes('--everywhere')
+  const found = (await asYou(url, 'POST', `/admin/messages/${encodeURIComponent(id.replace(/^#/, ''))}/redact${board ? `?board=${encodeURIComponent(board)}` : ''}`, { reason, everywhere })) as unknown as { redacted: Redacted; everywhere?: Everywhere }
+  if (args.includes('--json')) return void process.stdout.write(`${JSON.stringify(found)}\n`)
+  const { redacted } = found
+  const rows: [string, string][] = [
+    ['events', `${redacted.events} rewritten`],
+    ['copies', `${redacted.copies} removed`],
+    ['queued', `${redacted.queued} removed`],
+    ['files', `${redacted.files} deleted`],
+  ]
+  if (found.everywhere) rows.push(['origin', found.everywhere.deleted ? `${found.everywhere.target} deleted` : `not deleted: ${found.everywhere.error}${found.everywhere.target ? `; delete ${found.everywhere.target} there yourself` : ''}`])
+  else if (redacted.origin) rows.push(['origin', `${redacted.origin.subthread ?? redacted.origin.thread} kept (--everywhere deletes it)`])
+  process.stderr.write(`#${redacted.id} redacted\n`)
+  for (const [label, text] of rows) process.stdout.write(`${label.padEnd(7)} ${text}\n`)
+  if (found.everywhere && !found.everywhere.deleted && redacted.origin) process.exitCode = 1
+}
+
+/** `bx redactions [--name <board>] [--json]`: every redaction on a board, oldest first. */
+async function redactions(url: string, args: string[]) {
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const { redactions } = (await asYou(url, 'GET', `/admin/redactions${board ? `?board=${encodeURIComponent(board)}` : ''}`)) as unknown as { redactions: Redaction[] }
+  if (args.includes('--json')) return void process.stdout.write(`${JSON.stringify({ redactions })}\n`)
+  if (redactions.length === 0) return void process.stderr.write('no redactions\n')
+  const width = Math.max(...redactions.map((one) => one.id.length)) + 1
+  for (const one of redactions) process.stdout.write(`${`#${one.id}`.padEnd(width)}  ${one.at}  ${one.by.actor}  ${one.reason}\n`)
+}
+
+/** One finding of `bx doctor`: `fix` is a problem, `note` something to know. */
+type Check = { check: string; status: 'ok' | 'note' | 'fix'; says: string }
+
+/** A JWT's header and claims, unverified: the board verifies; this only reads what it says. */
+function jwtParts(token: string): { header: { kid?: string }; claims: { iss?: string; aud?: string | string[]; exp?: number } } | null {
+  const [header, claims] = token.split('.')
+  try {
+    const decode = (part: string) => JSON.parse(Buffer.from(part, 'base64url').toString('utf8'))
+    return { header: decode(header!), claims: decode(claims!) }
+  } catch {
+    return null
+  }
+}
+
+/** How long until `at` (seconds since the epoch), as a person says it. */
+const until = (at: number) => {
+  const left = at - Date.now() / 1000
+  if (left <= 0) return 'expired'
+  return left >= 5400 ? `${Math.round(left / 3600)} h` : `${Math.max(1, Math.round(left / 60))} min`
+}
+
+/** `bx doctor [--name <board>] [--json]`: whether this board and your token work together, and why not. */
+async function doctor(args: string[]) {
+  const board = boardUrl(args) ?? fail('no board: run bx login <url>')
+  const deployment = deploymentOf(board)
+  const checks: Check[] = []
+  const add = (check: string, status: Check['status'], says: string) => checks.push({ check, status, says })
+
+  // Discovery: the board answers, and says it's at the URL you use (BORDEAUX_URL).
+  type Discovery = { url?: string; audience?: string; version?: string }
+  let discovery: Discovery | null = null
+  try {
+    const response = await fetch(`${board}/`, { headers: { accept: 'application/json' } })
+    discovery = response.ok ? ((await response.json().catch(() => null)) as Discovery | null) : null
+    if (!discovery?.audience) add('discovery', 'fix', `${board}/ answers ${response.status}, not a board: check the URL`)
+    else if (clean(discovery.url ?? '') !== board) add('discovery', 'fix', `the board says it's at ${discovery.url}: set BORDEAUX_URL to ${deployment}, the URL people use`)
+    else add('discovery', 'ok', `board ${discovery.version} at ${board}`)
+    const date = Date.parse(response.headers.get('date') ?? '')
+    if (!Number.isNaN(date)) {
+      const off = Math.round((Date.now() - date) / 1000)
+      add('clock', Math.abs(off) <= 60 ? 'ok' : 'fix', Math.abs(off) <= 60 ? `${Math.abs(off)} s from the board's` : `${Math.abs(off)} s ${off > 0 ? 'ahead of' : 'behind'} the board's: bx renews tokens by your clock, so set it`)
+    }
+  } catch (error) {
+    add('discovery', 'fix', `${board} doesn't answer: ${(error as Error).message}`)
+  }
+
+  // The token: yours from bx login, or BOARD_TOKEN as vb and CI use it.
+  const given = process.env.BOARD_TOKEN
+  const found = given ? { token: given } : await tokenOrWhy(board)
+  if (!('token' in found)) add('token', 'fix', found.why)
+  else {
+    const parts = jwtParts(found.token)
+    if (!parts) add('token', 'fix', `${given ? 'BOARD_TOKEN' : 'the kept token'} isn't a JWT${given ? ': unset it, or set a token from bx token' : ': run bx login again'}`)
+    else {
+      const { header, claims } = parts
+      const audiences = typeof claims.aud === 'string' ? [claims.aud] : (claims.aud ?? [])
+      if (discovery?.audience)
+        add('audience', audiences.includes(discovery.audience) ? 'ok' : 'fix', audiences.includes(discovery.audience) ? `made out to ${discovery.audience}` : `made out to ${audiences.join(', ') || 'no one'}, not ${discovery.audience}: a token is for one board${given ? '; unset BOARD_TOKEN or get one with bx token' : ''}`)
+      if (claims.iss !== deployment) add('issuer', 'note', `${claims.iss ?? 'no issuer'}: not this board's own, so a grant must name it`)
+      else {
+        const jwks = (await fetch(`${deployment}/.well-known/jwks.json`).then((response) => response.json()).catch(() => null)) as { keys?: { kid?: string }[] } | null
+        const known = jwks?.keys?.some((key) => key.kid === header.kid) ?? false
+        add('issuer', known ? 'ok' : 'fix', known ? `${claims.iss}, with a key it publishes` : `signed with key ${header.kid ?? '(none)'}, which ${deployment} doesn't publish now: ${given ? 'get a new token' : 'run bx login again'}`)
+      }
+      const me = await fetch(`${board}/me`, { headers: { authorization: `Bearer ${found.token}` } })
+      const said = (await me.json().catch(() => ({}))) as { handle?: string; error?: { message?: string } }
+      add('token', me.ok ? 'ok' : 'fix', me.ok ? `${said.handle}${claims.exp ? `, expires in ${until(claims.exp)}` : ''}` : `the board refuses it (${me.status}): ${said.error?.message ?? 'no reason given'}`)
+
+      // What only the Worker knows, for someone who manages it.
+      const deploymentToken = board === deployment || given ? found.token : (await tokenOrWhy(deployment).then((one) => ('token' in one ? one.token : null)))
+      const asked = deploymentToken ? await fetch(`${deployment}/admin/doctor`, { headers: { authorization: `Bearer ${deploymentToken}` } }) : null
+      if (asked?.ok) {
+        const known = (await asked.json()) as Doctor
+        if (known.dev) add('dev', 'fix', 'POST /__dev/token mints tokens with no sign-in: remove BORDEAUX_DEV from this deployment')
+        const missing: [boolean, string][] = [
+          [known.bindings.tail, 'TAIL: long-polls and SSE tails wait in the board\'s own DO'],
+          [known.bindings.versionMetadata, 'version_metadata: a deploy waits for a busy board to go idle'],
+          [known.bindings.files, 'FILES: attachments are refused'],
+          [known.bindings.assets, 'ASSETS: there\'s no inspector at /inspect'],
+        ]
+        const absent = missing.filter(([present]) => !present)
+        if (absent.length === 0) add('bindings', 'ok', 'BOARD, DIRECTORY, TAIL, FILES, ASSETS, version_metadata')
+        for (const [, says] of absent) add('bindings', 'note', `no ${says}`)
+      } else if (asked?.status === 403) add('bindings', 'note', "only someone who manages every channel can see them")
+      else if (asked?.status === 404) add('bindings', 'note', "this deployment doesn't answer /admin/doctor: it's older than this bx")
+    }
+  }
+
+  if (args.includes('--json')) process.stdout.write(`${JSON.stringify({ board, checks })}\n`)
+  else for (const { check, status, says } of checks) process.stdout.write(`${check.padEnd(10)} ${status.padEnd(5)} ${says}\n`)
+  if (checks.some((check) => check.status === 'fix')) process.exitCode = 1
+}
+
 /** `bx tokens create|list|revoke`: service tokens (spec 03), for someone who manages every channel. */
 async function tokens(url: string, args: string[]) {
   const [, action, ...rest] = args.slice(args.indexOf('tokens'))
@@ -239,6 +431,12 @@ bordeaux:
   export > board.jsonl                a board's whole log (--name <board> for a named one)
   import <file>                       an export, into a board that has nothing yet
   token                               print a fresh access token (export BOARD_TOKEN=$(bx token))
+  health                              a board's queues, dead letters, and sync [--json]
+  dead-letters [--retry <id>]         what its queues gave up on [--consumer <owner>], or retry one
+  gc                                  run a board's retention now (it also runs daily)
+  redact <id> --reason <why>          scrub a message that leaked a secret [--everywhere]
+  doctor                              check the board's URL, your clock, and your token
+  redactions                          what's been redacted, and why
   tokens create --service <name>      a service's token, up to 90 days [--env <env>] [--ttl 30d]
   tokens list | revoke <id>           the service tokens, and revoking one
   grants create --service <name>      let a service's tokens in [--env <env>], or
@@ -287,6 +485,12 @@ async function main(argv: string[]) {
   if (argv.includes('--scope')) fail('--scope names a Vercel team: a bordeaux deployment is one team')
   if (word === 'list' || word === 'boards') return boards(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'export' || word === 'import') return exporting(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'dead-letters') return deadLetters(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'doctor') return doctor(argv)
+  if (word === 'redact') return redact(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'redactions') return redactions(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'gc') return gc(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'health') return health(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'tokens') return tokens(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
 
   const app = createApp({ appName: 'bx' })
@@ -313,5 +517,11 @@ async function main(argv: string[]) {
   const args = word === 'grants' && (argv.includes('--service') || argv.includes('--github-user')) ? await grantArgs(url, argv) : argv
   process.exitCode = await app.run(args)
 }
+
+// A reader that stops early (`bx --help | head`) ends the run, not with a stack trace.
+process.stdout.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EPIPE') process.exit(0)
+  throw error
+})
 
 await main(process.argv.slice(2))

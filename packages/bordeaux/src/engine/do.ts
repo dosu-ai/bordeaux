@@ -11,11 +11,15 @@ import { indexOf } from '../upstream/server/feed.ts'
 import { bindingOf } from '../worker/backend.ts'
 import { boardOf } from '../worker/boards.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
-import type { DeadLetter, Failure } from './engine.ts'
+import type { Collected, DeadLetter, Failure, Health } from './engine.ts'
+import type { Redaction } from './redact.ts'
+import type { Author } from '../upstream/contract/schemas.ts'
 
 /** What a run that's still going when the runner moves on resolves to. */
 const SLOW = Symbol('slow')
 import type { BordeauxEnv } from '../worker/env.ts'
+import { Reloader, type CallerVersion } from './reload.ts'
+export type { CallerVersion } from './reload.ts'
 
 /**
  * How long one run of the board's own code (a watcher, a delivery, a platform event) holds up
@@ -42,6 +46,8 @@ export function toWireError(error: unknown): WireError {
 
 export class BoardDO extends DurableObject<BordeauxEnv> {
   private readonly engine: BoardEngine
+  /** Resets this instance once a newer Worker version calls it and it's idle (spec 08, "Deploys"). */
+  private readonly reloader: Reloader
 
   constructor(ctx: DurableObjectState, env: BordeauxEnv) {
     super(ctx, env)
@@ -55,37 +61,46 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
         return bindingOf(name)
       },
     })
+    this.reloader = new Reloader(ctx, () => this.env.CF_VERSION_METADATA, () => this.engine.hurry())
     // Nothing runs until the tables have what the log has.
     void ctx.blockConcurrencyWhile(() => this.engine.ready)
   }
 
   /** The grants and the access session's head, for board()'s policy and the Worker's grant writes. */
   async accessState() {
-    await this.engine.ready
-    return this.engine.accessState()
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.accessState()
+    })
   }
 
   async appendAccess(ifIndex: number, events: { type: string; payload: unknown }[]): Promise<Envelope> {
-    try {
-      return { ok: true, value: await this.engine.appendAccess(ifIndex, events) }
-    } catch (error) {
-      return { ok: false, error: toWireError(error) }
-    }
+    return this.reloader.spell(async () => {
+      try {
+        return { ok: true, value: await this.engine.appendAccess(ifIndex, events) }
+      } catch (error) {
+        return { ok: false, error: toWireError(error) }
+      }
+    })
   }
 
   /** The syncs registered here, for the Worker's discovery to list. */
   async registeredSync() {
-    await this.engine.ready
-    return this.engine.registeredSync()
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.registeredSync()
+    })
   }
 
   /** Where the Worker streams a direct upload's bytes: the key in R2, and how many it may take. */
   async uploadTarget(id: string, secret: string): Promise<Envelope> {
-    try {
-      return { ok: true, value: await this.engine.uploadTarget(id, secret) }
-    } catch (error) {
-      return { ok: false, error: toWireError(error) }
-    }
+    return this.reloader.spell(async () => {
+      try {
+        return { ok: true, value: await this.engine.uploadTarget(id, secret) }
+      } catch (error) {
+        return { ok: false, error: toWireError(error) }
+      }
+    })
   }
 
   /** The board this DO is, as the Worker names it (null for the default board): what its alarm sends through. */
@@ -103,6 +118,10 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
 
   /** Runs every timer that's due: a schedule's send (spec 05). A send that fails is tried again later. */
   async alarm() {
+    return this.reloader.spell(() => this.alarmed())
+  }
+
+  private async alarmed() {
     await this.engine.ready
     for (const timer of this.engine.takeDue(Date.now())) {
       try {
@@ -163,20 +182,102 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
 
   /** The board's own runs, and matches, that failed lately, newest first, for an operator to read. */
   async ownFailures(): Promise<Failure[]> {
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.failures()
+    })
+  }
+
+  // --- What the board's TailDO follows: a reload hurries `tailFollow`, so it never waits long on one. ---
+
+  /** The log's head and who's who as of it: where a TailDO starts. */
+  async tailStart() {
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.tailStart()
+    })
+  }
+
+  /**
+   * The board's events after `after`, or the first within `waitMs`: a TailDO's one long-poll. It
+   * says which version the board runs, so a TailDO on older code reloads too.
+   */
+  async tailFollow(after: number, waitMs: number) {
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      const events = await this.engine.follow(after, waitMs)
+      const own = this.env.CF_VERSION_METADATA
+      return { events, version: own ? { id: own.id, timestamp: own.timestamp } : undefined }
+    })
+  }
+
+  /** The board's events in [gte, lte], 500 at most. */
+  async tailHistory(gte: number, lte: number) {
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.history(gte, lte)
+    })
+  }
+
+  /** Messages as they were at `index`. */
+  async tailMessagesAt(ids: number[], index: number) {
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.messagesAt(ids, index)
+    })
+  }
+
+  /**
+   * The board's bookkeeping at a glance: queues, dead letters, the latest failure, timers, and
+   * the Worker version this instance runs. It carries no caller version, so it never reloads it.
+   */
+  async health(): Promise<Health & { version: string | null }> {
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return { ...this.engine.health(), version: this.env.CF_VERSION_METADATA?.id ?? null }
+    })
+  }
+
+  /** Runs retention now (`bx gc`, and the Worker's daily cron). */
+  async gc(): Promise<Collected> {
     await this.engine.ready
-    return this.engine.failures()
+    return this.reloader.spell(() => this.engine.gc())
   }
 
   /** What the board's queues gave up on after their last try, newest first. */
   async deadLetters(): Promise<DeadLetter[]> {
-    await this.engine.ready
-    return this.engine.deadLetters()
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.deadLetters()
+    })
+  }
+
+  /** Scrubs a message out of the board (spec 02, "Redaction"; `bx redact`). */
+  async redact(by: Author, id: string, reason: string): Promise<Envelope> {
+    return this.reloader.spell(async () => {
+      try {
+        await this.engine.ready
+        return { ok: true, value: await this.engine.redact(by, id, reason) }
+      } catch (error) {
+        return { ok: false, error: toWireError(error) }
+      }
+    })
+  }
+
+  /** Every redaction on this board, oldest first. */
+  async redactions(): Promise<Redaction[]> {
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.redactions()
+    })
   }
 
   /** Puts a dead letter back on its queue: false when there's no such one. */
   async replayDead(id: string): Promise<boolean> {
-    await this.engine.ready
-    return this.engine.replayDead(id)
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.replayDead(id)
+    })
   }
 
   /**
@@ -229,20 +330,29 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
 
   /** The board's whole log as JSON lines, a page at a time (`bx export`). */
   async exportPage(after: { session: string; index: number } | null) {
-    await this.engine.ready
-    return this.engine.exportPage(after)
+    return this.reloader.spell(async () => {
+      await this.engine.ready
+      return this.engine.exportPage(after)
+    })
   }
 
   /** An export, into this board while it's empty (`bx import`). */
   async importLines(lines: string[]): Promise<Envelope> {
-    try {
-      return { ok: true, value: await this.engine.importLines(lines) }
-    } catch (error) {
-      return { ok: false, error: toWireError(error) }
-    }
+    return this.reloader.spell(async () => {
+      try {
+        return { ok: true, value: await this.engine.importLines(lines) }
+      } catch (error) {
+        return { ok: false, error: toWireError(error) }
+      }
+    })
   }
 
-  async call(method: string, wire: WireIdentity, input: unknown, board?: string | null): Promise<Envelope> {
+  async call(method: string, wire: WireIdentity, input: unknown, board?: string | null, version?: CallerVersion): Promise<Envelope> {
+    this.reloader.newer(version)
+    return this.reloader.spell(() => this.answer(method, wire, input, board))
+  }
+
+  private async answer(method: string, wire: WireIdentity, input: unknown, board?: string | null): Promise<Envelope> {
     try {
       this.named(board)
       if (!isKept(method)) throw notKeptHere(method)

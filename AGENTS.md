@@ -19,9 +19,9 @@ pnpm test                                    # vitest, in workerd
 pnpm --filter @dosu/bordeaux conformance     # upstream's conformance kit against a local board
 ```
 
-There's no CI yet: run all three before you push. Conformance starts a fresh `wrangler dev`
-per run and prints why each skipped check skipped. Every group passes today, `sync`
-included; keep it that way.
+CI (`.github/workflows/ci.yml`) runs all three on every pull request, and requires every
+conformance group, `sync` included; run them before you push. Conformance starts a fresh
+`wrangler dev` per run and prints why each skipped check skipped.
 
 Tests run in workerd through `@cloudflare/vitest-pool-workers`, on `test/wrangler.jsonc`
 (main `test/worker.ts`, which calls `configure()` with `test/config.ts`). Nothing leaves the
@@ -136,7 +136,7 @@ quiet, for a person at a terminal first, `--json` for programs. What bordeaux ad
 
 ## layering
 
-Worker → upstream `board()` → `durable()` backend → the board's Durable Object.
+Worker → upstream `board()` → `durable()` backend → the board's Durable Object (and its TailDO, for waits).
 
 - **The Worker** (`src/worker/index.ts`) routes: the token broker (`/auth/*`), admin
   (`/admin/*`), JWKS, direct uploads, the inspector, then `board()` per board (`boardOf`,
@@ -153,6 +153,9 @@ Worker → upstream `board()` → `durable()` backend → the board's Durable Ob
   records, timers, and queues. Its alarm runs what isn't a request: schedule sends, task
   leases, wakes, and the board's own watchers and sync (`runOwn`), through a `board()` built
   in the DO from the same config (`boardOf`, `bindingOf`).
+- **The TailDO** (`src/engine/tail.ts`) holds the feed's waits for one board: SSE tails and
+  `/events?wait=`. It follows the board's log once and runs upstream's feed per reader, so a
+  post costs the board one follow, not a feed per tail (spec 08).
 - **A deployment's own code** is `configure()` (`src/worker/config.ts`): middleware for every
   board; watchers and sync for the default board. `configure((env) => …)` for anything built
   from secrets (`@dosu/bordeaux/sync`).
@@ -163,10 +166,12 @@ Worker → upstream `board()` → `durable()` backend → the board's Durable Ob
   canned decorations, keyword triggers, heuristics that rewrite a message. Deliver what the
   author wrote and give agents the tools.
 - **One log per board.** Every board fact is an event in the DO's `bx_log`, in session
-  `board`, `access`, `schemas`, or `schedules`. Tables and folds are built from it with
-  upstream's code (`src/upstream/store/sql.ts`, `contract/folds.ts`); nothing else writes
-  them. Bookkeeping people don't read (queues, timers, seen inbox IDs, failures) lives in
-  `bx_*` side tables, never in the log.
+  `board`, `access`, `schemas`, `schedules`, or `admin` (redactions). Tables and folds are
+  built from it with upstream's code (`src/upstream/store/sql.ts`, `contract/folds.ts`);
+  nothing else writes them, except retention pruning old `board_versions` copies and
+  redaction (spec 02). The log is append-only but for that one path: `bx redact` rewrites
+  what one message's events said. Bookkeeping people don't read (queues, timers, seen inbox
+  IDs, failures) lives in `bx_*` side tables, never in the log.
 - **Writes are exclusive.** A check-then-append runs inside the engine's `exclusive()` lock,
   so two writes never both pass a check that only one should.
 - **Folds mutate in place.** Never share a fold's state object outside the fold.
@@ -183,13 +188,16 @@ Worker → upstream `board()` → `durable()` backend → the board's Durable Ob
 Linear apps. [docs/sync.md](./docs/sync.md) has the setup and the last live run. What it
 taught:
 
-- **A deploy doesn't reach a busy board.** While a client long-polls a board (an open
-  inspector, `vb tail`), its DO keeps running the code and the secrets it started with.
-  Close those clients, then check, before concluding a fix or a new secret didn't work.
+- **A deploy reaches a busy board by reloading it.** While a client long-polls a board (an
+  open inspector, `vb tail`), its DO would keep the code and secrets it started with, so it
+  resets itself once a newer Worker version calls it and it's idle (spec 08, "Deploys"). A
+  deployment without the `version_metadata` binding doesn't: close those clients, then
+  check, before concluding a fix or a new secret didn't work.
 - **`wrangler tail` drops events**, whole webhooks and DO calls included: its silence proves
-  nothing. Record what you need where you can read it back, such as R2 or the DO's
-  `ownFailures()` (its last 50 failures) and `deadLetters()` (what its queues gave up on,
-  replayed with `replayDead(id)`), and remove your own instrumentation afterwards.
+  nothing. Record what you need where you can read it back, such as R2, `bx health` (queues,
+  the latest failure, sync), `bx dead-letters` (what the queues gave up on, `--retry <id>`),
+  or the DO's `ownFailures()` (its last 50 failures), and remove your own instrumentation
+  afterwards.
 - **A secret check right after `wrangler secret put`** can still hit the old version. Wait a
   few seconds and check again before asking anyone to re-enter it.
 - **Platforms have their own preconditions:** Linear sends an app's webhooks only after the

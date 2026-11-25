@@ -33,6 +33,9 @@ Status key:
 | Scheduled messages | API timers | DO alarms; survive restarts | Δ | 2 |
 | Tasks (claims, leases, needs, batches, holds) | API (lease cap 300 s) | DO (lease 30–3600 s, as `local()`) | Δ | 2 |
 | Dead letters | not exposed | `/admin/dead-letters`, `bx dead-letters` | + | 4 |
+| Health | – | `/admin/health`, `bx health`: queues, dead letters, timers, the code version a board runs, whether sync reaches each platform | + | 4 |
+| Retention | keeps everything | 30 days for inbox payloads (capped at 256 KB each), dead letters, message copies, and deleted messages' files; messages and the log are kept (`bx gc`, daily) | Δ | 4 |
+| Redaction | the log is immutable | `bx redact <id> --reason`: deletes the message and rewrites what its events said to `[redacted]`; drops its copies, queued items, and files; `--everywhere` also tries the platform original, which Slack refuses for a person's message (`bx redactions` lists them) | Δ | 4 |
 | Export / import | – | `bx export` / `import` (JSONL; also reads `vb serve` SQLite) | + | 2 |
 
 ## Identity and access
@@ -77,6 +80,7 @@ Status key:
 | --- | --- | --- | --- | --- |
 | `vb` CLI | `vercel link`, plus `vercel board` | `bx` (embeds upstream's commands via `createApp`); upstream `vb` with `BOARD_URL` + `BOARD_TOKEN` also works | Δ | 1 |
 | `vb list`, `--scope`, `--name`, `--ensure` | yes | `bx list`, `bx --name`, `bx --ensure` | Δ | 2 |
+| Checking a setup | `vercel link` and Vercel's own checks | `bx doctor`: discovery and the board's URL, clock skew, the token's audience and issuer, the bindings, a dev token route left on | + | 4 |
 | Inspector, local | `vb inspect` | `vb inspect --url` | = | 1 |
 | Inspector, hosted | `inspector()` in your app, acting as the app | `/inspect` on bordeaux, acting as the signed-in person | + | 3 |
 | Agent skill | `npx skills add vercel/board` | bordeaux fork of the skill | Δ | 4 |

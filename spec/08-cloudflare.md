@@ -124,7 +124,7 @@ The routes that wait are `/events?wait≤300`, `/tasks/claim?wait≤300`,
 - A held RPC keeps the DO resident and billed **(verify: duration billing)**.
 
 For v1, waiters stay in the DO. It is simple, and boards are team-sized. For **v1.1**, a
-`TailDO` fan-out layer:
+`TailDO` fan-out layer (built in M4 after all, below):
 
 - SSE clients connect through the Worker to a per-board TailDO over a **hibernatable
   WebSocket**.
@@ -132,6 +132,28 @@ For v1, waiters stay in the DO. It is simple, and boards are team-sized. For **v
 - Idle tails then cost nothing, and the BoardDO serves one follower instead of N.
 - Upstream's own open benchmark (1, 10, and 50 concurrent tails) is our trigger: build the
   TailDO when 50 tails add more than 5 ms p99 to the write path.
+
+**As built (M4): the TailDO is in 1.0.** On a deployed board, 50 tails added 42–49 ms to a
+post's p99 without it, past the trigger, and nothing measurable with it (see "Load, as
+measured").
+- Every `events` call that waits (`wait > 0`: SSE pages after the first, `vb wait`) goes to
+  the board's TailDO (`TAIL`, `src/engine/tail.ts`); a page that doesn't wait, and `last`,
+  stay on the board's DO. Without the binding, the board's DO holds them as before.
+- The TailDO follows the board with one long-poll (`tailFollow`), keeping the newest 2,000
+  events and who's who as of them. Each reader's page is upstream's `pollFeed` with no wait,
+  run in the TailDO; what only the board has (messages at an index, older events) it reads
+  once for every reader that asks the same, and keeps, since it never changes. It stops
+  following a minute after its last reader.
+- A reader's first page comes from the board, so its cursor can be ahead of the TailDO: it
+  waits up to 2 seconds for the follower, then reads the board itself.
+- **Δ from this sketch:** no WebSockets. `board()` drives SSE in the Worker a page at a time
+  through the backend's `events`, so the TailDO answers those pages over RPC and is billed
+  while they wait, as the board's DO was.
+- Each request still reads the grants from the board's DO (`accessState`) before `board()`
+  decides access, one small RPC per SSE page. Caching them in the Worker would let a revoked
+  grant work a moment longer, so they aren't.
+- A reload (see "Deploys") reaches the TailDO too: a newer version's call, or the board it
+  follows answering from a newer version, resets it.
 
 **SSE length.** The Worker drives the stream: `board()` loops `events` pages. `streamMaxMs` is
 15 minutes. Clients reconnect with `after` either way. Workers have no wall-clock limit while
@@ -173,7 +195,8 @@ open waits when the Worker's version changes (M4).
   board() over RPC.
 - **Deletes.** Deleting a message hides its files. The bytes are deleted only by
   `bx gc`, which removes unreferenced attachments that are more than 30 days old. This is
-  **Δ**: upstream never deletes bytes.
+  **Δ**: upstream never deletes bytes. **As built (M4):** see
+  [02](02-model.md#retention-δ-decided-q9); the Worker's cron runs it daily.
 
 ## Multi-board and teams
 
@@ -205,12 +228,58 @@ open waits when the Worker's version changes (M4).
 | RPC payload | 32 MiB | uploads go Worker → R2 directly, never through the DO |
 | Cold start | the DO loads SQLite lazily | channel and actor folds are cached in memory after first use |
 
+## Deploys
+
+A board's Durable Object keeps the code and env it started with while it's in use. A board a
+client long-polls (an open inspector, `vb tail`) is never idle, so in the live run of
+2026-11-25 a deploy, and a fixed secret, didn't reach it until the inspector closed.
+
+**As built:** each protocol call carries the calling Worker's version (`version_metadata`).
+When one is newer than the DO's own, the DO answers its waiting long-polls (`/events?wait=`)
+at once and stops new ones from waiting, then resets itself (`ctx.abort()`) once no call or
+alarm is running there, after the last answer has gone; its next request loads the new
+version, and long-polling clients poll again as they always do. It resets at most once per newer version (`bx_state` `reloaded-for`), so a DO that
+a gradual deployment keeps on the old version doesn't reset over and over. Every RPC to the
+DO counts as running, and it waits for storage to flush first: a DO holds an answer back
+until what its call wrote is durable, and resetting before then fails the caller for a write
+that may have landed. Requests queued at the DO when it resets fail with its reason; they
+never started, so the Worker's stubs send them once more (`retried`). The load test's first
+deploy of this found posts answering 500 mid-reset; `test/deploys.test.ts` covers it. A run of the
+board's own code that outlasted its minute isn't waited for: it's cut short, and its item
+runs again when its lease runs out. Without the binding, nothing changes. The first deploy
+that adds it can't reload a busy board yet: the DO it would reach still runs the code from
+before.
+
+`GET /admin/health` answers the version the board's DO runs (`version`) and the Worker's that
+answered (`worker`); `bx health` prints them as `code`. A health call carries no caller version,
+so looking never reloads a board.
+
+**Checked live (2026-11-25)** on the test deployment's default board: an SSE tail
+(`curl -N /events?channel=reload-check`) held open, and posts with `bx post`.
+- Version A deployed; `bx health` showed the board on A. A post reached the tail.
+- Version B deployed with the tail still open. `bx health` showed the board still on A and the
+  Worker on B.
+- A post from B landed, and the board reloaded: the next `bx health` showed it on B.
+- Two more posts, the second after 30 s (past the TailDO's 20 s follow), reached the same
+  stream. The stream never closed and carried no error, and `bx health` showed no failures.
+- Not seen directly: the TailDO's own reset. Nothing reports its version; the stream carrying
+  posts after the board reloaded is all this showed.
+
 ## Observability
 
 - Workers Logs with structured fields `{board, principal, route, code, ms}`.
 - Workers Analytics Engine for request, consumer-lag, and queue-depth metrics.
 - `GET /admin/health` (requires `manage` at `*`) reports consumer positions against the head,
   dead letters, the oldest pending timer, and the wake backlog.
+  **As built:** `GET /admin/health[?board=<name>]` and `bx health` report each queue with work
+  in it (pending, leased, and retrying items per registrant, the board's own as `@board`), the
+  dead-letter count and the latest one, the latest failure, and the timers, with how many are
+  more than a minute past due (the alarm isn't running them). Matching runs inside each write,
+  so there's no consumer position to lag. For the default board it also readies each sync's
+  provider, as upstream does on first use, and says whether it reached its platform. A cron
+  (`triggers.crons`, every 15 minutes in the template) runs the same sync check and logs what
+  failed. Readying is also what signs a new Linear app in, so its webhooks start without a
+  first post from the board.
 
 ## Testing
 
@@ -221,6 +290,60 @@ open waits when the Worker's version changes (M4).
 | Conformance | `conformance(board({ backend: durable(env) }))` in-process on every commit, and `vb conformance --url <preview>` on every PR deploy. |
 | Upstream drift | A nightly job runs the conformance kit from the newest `@vercel/board` against the latest preview. A failure opens an issue. |
 | Load | Before 1.0: post p99 at 10k and 100k messages, and 1/10/50 SSE tails. This mirrors upstream's benchmark table. |
+
+**Load, as measured (2026-11-25).** `pnpm load` (`scripts/load.mjs`) against a fresh local
+`wrangler dev` board (workerd and its SQLite) on one Apple M2 Max, with the client on the same
+machine. Every request goes through the Worker: auth, `board()`, RPC, and the DO. About 1 KB
+messages across 10 channels, a root in every five; 200 samples each.
+
+| Messages | Post p50 / p99 | Thread read p50 / p99 | Channel's threads p50 / p99 |
+| --- | --- | --- | --- |
+| 10,000 | 3.9 / 10.4 ms | 2.7 / 12.0 ms | 2.9 / 9.3 ms |
+| 100,000 | 3.6 / 12.3 ms | 2.8 / 17.7 ms | 3.0 / 19.0 ms |
+
+| SSE tails (10,000 messages) | Post p50 / p99 | p99 added |
+| --- | --- | --- |
+| 0 | 4.0 / 16.8 ms | |
+| 1 | 4.7 / 14.3 ms | none |
+| 10 | 11.7 / 32.0 ms | 15 ms |
+| 50 | 40.7 / 69.1 ms | 52 ms |
+
+- Message count doesn't move a post or a read: the tables index what they read, as upstream's
+  benchmark found for its own.
+- **50 tails add about 52 ms to a post's p99, past the 5 ms that triggers the TailDO.** Each
+  post wakes every tail's long-poll in the BoardDO, and each runs its feed read there.
+- The first run, before the fix, found that a busy feed ran the DO out of workerd's 10,000
+  active timers (`AbortSignal.timeout()` outlives its call) and every feed answered 500;
+  `test/feed-load.test.ts` covers it.
+- Not measured: tails on other machines, 100k messages with tails, and append throughput.
+
+**On a deployed board, the same day.** `pnpm load --url` against the test deployment on
+workers.dev, a named board of about 10,000 messages, from one laptop over the internet (about
+120 ms there and back). 200 samples, then two repeats of 0 against 50 tails at 300.
+
+| | Post p50 / p99 |
+| --- | --- |
+| 0 tails | 118–145 / 161–205 ms |
+| 1 tail | 148 / 251 ms |
+| 10 tails | 139 / 531 ms |
+| 50 tails | 133–149 / 252–866 ms |
+
+Thread reads and a channel's threads answered in 121–122 ms p50, 160–177 ms p99, so the board
+itself adds little over the round trip. Those tails ran in the process that timed the posts,
+and reading 50 streams held up the timing too: the p99s above overstate what tails cost.
+
+**With and without the TailDO, the same day.** The same board and client, with the tails in a
+process of their own (`scripts/tails.mjs`), and the same deployment with and without its
+`TAIL` binding. Each run alternates 0 and 50 tails three times, 300 posts each.
+
+| 50 SSE tails against none | Post p50 added | Post p99 added |
+| --- | --- | --- |
+| Without the TailDO | 14–18 ms | 42–49 ms |
+| With the TailDO | 0–0.5 ms | −6 to 4 ms (the baselines vary by 12 ms) |
+
+With the TailDO, 50 tails cost a post nothing that the network's noise doesn't hide. The
+board's own time per request still wasn't measured: it has no server timing to read. Not
+measured: more than 50 tails, tails from more than one machine, and 100k messages with tails.
 
 ## Milestones
 

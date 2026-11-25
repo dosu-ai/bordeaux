@@ -17,7 +17,7 @@ import { ATTACHMENTS_PER_MESSAGE_MAX, EDITED_HOLD, MESSAGE_TEXT_MAX, type Attach
 import { actorSeen, ownedActor } from '../upstream/server/actors.ts'
 import { wroteAs } from '../upstream/server/auth.ts'
 import { badRequest, duplicateId, forbidden, notFound, textTooLong } from '../upstream/server/errors.ts'
-import { indexOf, lastFeed, linkedIds, pollFeed, readableFilter, ref, toMessageFilter, verifiedRecord, view, viaOfRecord, type Reader } from '../upstream/server/feed.ts'
+import { indexOf, linkedIds, readableFilter, ref, toMessageFilter, verifiedRecord, view, viaOfRecord, type Reader } from '../upstream/server/feed.ts'
 import type { BoardSession } from '../upstream/server/a2.ts'
 import type { BoardReads } from '../upstream/server/reads.ts'
 import { sqlTables } from '../upstream/store/sql.ts'
@@ -32,6 +32,7 @@ import { emptySchemas, findSchema, foldSchemas, listSchemas, registering, schema
 registerSession(ACCESS_SESSION, accessEvents)
 registerSession(SCHEMAS_SESSION, schemaEvents)
 registerSession(SCHEDULES_SESSION, scheduleEvents)
+registerSession(ADMIN_SESSION, adminEvents)
 
 /** A timer the DO's alarm runs: a schedule's send due at `at`, or the end of a task's lease. */
 export type Timer =
@@ -57,10 +58,12 @@ import type { Actor, ExternalCopy } from '../upstream/contract/folds.ts'
 import { INBOX_EVENT_ID_MAX } from '../upstream/api/routes.ts'
 import type { SyncEntrySpec } from '../upstream/server/watchers-hash.ts'
 import { pullInbox } from './watchers.ts'
-import { ack as ackMatch, emptyQueue, foldQueue, leaseAll, matchesFor, nextDue, OWN, pull, revive, viewOf, watchersHash, type Pending, type QueueState, type Registration, type RegistryState } from './watchers.ts'
+import { ADMIN_SESSION, about, adminEvents, CONTENT_EVENTS, scrubbed, type Redacted, type Redaction } from './redact.ts'
+import { ack as ackMatch, dropWhere, emptyQueue, foldQueue, leaseAll, matchesFor, nextDue, OWN, pull, revive, viewOf, watchersHash, type Pending, type QueueState, type Registration, type RegistryState } from './watchers.ts'
 import { compileWatcher } from '../upstream/server/watch-spec.ts'
 import { RemoteWatcherId } from '../upstream/contract/schemas.ts'
 import { TASK_BATCH_MAX } from '../upstream/contract/schemas.ts'
+import { feedPage, type FeedSource } from './feed-page.ts'
 
 type Caller = Identity & { request: boolean; schedule?: { id: number; n: number }; via?: string }
 
@@ -113,7 +116,7 @@ const CHANNELS_LIMIT_DEFAULT = 100
 const THREADS_LIMIT_DEFAULT = 50
 
 /** A cursor or message ref in a request, as this board's log index (upstream a2.ts). */
-function cursorAt(value: string): number {
+export function cursorAt(value: string): number {
   const index = indexOf(value)
   if (index === null) throw badRequest(`${value} isn't a cursor or a message ID on this board`, 'invalid_cursor')
   return index
@@ -210,9 +213,34 @@ export type Failure = { at: string; queue: string; item: string; attempt: number
 const FAILURES_KEPT = 50
 /** An item a queue gave up on after its last try, kept so it can be replayed (spec 06, the dead-letter table). */
 export type DeadLetter = { id: string; owner: string; queue: string; thread: string; error: string; at: string; attempts: number }
+/** A board's bookkeeping at a glance (`engine.health()`). */
+export type Health = {
+  queues: { owner: string; pending: number; leased: number; retrying: number }[]
+  dead: { count: number; latest: string | null }
+  failures: { kept: number; latest: { at: string; queue: string; error: string } | null }
+  timers: { count: number; next: string | null; late: number }
+}
 
 /** How long an inbox remembers an event it took, to drop a platform's resend: 30 days. */
 const INBOX_SEEN_MS = 30 * 86_400_000
+/** How long retention keeps what it prunes: dead letters, message copies, deleted files' bytes (spec 02, Δ decided Q9). */
+const RETENTION_MS = 30 * 86_400_000
+/** The most of a raw platform payload an inbox keeps, as JSON (spec 02). */
+export const RAW_MAX = 256 * 1024
+
+/**
+ * A raw platform payload as an inbox keeps it (Δ, spec 02): whole up to RAW_MAX bytes of JSON,
+ * else its JSON cut short, as `{ truncated: true, bytes, json }`. Upstream keeps it whole.
+ */
+export function capRaw(raw: unknown): unknown {
+  if (raw === undefined) return raw
+  const bytes = new TextEncoder().encode(JSON.stringify(raw) ?? 'null')
+  if (bytes.byteLength <= RAW_MAX) return raw
+  return { truncated: true, bytes: bytes.byteLength, json: new TextDecoder().decode(bytes.slice(0, RAW_MAX - 1024)) }
+}
+
+/** What one gc removed (`bx gc`). */
+export type Collected = { deadLetters: number; inboxIds: number; messageCopies: number; files: number }
 
 export class BoardEngine {
   readonly log: Log
@@ -227,6 +255,14 @@ export class BoardEngine {
   private scheduleState: SchedulesState
   /** Registered watchers, by owner (upstream's registry). */
   private registry: RegistryState
+  /** Aborted once the board is about to reload: its long-polls answer at once from then on. */
+  private readonly hurried = new AbortController()
+
+  /** Ends every long-poll waiting here, and keeps new ones from waiting (spec 08, "Deploys"). */
+  hurry() {
+    this.hurried.abort()
+  }
+
   /** Whether matching is running now: one run at a time, from the stored position. */
   private matching: Promise<void> | null = null
   /** Resolves once the tables have every event the log has. */
@@ -387,6 +423,65 @@ export class BoardEngine {
     return row ? (JSON.parse(row.data) as Failure[]) : []
   }
 
+  /**
+   * How the board's bookkeeping stands, for an operator: each queue with work in it, what the
+   * queues gave up on, the latest failure, and its timers. A timer past due by more than a
+   * minute means the alarm isn't running it.
+   */
+  health(now = Date.now()): Health {
+    const queues = this.storage.sql
+      .exec<{ owner: string; data: string }>('select owner, data from bx_queues')
+      .toArray()
+      .flatMap((row) => {
+        const items = Object.values((JSON.parse(row.data) as QueueState).pending)
+        if (items.length === 0) return []
+        return [{ owner: row.owner, pending: items.length, leased: items.filter((item) => item.lease !== null && item.lease.until > now).length, retrying: items.filter((item) => item.attempts > 0).length }]
+      })
+    const [dead] = this.storage.sql.exec<{ count: number; at: number | null }>('select count(*) as count, max(at) as at from bx_dead').toArray()
+    const [timers] = this.storage.sql.exec<{ count: number; next: number | null; late: number }>('select count(*) as count, min(due_at) as next, sum(case when due_at < ? then 1 else 0 end) as late from bx_timers', now - 60_000).toArray()
+    const latest = this.failures()[0]
+    return {
+      queues,
+      dead: { count: Number(dead?.count ?? 0), latest: dead?.at ? new Date(Number(dead.at)).toISOString() : null },
+      failures: { kept: this.failures().length, latest: latest ? { at: latest.at, queue: latest.queue, error: latest.error } : null },
+      timers: { count: Number(timers?.count ?? 0), next: timers?.next ? new Date(Number(timers.next)).toISOString() : null, late: Number(timers?.late ?? 0) },
+    }
+  }
+
+  /**
+   * Retention (spec 02, Δ decided Q9; upstream never deletes anything): dead letters (which keep
+   * their raw payloads) and remembered inbox IDs older than 30 days; message copies
+   * (`board_versions`) from before 30 days ago, down to the latest one per message then, kept
+   * as far back as matching still needs; and the bytes of files whose messages were all deleted
+   * more than 30 days ago, or that no message ever used in 30 days. Messages and the log are kept.
+   */
+  gc(now = Date.now()): Promise<Collected> {
+    const before = now - RETENTION_MS
+    return this.exclusive(async () => {
+      const deadLetters = this.storage.sql.exec('delete from bx_dead where at < ?', before).rowsWritten
+      const inboxIds = this.storage.sql.exec('delete from bx_inbox_seen where at < ?', now - INBOX_SEEN_MS).rowsWritten
+      // Matching reads each message as it was before an event: copies it hasn't passed stay.
+      const [old] = this.storage.sql.exec<{ idx: number | null }>('select max(idx) as idx from bx_log where session = ? and created_at < ?', BOARD_SESSION, before).toArray()
+      const [matched] = this.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'watch-position'").toArray()
+      const cutoff = Math.min(Number(old?.idx ?? 0), matched ? Number(matched.data) : Number.POSITIVE_INFINITY)
+      const messageCopies =
+        cutoff > 0
+          ? this.storage.sql.exec('delete from board_versions where log_index < ? and log_index < (select max(w.log_index) from board_versions w where w.message_id = board_versions.message_id and w.log_index <= ?)', cutoff, cutoff).rowsWritten
+          : 0
+      const files = await this.files.collect(async (id, uploadedAt) => {
+        const using = await this.tables.withAttachment(id)
+        if (using.length === 0) return uploadedAt < before
+        // Deleted, and each one's deletion (its last change) is older than the retention.
+        return using.every((message) => {
+          if (!message.deleted || message.revision === undefined) return false
+          const [deleted] = this.log.history({ gte: message.revision, lte: message.revision })
+          return deleted !== undefined && new Date(deleted.createdAt).getTime() < before
+        })
+      }, now)
+      return { deadLetters, inboxIds, messageCopies, files }
+    })
+  }
+
   /** What the queues gave up on, newest first. */
   deadLetters(): DeadLetter[] {
     return this.storage.sql
@@ -410,6 +505,68 @@ export class BoardEngine {
       if (row.owner === OWN) this.arm('run', Date.now(), { kind: 'run', payload: {} })
       else if (this.registry.byOwner[row.owner]?.url) this.arm(`wake-${row.owner}`, Date.now(), { kind: 'wake', payload: { owner: row.owner } })
       return true
+    })
+  }
+
+  /**
+   * Scrubs message `id` out of the board (spec 02, "Redaction"; Δ upstream's log is immutable):
+   * deletes it as a delete does, then, in one transaction, rewrites what its events said, drops
+   * its copies, terms, and the queued items and dead letters that hold what it said, and records
+   * the redaction in session `admin`. Its files' bytes go after, unless another message uses one.
+   */
+  async redact(by: Author, value: string, reason: string): Promise<Redacted> {
+    const id = messageAt(value)
+    const message = await this.found(id)
+    // A delete first, as anyone's: feeds and watchers see it go, and sync deletes the board's copies.
+    await this.delete({ author: by } as Caller, { id: value }, { trusted: true, asAuthor: false })
+    return this.exclusive(async () => {
+      const [posted] = this.log.history({ gte: id, lte: id })
+      const files = new Set(((posted?.payload as { attachments?: Attachment[] } | undefined)?.attachments ?? []).map((file) => file.id))
+      const keys = new Set(this.storage.sql.exec<{ key: string }>('select key from board_external_messages where message_id = ?', id).toArray().map((row) => row.key))
+      let events = 0
+      let copies = 0
+      let queued = 0
+      const at = new Date().toISOString()
+      this.log.append(ADMIN_SESSION, [{ type: 'message.redacted', payload: { id, by, reason, at } }], () => {
+        const rows = this.storage.sql
+          .exec<{ idx: number; type: string; payload: string }>(
+            `select idx, type, payload from bx_log where session = ? and ((idx = ? and type = 'message.posted') or (type in (${CONTENT_EVENTS.map(() => '?').join(', ')}) and json_extract(payload, '$.id') = ?))`,
+            BOARD_SESSION,
+            id,
+            ...CONTENT_EVENTS,
+            id,
+          )
+          .toArray()
+        for (const row of rows) {
+          this.storage.sql.exec('update bx_log set payload = ? where session = ? and idx = ?', JSON.stringify(scrubbed(row.type, JSON.parse(row.payload))), BOARD_SESSION, row.idx)
+          events++
+        }
+        copies = this.storage.sql.exec('delete from board_versions where message_id = ?', id).rowsWritten
+        this.storage.sql.exec('delete from board_terms where message_id = ?', id)
+        for (const { owner } of this.storage.sql.exec<{ owner: string }>('select owner from bx_queues').toArray()) {
+          const state = this.queueOf(owner)
+          const dropped = dropWhere(state, (item) => about(item.event, id, keys))
+          if (dropped > 0) this.saveQueue(owner, state)
+          queued += dropped
+        }
+        for (const row of this.storage.sql.exec<{ id: string; item: string }>('select id, item from bx_dead').toArray())
+          if (about((JSON.parse(row.item) as Pending).event, id, keys)) {
+            this.storage.sql.exec('delete from bx_dead where id = ?', row.id)
+            queued++
+          }
+      })
+      let removed = 0
+      for (const file of files) if ((await this.tables.withAttachment(file)).every((using) => using.id === id) && (await this.files.remove(file))) removed++
+      const origin = message.origin ? { thread: message.origin.thread, subthread: message.origin.subthread, message: message.origin.message } : null
+      return { id, events, copies, queued, files: removed, origin, importedBy: (posted?.payload as { importedBy?: string } | undefined)?.importedBy ?? null }
+    })
+  }
+
+  /** Every redaction, oldest first. */
+  redactions(): Redaction[] {
+    return this.log.history({ gte: 1, lte: this.log.head(ADMIN_SESSION) }, ADMIN_SESSION).map((event) => {
+      const { id, by, reason, at } = event.payload as unknown as { id: number; by: Author; reason: string; at: string }
+      return { id: ref(id), by, reason, at }
     })
   }
 
@@ -1397,7 +1554,7 @@ export class BoardEngine {
         if (location !== null && !location.startsWith(`${key}:`)) throw badRequest(`an inbox's platform locations belong to its sync key: ${location} isn't ${key}'s`)
     if (ownSync(caller)) {
       // This board's own sync: its inbox, run by the board itself, one platform thread at a time.
-      const pushed = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
+      const pushed = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw: capRaw(raw) } } })))
       await this.exclusive(async () => {
         const fresh = this.unseen(OWN, pushed)
         if (fresh.length === 0) return
@@ -1409,7 +1566,7 @@ export class BoardEngine {
       return { ok: true } as Out<'inboxPush'>
     }
     // A sync elsewhere: its own queue, for it to pull back. A platform's retry lands once.
-    const matched = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
+    const matched = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw: capRaw(raw) } } })))
     await this.exclusive(async () => {
       const fresh = this.unseen(caller.principal.id, matched)
       if (fresh.length === 0) return
@@ -1871,24 +2028,59 @@ export class BoardEngine {
     })
   }
 
+  /** The feed (upstream a2.ts `events`): a page of it, waited for here (`feedPage`). */
   async events(caller: Caller, query: In<'events'>): Promise<Out<'events'>> {
-    const { principal, actor } = caller
     const after = query.after !== undefined ? cursorAt(query.after) : undefined
-    const feed = {
-      session: this.session,
-      reads: this.reads,
-      after,
-      filters: query,
-      all: query.all ?? false,
-      me: { id: actor.id, handle: actor.handle },
-      // The feed folds who's who as it goes: its own copy.
-      actors: structuredClone(this.views.actors),
-      access: principal.access,
+    return (await feedPage(this.feedSource, caller, query, after, this.hurried.signal)) as Out<'events'>
+  }
+
+  /** This board's log as a feed reads it. */
+  private readonly feedSource: FeedSource = {
+    session: this.session,
+    reads: this.reads,
+    actors: () => this.views.actors,
+    head: () => this.log.head(),
+    next: (signal) => this.log.next(signal),
+  }
+
+  // --- What the board's TailDO follows (spec 08, "Long-polls, SSE, and waiters"). ---
+
+  /** The log's head, and who's who as of it, in one step: where a TailDO starts following. */
+  tailStart(): { index: number; actors: ActorsState } {
+    return { index: this.log.head(), actors: this.views.actors }
+  }
+
+  /**
+   * The board's events after `after`, up to 500, or the first to land within `waitMs`: the one
+   * long-poll a TailDO holds here, whatever number of tails it serves.
+   */
+  async follow(after: number, waitMs: number): Promise<BoardEvent[]> {
+    const deadline = Date.now() + (this.hurried.signal.aborted ? 0 : waitMs)
+    for (;;) {
+      const events = this.log.history({ gte: after + 1, lte: after + 500 })
+      const left = deadline - Date.now()
+      if (events.length > 0 || left <= 0 || this.hurried.signal.aborted) return events
+      const woken = new AbortController()
+      const timer = setTimeout(() => woken.abort(), left)
+      const hurry = () => woken.abort()
+      this.hurried.signal.addEventListener('abort', hurry, { once: true })
+      try {
+        await this.log.next(woken.signal)
+      } finally {
+        clearTimeout(timer)
+        this.hurried.signal.removeEventListener('abort', hurry)
+      }
     }
-    const waitMs = (query.wait ?? 0) * 1000
-    const signal = AbortSignal.timeout(waitMs + 30_000)
-    const { events, cursor } = query.last !== undefined ? await lastFeed(feed, query.last, signal) : await pollFeed(feed, waitMs, signal)
-    return { events, cursor: ref(cursor) }
+  }
+
+  /** The board's events in [gte, lte], for a TailDO reading further back than it holds. */
+  history(gte: number, lte: number): BoardEvent[] {
+    return this.log.history({ gte, lte: Math.min(lte, gte + 499) })
+  }
+
+  /** Messages as they were at `index`, for a TailDO's feeds (upstream's `BoardReads.messagesAt`). */
+  messagesAt(ids: readonly number[], index: number): Promise<Map<number, Message>> {
+    return this.tables.messagesAt(ids, index)
   }
 
   /** The IDs a write derives for itself, as upstream's do (exported for tasks and schedules in M2). */

@@ -42,6 +42,8 @@ export function createFileTables(storage: DurableObjectStorage) {
   secret text,
   expires_at integer
 )`)
+  // When it was uploaded, for retention: rows from before this column are stamped on their first gc.
+  if (!storage.sql.exec<{ name: string }>('pragma table_info(bx_files)').toArray().some((column) => column.name === 'created_at')) storage.sql.exec('alter table bx_files add column created_at integer')
 }
 
 export class Files {
@@ -70,6 +72,33 @@ export class Files {
     return { id: row.id, name: row.name, type: row.type, size: Number(row.size) }
   }
 
+  /**
+   * Deletes the bytes and record of each file `gone` says may go (Δ retention, spec 02: upstream
+   * never deletes bytes), and of each direct upload whose URL ran out before it finished.
+   * `gone(id, uploadedAt)` decides for a stored file. Answers how many went.
+   */
+  async collect(gone: (id: string, uploadedAt: number) => Promise<boolean>, now = Date.now()): Promise<number> {
+    this.storage.sql.exec('update bx_files set created_at = ? where created_at is null', now)
+    const rows = this.storage.sql.exec<{ id: string; stored: number; expires_at: number | null; created_at: number }>('select id, stored, expires_at, created_at from bx_files').toArray()
+    let collected = 0
+    for (const row of rows) {
+      const abandoned = Number(row.stored) === 0 && (row.expires_at ?? 0) < now
+      if (!abandoned && !(Number(row.stored) === 1 && (await gone(row.id, Number(row.created_at))))) continue
+      await this.bucket?.delete(this.key(row.id))
+      this.storage.sql.exec('delete from bx_files where id = ?', row.id)
+      collected++
+    }
+    return collected
+  }
+
+  /** Deletes a file's bytes and record now (redaction, spec 02). */
+  async remove(id: string) {
+    if (!this.row(id)) return false
+    await this.bucket?.delete(this.key(id))
+    this.storage.sql.exec('delete from bx_files where id = ?', id)
+    return true
+  }
+
   /** An upload sent in the request, up to 4 MB: stored under a fresh ID (upstream `writeUpload`). */
   async upload(input: { data: Uint8Array; name: string | null; type: string | null; uploadedBy: string }, max = ATTACHMENT_BYTES_MAX): Promise<AttachmentType> {
     const bucket = this.bucketOrFail()
@@ -77,7 +106,7 @@ export class Files {
     if (input.data.byteLength > max) throw new HttpError(413, 'too_large', `attachments are at most ${max / 1024 / 1024} MB`)
     const attachment: AttachmentType = { id: attachmentId(), name: uploadName(input.name), type: mediaType(input.type), size: input.data.byteLength }
     await bucket.put(this.key(attachment.id), input.data, { httpMetadata: { contentType: attachment.type } })
-    this.storage.sql.exec('insert into bx_files (id, name, type, size, uploaded_by, stored) values (?, ?, ?, ?, ?, 1)', attachment.id, attachment.name, attachment.type, attachment.size, input.uploadedBy)
+    this.storage.sql.exec('insert into bx_files (id, name, type, size, uploaded_by, stored, created_at) values (?, ?, ?, ?, ?, 1, ?)', attachment.id, attachment.name, attachment.type, attachment.size, input.uploadedBy, Date.now())
     return attachment
   }
 
@@ -90,7 +119,7 @@ export class Files {
     const expiresAt = Date.now() + DIRECT_UPLOAD_TTL_MS
     const type = mediaType(input.type)
     this.storage.sql.exec(
-      'insert into bx_files (id, name, type, size, uploaded_by, stored, secret, expires_at) values (?, ?, ?, ?, ?, 0, ?, ?)',
+      'insert into bx_files (id, name, type, size, uploaded_by, stored, secret, expires_at, created_at) values (?, ?, ?, ?, ?, 0, ?, ?, ?)',
       id,
       uploadName(input.name),
       type,
@@ -98,6 +127,7 @@ export class Files {
       input.uploadedBy,
       await sha256(secret),
       expiresAt,
+      Date.now(),
     )
     return { id, secret, type, expiresAt: new Date(expiresAt).toISOString() }
   }
