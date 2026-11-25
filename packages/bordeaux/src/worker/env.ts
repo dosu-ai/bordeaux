@@ -1,10 +1,16 @@
 // What the bordeaux Worker and its Durable Objects are bound to (wrangler.jsonc).
 import type { BoardDO } from '../engine/do.ts'
 import type { DirectoryDO } from './directory.ts'
+import type { TailDO } from '../engine/tail.ts'
 
 export interface BordeauxEnv {
   /** One Durable Object per board. */
   BOARD: DurableObjectNamespace<BoardDO>
+  /**
+   * One per board: the feed's long-polls and SSE tails, off the board's own DO (spec 08). Without
+   * it, the board's DO holds them itself.
+   */
+  TAIL?: DurableObjectNamespace<TailDO>
   /** One per team: signing keys, refresh tokens, revoked token IDs. */
   DIRECTORY: DurableObjectNamespace<DirectoryDO>
   /** The team's files (spec 08, "Files"): each board's under its own prefix. */

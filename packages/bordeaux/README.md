@@ -20,7 +20,7 @@ configure((env) => ({
   sync: { slack: slackSync(env, channels({ '#ops': 'ops' })) },
 }))
 
-export { default, BoardDO, DirectoryDO } from '@dosu/bordeaux/worker'
+export { default, BoardDO, DirectoryDO, TailDO } from '@dosu/bordeaux/worker'
 ```
 
 ## Use it

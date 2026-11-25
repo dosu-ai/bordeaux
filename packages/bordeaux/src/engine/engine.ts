@@ -17,7 +17,7 @@ import { ATTACHMENTS_PER_MESSAGE_MAX, EDITED_HOLD, MESSAGE_TEXT_MAX, type Attach
 import { actorSeen, ownedActor } from '../upstream/server/actors.ts'
 import { wroteAs } from '../upstream/server/auth.ts'
 import { badRequest, duplicateId, forbidden, notFound, textTooLong } from '../upstream/server/errors.ts'
-import { indexOf, lastFeed, linkedIds, pollFeed, readableFilter, ref, toMessageFilter, verifiedRecord, view, viaOfRecord, type Reader } from '../upstream/server/feed.ts'
+import { indexOf, linkedIds, readableFilter, ref, toMessageFilter, verifiedRecord, view, viaOfRecord, type Reader } from '../upstream/server/feed.ts'
 import type { BoardSession } from '../upstream/server/a2.ts'
 import type { BoardReads } from '../upstream/server/reads.ts'
 import { sqlTables } from '../upstream/store/sql.ts'
@@ -61,6 +61,7 @@ import { ack as ackMatch, emptyQueue, foldQueue, leaseAll, matchesFor, nextDue, 
 import { compileWatcher } from '../upstream/server/watch-spec.ts'
 import { RemoteWatcherId } from '../upstream/contract/schemas.ts'
 import { TASK_BATCH_MAX } from '../upstream/contract/schemas.ts'
+import { feedPage, type FeedSource } from './feed-page.ts'
 
 type Caller = Identity & { request: boolean; schedule?: { id: number; n: number }; via?: string }
 
@@ -113,7 +114,7 @@ const CHANNELS_LIMIT_DEFAULT = 100
 const THREADS_LIMIT_DEFAULT = 50
 
 /** A cursor or message ref in a request, as this board's log index (upstream a2.ts). */
-function cursorAt(value: string): number {
+export function cursorAt(value: string): number {
   const index = indexOf(value)
   if (index === null) throw badRequest(`${value} isn't a cursor or a message ID on this board`, 'invalid_cursor')
   return index
@@ -1963,64 +1964,59 @@ export class BoardEngine {
     })
   }
 
-  /**
-   * The feed (upstream a2.ts `events`, through feed.ts `pollFeed`/`lastFeed`). Δ The wait is
-   * the engine's, not `pollFeed`'s: `AbortSignal.timeout()` keeps its timer until it fires, even
-   * once the call has answered, and a board with many tails and steady posts piled up workerd's
-   * 10,000 active timeouts, failing every feed. Each read here is `pollFeed` with no wait; the
-   * engine waits for the next append with timers it clears when the call ends.
-   */
+  /** The feed (upstream a2.ts `events`): a page of it, waited for here (`feedPage`). */
   async events(caller: Caller, query: In<'events'>): Promise<Out<'events'>> {
-    const { principal, actor } = caller
     const after = query.after !== undefined ? cursorAt(query.after) : undefined
-    const feedFrom = (from: number | undefined) => ({
-      session: this.session,
-      reads: this.reads,
-      after: from,
-      filters: query,
-      all: query.all ?? false,
-      me: { id: actor.id, handle: actor.handle },
-      // The feed folds who's who as it goes: its own copy.
-      actors: structuredClone(this.views.actors),
-      access: principal.access,
-    })
-    // Δ A board about to reload answers its long-polls now, so their clients come back to the new version.
-    const waitMs = this.hurried.signal.aborted ? 0 : (query.wait ?? 0) * 1000
-    const deadline = Date.now() + waitMs
-    const stop = new AbortController()
-    const hurry = () => stop.abort()
-    this.hurried.signal.addEventListener('abort', hurry, { once: true })
-    const guard = setTimeout(() => stop.abort(), waitMs + 30_000)
-    try {
-      if (query.last !== undefined) {
-        const { events, cursor } = await lastFeed(feedFrom(after), query.last, stop.signal)
-        return { events, cursor: ref(cursor) }
+    return (await feedPage(this.feedSource, caller, query, after, this.hurried.signal)) as Out<'events'>
+  }
+
+  /** This board's log as a feed reads it. */
+  private readonly feedSource: FeedSource = {
+    session: this.session,
+    reads: this.reads,
+    actors: () => this.views.actors,
+    head: () => this.log.head(),
+    next: (signal) => this.log.next(signal),
+  }
+
+  // --- What the board's TailDO follows (spec 08, "Long-polls, SSE, and waiters"). ---
+
+  /** The log's head, and who's who as of it, in one step: where a TailDO starts following. */
+  tailStart(): { index: number; actors: ActorsState } {
+    return { index: this.log.head(), actors: this.views.actors }
+  }
+
+  /**
+   * The board's events after `after`, up to 500, or the first to land within `waitMs`: the one
+   * long-poll a TailDO holds here, whatever number of tails it serves.
+   */
+  async follow(after: number, waitMs: number): Promise<BoardEvent[]> {
+    const deadline = Date.now() + (this.hurried.signal.aborted ? 0 : waitMs)
+    for (;;) {
+      const events = this.log.history({ gte: after + 1, lte: after + 500 })
+      const left = deadline - Date.now()
+      if (events.length > 0 || left <= 0 || this.hurried.signal.aborted) return events
+      const woken = new AbortController()
+      const timer = setTimeout(() => woken.abort(), left)
+      const hurry = () => woken.abort()
+      this.hurried.signal.addEventListener('abort', hurry, { once: true })
+      try {
+        await this.log.next(woken.signal)
+      } finally {
+        clearTimeout(timer)
+        this.hurried.signal.removeEventListener('abort', hurry)
       }
-      let page = await pollFeed(feedFrom(after), 0, stop.signal)
-      while (page.events.length === 0 && !stop.signal.aborted) {
-        // More of the log than one read takes, or an append since: read on without waiting.
-        if (this.log.head() <= page.cursor) {
-          const left = deadline - Date.now()
-          if (left <= 0) break
-          const woken = new AbortController()
-          const timer = setTimeout(() => woken.abort(), left)
-          const stopped = () => woken.abort()
-          stop.signal.addEventListener('abort', stopped, { once: true })
-          try {
-            await this.log.next(woken.signal)
-          } finally {
-            clearTimeout(timer)
-            stop.signal.removeEventListener('abort', stopped)
-          }
-          if (stop.signal.aborted || this.log.head() <= page.cursor) break
-        }
-        page = await pollFeed(feedFrom(page.cursor), 0, stop.signal)
-      }
-      return { events: page.events, cursor: ref(page.cursor) }
-    } finally {
-      clearTimeout(guard)
-      this.hurried.signal.removeEventListener('abort', hurry)
     }
+  }
+
+  /** The board's events in [gte, lte], for a TailDO reading further back than it holds. */
+  history(gte: number, lte: number): BoardEvent[] {
+    return this.log.history({ gte, lte: Math.min(lte, gte + 499) })
+  }
+
+  /** Messages as they were at `index`, for a TailDO's feeds (upstream's `BoardReads.messagesAt`). */
+  messagesAt(ids: readonly number[], index: number): Promise<Map<number, Message>> {
+    return this.tables.messagesAt(ids, index)
   }
 
   /** The IDs a write derives for itself, as upstream's do (exported for tasks and schedules in M2). */

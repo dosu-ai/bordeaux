@@ -124,7 +124,7 @@ The routes that wait are `/events?wait≤300`, `/tasks/claim?wait≤300`,
 - A held RPC keeps the DO resident and billed **(verify: duration billing)**.
 
 For v1, waiters stay in the DO. It is simple, and boards are team-sized. For **v1.1**, a
-`TailDO` fan-out layer:
+`TailDO` fan-out layer (built in M4 after all, below):
 
 - SSE clients connect through the Worker to a per-board TailDO over a **hibernatable
   WebSocket**.
@@ -132,6 +132,28 @@ For v1, waiters stay in the DO. It is simple, and boards are team-sized. For **v
 - Idle tails then cost nothing, and the BoardDO serves one follower instead of N.
 - Upstream's own open benchmark (1, 10, and 50 concurrent tails) is our trigger: build the
   TailDO when 50 tails add more than 5 ms p99 to the write path.
+
+**As built (M4): the TailDO is in 1.0.** On a deployed board, 50 tails added 42–49 ms to a
+post's p99 without it, past the trigger, and nothing measurable with it (see "Load, as
+measured").
+- Every `events` call that waits (`wait > 0`: SSE pages after the first, `vb wait`) goes to
+  the board's TailDO (`TAIL`, `src/engine/tail.ts`); a page that doesn't wait, and `last`,
+  stay on the board's DO. Without the binding, the board's DO holds them as before.
+- The TailDO follows the board with one long-poll (`tailFollow`), keeping the newest 2,000
+  events and who's who as of them. Each reader's page is upstream's `pollFeed` with no wait,
+  run in the TailDO; what only the board has (messages at an index, older events) it reads
+  once for every reader that asks the same, and keeps, since it never changes. It stops
+  following a minute after its last reader.
+- A reader's first page comes from the board, so its cursor can be ahead of the TailDO: it
+  waits up to 2 seconds for the follower, then reads the board itself.
+- **Δ from this sketch:** no WebSockets. `board()` drives SSE in the Worker a page at a time
+  through the backend's `events`, so the TailDO answers those pages over RPC and is billed
+  while they wait, as the board's DO was.
+- Each request still reads the grants from the board's DO (`accessState`) before `board()`
+  decides access, one small RPC per SSE page. Caching them in the Worker would let a revoked
+  grant work a moment longer, so they aren't.
+- A reload (see "Deploys") reaches the TailDO too: a newer version's call, or the board it
+  follows answering from a newer version, resets it.
 
 **SSE length.** The Worker drives the stream: `board()` loops `events` pages. `streamMaxMs` is
 15 minutes. Clients reconnect with `after` either way. Workers have no wall-clock limit while
@@ -217,7 +239,12 @@ When one is newer than the DO's own, the DO answers its waiting long-polls (`/ev
 at once and stops new ones from waiting, then resets itself (`ctx.abort()`) once no call or
 alarm is running there, after the last answer has gone; its next request loads the new
 version, and long-polling clients poll again as they always do. It resets at most once per newer version (`bx_state` `reloaded-for`), so a DO that
-a gradual deployment keeps on the old version doesn't reset over and over. A run of the
+a gradual deployment keeps on the old version doesn't reset over and over. Every RPC to the
+DO counts as running, and it waits for storage to flush first: a DO holds an answer back
+until what its call wrote is durable, and resetting before then fails the caller for a write
+that may have landed. Requests queued at the DO when it resets fail with its reason; they
+never started, so the Worker's stubs send them once more (`retried`). The load test's first
+deploy of this found posts answering 500 mid-reset; `test/deploys.test.ts` covers it. A run of the
 board's own code that outlasted its minute isn't waited for: it's cut short, and its item
 runs again when its lease runs out. Without the binding, nothing changes. The first deploy
 that adds it can't reload a busy board yet: the DO it would reach still runs the code from
@@ -287,11 +314,21 @@ workers.dev, a named board of about 10,000 messages, from one laptop over the in
 | 50 tails | 133–149 / 252–866 ms |
 
 Thread reads and a channel's threads answered in 121–122 ms p50, 160–177 ms p99, so the board
-itself adds little over the round trip. Each run's two baselines differ by up to 16 ms at
-p99; 50 tails add 13–15 ms at p50 and 90–660 ms at p99 in every run. The network makes p99
-noisy, and a laptop holding 50 streams isn't 50 clients, but the trend is the local run's:
-tails cost every post, and 50 of them pass the TailDO's 5 ms. The board's own time per
-request wasn't measured: it has no server timing to read.
+itself adds little over the round trip. Those tails ran in the process that timed the posts,
+and reading 50 streams held up the timing too: the p99s above overstate what tails cost.
+
+**With and without the TailDO, the same day.** The same board and client, with the tails in a
+process of their own (`scripts/tails.mjs`), and the same deployment with and without its
+`TAIL` binding. Each run alternates 0 and 50 tails three times, 300 posts each.
+
+| 50 SSE tails against none | Post p50 added | Post p99 added |
+| --- | --- | --- |
+| Without the TailDO | 14–18 ms | 42–49 ms |
+| With the TailDO | 0–0.5 ms | −6 to 4 ms (the baselines vary by 12 ms) |
+
+With the TailDO, 50 tails cost a post nothing that the network's noise doesn't hide. The
+board's own time per request still wasn't measured: it has no server timing to read. Not
+measured: more than 50 tails, tails from more than one machine, and 100k messages with tails.
 
 ## Milestones
 

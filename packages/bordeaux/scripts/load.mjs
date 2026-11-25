@@ -111,20 +111,12 @@ async function seed(total) {
   process.stderr.write(`seeded ${total} messages in ${((performance.now() - started) / 1000).toFixed(0)} s\n`)
 }
 
-/** `count` SSE tails on the whole board, each reading every event: closed by the returned function. */
-function openTails(count) {
-  const controllers = []
-  for (let i = 0; i < count; i++) {
-    const controller = new AbortController()
-    controllers.push(controller)
-    fetch(`${url}/events`, { headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' }, signal: controller.signal })
-      .then(async (response) => {
-        for await (const _chunk of response.body) {
-        }
-      })
-      .catch(() => {})
-  }
-  return () => controllers.forEach((controller) => controller.abort())
+/** `count` SSE tails on the whole board, in a process of their own (`scripts/tails.mjs`): stopped by the returned function. */
+async function openTails(count) {
+  if (count === 0) return () => {}
+  const child = spawn(process.execPath, [join(root, 'scripts/tails.mjs'), url, String(count)], { env: { ...process.env, BOARD_TOKEN: token }, stdio: ['ignore', 'pipe', 'inherit'] })
+  await new Promise((resolve) => child.stdout.once('data', resolve))
+  return () => child.kill('SIGTERM')
 }
 
 try {
@@ -154,9 +146,9 @@ try {
   console.log('| --- | --- | --- |')
   let base = null
   for (const count of tails) {
-    const close = openTails(count)
-    // Let every tail connect and catch up before timing.
-    await new Promise((r) => setTimeout(r, 2000 + count * 50))
+    const close = await openTails(count)
+    // Let every tail's first page land and its wait start before timing.
+    await new Promise((r) => setTimeout(r, 2000))
     const post = await timed((i) => request('POST', '/messages', { channel: `load-${i % CHANNELS}`, text: `tailed ${i} ${TEXT}` }))
     close()
     base ??= post.p99

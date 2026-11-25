@@ -2,6 +2,7 @@
 // provider signs in to its platform as upstream does on first use: Slack's `auth.test`, a
 // Linear app's client-credentials token. Linear sends an app's webhooks only after its first
 // token, so this check is also what turns a new deployment's Linear webhooks on.
+import { retried } from '../engine/reload.ts'
 import { boardKey } from './backend.ts'
 import { configOf, type BordeauxConfig } from './config.ts'
 import { directory } from './auth.ts'
@@ -47,7 +48,7 @@ export async function collectAll(env: BordeauxEnv) {
   const names = [null, ...(await directory(env).boards()).map((board) => board.name)]
   for (const name of names) {
     try {
-      const collected = await env.BOARD.get(env.BOARD.idFromName(boardKey(name))).gc()
+      const collected = await retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(name)))).gc()
       console.log(`[bordeaux] gc ${name ?? '(default)'}: ${JSON.stringify(collected)}`)
     } catch (error) {
       console.error(`[bordeaux] gc ${name ?? '(default)'} failed:`, (error as Error)?.message ?? error)

@@ -1,5 +1,6 @@
 // Admin routes beside the protocol (spec 07): service tokens for now. Who may use them is decided
 // by board() itself: the request's own credential, asked `GET /me`, must manage every channel.
+import { retried } from '../engine/reload.ts'
 import type { Me } from '@vercel/board'
 import { directory } from './auth.ts'
 import { BOARD_NAME, boardUrl, forget } from './boards.ts'
@@ -52,7 +53,7 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
   const name = new URL(request.url).searchParams.get('board')
   const named = async () => {
     if (name !== null && (!BOARD_NAME.test(name) || !(await dir.hasBoard(name.toLowerCase())))) return error(404, 'no_board', `this team has no board named ${name}`)
-    return env.BOARD.get(env.BOARD.idFromName(boardKey(name)))
+    return retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(name))))
   }
 
   // How a board stands (spec 08, "Health"): its queues, dead letters, failures, and timers, and

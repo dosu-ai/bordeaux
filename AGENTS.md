@@ -136,7 +136,7 @@ quiet, for a person at a terminal first, `--json` for programs. What bordeaux ad
 
 ## layering
 
-Worker → upstream `board()` → `durable()` backend → the board's Durable Object.
+Worker → upstream `board()` → `durable()` backend → the board's Durable Object (and its TailDO, for waits).
 
 - **The Worker** (`src/worker/index.ts`) routes: the token broker (`/auth/*`), admin
   (`/admin/*`), JWKS, direct uploads, the inspector, then `board()` per board (`boardOf`,
@@ -153,6 +153,9 @@ Worker → upstream `board()` → `durable()` backend → the board's Durable Ob
   records, timers, and queues. Its alarm runs what isn't a request: schedule sends, task
   leases, wakes, and the board's own watchers and sync (`runOwn`), through a `board()` built
   in the DO from the same config (`boardOf`, `bindingOf`).
+- **The TailDO** (`src/engine/tail.ts`) holds the feed's waits for one board: SSE tails and
+  `/events?wait=`. It follows the board's log once and runs upstream's feed per reader, so a
+  post costs the board one follow, not a feed per tail (spec 08).
 - **A deployment's own code** is `configure()` (`src/worker/config.ts`): middleware for every
   board; watchers and sync for the default board. `configure((env) => …)` for anything built
   from secrets (`@dosu/bordeaux/sync`).

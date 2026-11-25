@@ -17,7 +17,7 @@ const runningOld = (stub: ReturnType<typeof board>) =>
   })
 
 /** Lets a reload that's waiting for the call to finish happen. */
-const settle = () => new Promise((resolve) => setTimeout(resolve, 50))
+const settle = () => new Promise((resolve) => setTimeout(resolve, 200))
 
 describe('a deploy', () => {
   it('reaches a busy board: a call from a newer version resets it once its answer has gone', async () => {
@@ -29,18 +29,45 @@ describe('a deploy', () => {
     expect(await runningOld(board('deploy-newer'))).toBe(false)
   })
 
-  it("reaches a board a client is long-polling: the poll answers at once, and the board resets", async () => {
+  it("reaches a board a client is long-polling: the long-poll waits in the TailDO, so the board resets", async () => {
     const token = await tokenFor(150, 'tailer')
     const stub = board(null as never)
     await runningOld(stub)
     const { cursor } = (await api(token, 'GET', '/events')).body
-    const started = Date.now()
-    const polling = api(token, 'GET', `/events?after=${encodeURIComponent(cursor)}&wait=20`)
+    const polling = api(token, 'GET', `/events?after=${encodeURIComponent(cursor)}&wait=3`)
     await new Promise((resolve) => setTimeout(resolve, 200))
     await stub.call('channels', {} as never, {}, null, NEW)
-    const polled = await polling
-    expect(polled.status).toBe(200)
+    await settle()
+    expect(await runningOld(board(null as never))).toBe(false)
+    expect((await polling).status).toBe(200)
+  })
+
+  it("reaches a TailDO: a newer version's long-poll ends the waiting ones at once, and it resets", async () => {
+    const token = await tokenFor(151, 'tailer2')
+    const tail = env.TAIL!.get(env.TAIL!.idFromName(boardKey(null)))
+    const { cursor } = (await api(token, 'GET', '/events')).body
+    const started = Date.now()
+    const polling = api(token, 'GET', `/events?after=${encodeURIComponent(cursor)}&wait=20`)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await runningOld(tail as never)
+    const wire = { principal: { id: 'bordeaux:user:151', kind: 'person', handle: 'tailer2', can: { '*': ['read'] } }, author: { id: 'bordeaux:user:151', handle: 'tailer2', name: 'tailer2', avatar: null, profile: null }, actor: { id: 'bordeaux:user:151', kind: 'person', handle: 'tailer2', name: 'tailer2', avatar: null }, request: true }
+    expect(await tail.events(wire as never, { after: cursor, wait: 20 } as never, null, NEW)).toMatchObject({ ok: true })
+    expect((await polling).status).toBe(200)
     expect(Date.now() - started).toBeLessThan(5000)
+    await settle()
+    expect(await runningOld(env.TAIL!.get(env.TAIL!.idFromName(boardKey(null))) as never)).toBe(false)
+  })
+
+  it("fails no request that's under way when it resets: grants reads included", async () => {
+    const token = await tokenFor(152, 'busy')
+    const stub = board(null as never)
+    await runningOld(stub)
+    // A burst of posts, each of which reads the grants first, as a newer version calls.
+    const posts = Array.from({ length: 40 }, (_, i) => api(token, 'POST', '/messages', { channel: 'deploy-busy', text: `post ${i}` }))
+    await stub.call('channels', {} as never, {}, null, { id: 'v3', timestamp: '2026-11-26T00:00:00.000Z' })
+    const more = Array.from({ length: 40 }, (_, i) => api(token, 'POST', '/messages', { channel: 'deploy-busy', text: `more ${i}` }))
+    const statuses = (await Promise.all([...posts, ...more])).map((answer) => answer.status)
+    expect(statuses.filter((status) => status !== 201)).toEqual([])
     await settle()
     expect(await runningOld(board(null as never))).toBe(false)
   })
