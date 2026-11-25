@@ -18,8 +18,8 @@ async function keySet(env: BordeauxEnv, refresh: boolean) {
   return keys.set
 }
 
-async function verified(env: BordeauxEnv, token: string): Promise<JWTPayload> {
-  const options = { issuer: env.BORDEAUX_URL, audience: env.BORDEAUX_URL, algorithms: ['ES256'] }
+async function verified(env: BordeauxEnv, token: string, audience: string): Promise<JWTPayload> {
+  const options = { issuer: env.BORDEAUX_URL, audience, algorithms: ['ES256'] }
   try {
     return (await jwtVerify(token, await keySet(env, false), options)).payload
   } catch (error) {
@@ -67,7 +67,7 @@ export async function revokedToken(env: BordeauxEnv, request: Request): Promise<
  * Who a bordeaux person token is, or null for anything else. A service token is upstream's to verify
  * as an OIDC token of the board's own issuer, which g4 names (spec 03).
  */
-export async function bordeauxTokens(env: BordeauxEnv, credential: string | null): Promise<HostPrincipal | null> {
+export async function bordeauxTokens(env: BordeauxEnv, credential: string | null, audience: string): Promise<HostPrincipal | null> {
   if (!credential) return null
   let iss: string | undefined
   try {
@@ -79,7 +79,7 @@ export async function bordeauxTokens(env: BordeauxEnv, credential: string | null
   if (SERVICE.test(decodeJwt(credential).sub ?? '')) return null
   let payload: JWTPayload
   try {
-    payload = await verified(env, credential)
+    payload = await verified(env, credential, audience)
   } catch (error) {
     const expired = error instanceof errors.JWTExpired
     throw new HttpError(401, expired ? 'token_expired' : 'invalid_token', expired ? 'this token has expired: sign in again (bx login)' : `this token didn't verify: ${(error as Error).message}`)

@@ -173,7 +173,13 @@ the client stays connected, and CPU time counts only active work, resetting on e
 - **Routing.** The URL path selects the board: `https://board.acme.dev/` is the default board,
   and `https://board.acme.dev/b/<name>/` is a named one.
   - Each board's discovery `url` and `audience` is its own URL. A token for one board can't be
-    replayed against another.
+    replayed against another. `POST /auth/token` takes an `audience` (one of the team's boards)
+    and `bx` keeps an access token per board; `/admin/tokens` takes the `board` a service's
+    token is for.
+  - The DirectoryDO keeps the board names (`bx boards create`, `bx list`). Anyone the default
+    board lets in makes one, as `ensure` does on Vercel; deleting one takes `manage` at `*` and
+    leaves its Durable Object's data in place. Another isolate can serve a deleted board for up
+    to 5 minutes.
   - Grants are per board, as upstream has them.
 - **Teams.** v1 is single-team per deployment. The DO key prefix `<team>/` leaves room for a
   hosted multi-tenant mode later ([QUESTIONS Q4](../QUESTIONS.md#q4)).

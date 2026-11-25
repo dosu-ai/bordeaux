@@ -7,7 +7,8 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createApp } from '@vercel/board/cli'
 
-type Saved = { url: string; login: string; refresh_token: string; access_token?: string; expires_at?: string }
+/** A sign-in to a deployment, and the access tokens it got for each of the team's boards. */
+type Saved = { url: string; login: string; refresh_token: string; tokens?: Record<string, { access_token: string; expires_at: string }> }
 type Store = { current: string | null; boards: Record<string, Saved> }
 
 const FILE = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'bordeaux', 'credentials.json')
@@ -63,7 +64,7 @@ async function login(url: string) {
     if (polled.status !== 200) fail(String(polled.json.error_description ?? error ?? `sign-in failed: ${polled.status}`))
     const issued = polled.json as { access_token: string; refresh_token: string; expires_at: string; login: string }
     const store = load()
-    store.boards[url] = { url, login: issued.login, refresh_token: issued.refresh_token, access_token: issued.access_token, expires_at: issued.expires_at }
+    store.boards[url] = { url, login: issued.login, refresh_token: issued.refresh_token, tokens: { [url]: { access_token: issued.access_token, expires_at: issued.expires_at } } }
     store.current = url
     save(store)
     process.stderr.write(`Signed in to ${url} as ${issued.login}\n`)
@@ -72,30 +73,50 @@ async function login(url: string) {
   fail('the code expired before you entered it: run bx login again')
 }
 
-/** The board this run uses: --url, BOARD_URL, or the one you last signed in to. */
-function boardUrl(args: string[]): string | null {
+/** The deployment a board's URL is on: a named board is at `<deployment>/b/<name>`. */
+const deploymentOf = (url: string) => url.replace(/\/b\/[^/]+$/, '')
+
+/** The deployment this run uses: --url, BOARD_URL, or the one you last signed in to. */
+function deploymentUrl(args: string[]): string | null {
   const at = args.indexOf('--url')
-  if (at !== -1 && args[at + 1]) return clean(args[at + 1]!)
-  if (process.env.BOARD_URL) return clean(process.env.BOARD_URL)
+  if (at !== -1 && args[at + 1]) return deploymentOf(clean(args[at + 1]!))
+  if (process.env.BOARD_URL) return deploymentOf(clean(process.env.BOARD_URL))
   return load().current
 }
 
-/** A fresh access token for `url`, renewing the sign-in when it's close to running out. */
+/** The board this run uses: a named one with --name (or BOARD_NAME), or the URL it was given. */
+function boardUrl(args: string[]): string | null {
+  const name = flag(args, '--name') ?? process.env.BOARD_NAME
+  const deployment = deploymentUrl(args)
+  if (name !== undefined && deployment !== null) return `${deployment}/b/${name.toLowerCase()}`
+  const at = args.indexOf('--url')
+  if (at !== -1 && args[at + 1]) return clean(args[at + 1]!)
+  if (process.env.BOARD_URL) return clean(process.env.BOARD_URL)
+  return deployment
+}
+
+/**
+ * A fresh access token for the board at `url`, made out to it (a token for one board isn't
+ * another's), renewing the sign-in when the one kept is close to running out.
+ */
 async function accessToken(url: string, force = false): Promise<string> {
+  const deployment = deploymentOf(url)
   const store = load()
-  const saved = store.boards[url]
-  if (!saved) return fail(`you aren't signed in to ${url}: run bx login ${url}`)
-  if (!force && saved.access_token && saved.expires_at && Date.parse(saved.expires_at) - Date.now() > EARLY_MS) return saved.access_token
-  const renewed = await post(`${url}/auth/token`, { grant_type: 'refresh_token', refresh_token: saved.refresh_token })
-  if (renewed.status !== 200) return fail(`your sign-in to ${url} has ended: run bx login ${url}`)
+  const saved = store.boards[deployment]
+  if (!saved) return fail(`you aren't signed in to ${deployment}: run bx login ${deployment}`)
+  const kept = saved.tokens?.[url]
+  if (!force && kept && Date.parse(kept.expires_at) - Date.now() > EARLY_MS) return kept.access_token
+  const renewed = await post(`${deployment}/auth/token`, { grant_type: 'refresh_token', refresh_token: saved.refresh_token, ...(url !== deployment ? { audience: url } : {}) })
+  if (renewed.status !== 200) return fail(String((renewed.json as { error_description?: string }).error_description ?? `your sign-in to ${deployment} has ended: run bx login ${deployment}`))
   const issued = renewed.json as { access_token: string; refresh_token: string; expires_at: string }
-  store.boards[url] = { ...saved, refresh_token: issued.refresh_token, access_token: issued.access_token, expires_at: issued.expires_at }
+  store.boards[deployment] = { ...saved, refresh_token: issued.refresh_token, tokens: { ...saved.tokens, [url]: { access_token: issued.access_token, expires_at: issued.expires_at } } }
   save(store)
   return issued.access_token
 }
 
-/** A protocol-adjacent request to the board as you: the admin routes (spec 07). */
+/** A request to the deployment's admin routes as you, with your default board's token (spec 07). */
 async function asYou(url: string, method: string, path: string, body?: unknown): Promise<Record<string, unknown>> {
+  url = deploymentOf(url)
   const response = await fetch(`${url}${path}`, {
     method,
     headers: { authorization: `Bearer ${await accessToken(url)}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
@@ -118,13 +139,36 @@ const seconds = (value: string) => {
   return Number(found[1]) * ({ d: 86400, h: 3600, m: 60, '': 1 } as Record<string, number>)[found[2]!]!
 }
 
+/** `bx list` and `bx boards create|delete <name>`: the team's boards (spec 07). */
+async function boards(url: string, args: string[]) {
+  const [word, action, name] = args.filter((arg) => !arg.startsWith('-'))
+  if (word === 'list' || action === 'list' || action === undefined) {
+    const { boards: found } = (await asYou(url, 'GET', '/admin/boards')) as { boards: { name: string | null; url: string }[] }
+    for (const board of found) process.stdout.write(`${(board.name ?? '(default)').padEnd(24)} ${board.url}\n`)
+    return
+  }
+  if (!name) fail(`usage: bx boards ${action} <name>`)
+  if (action === 'create') {
+    const { created } = await asYou(url, 'POST', '/admin/boards', { name })
+    process.stderr.write(created ? `made ${name}\n` : `${name} is there already\n`)
+    return
+  }
+  if (action === 'delete') {
+    const { deleted } = await asYou(url, 'DELETE', `/admin/boards/${encodeURIComponent(name!)}`)
+    if (!deleted) fail(`this team has no board named ${name}`)
+    return
+  }
+  fail('usage: bx list | bx boards create <name> | bx boards delete <name>')
+}
+
 /** `bx tokens create|list|revoke`: service tokens (spec 03), for someone who manages every channel. */
 async function tokens(url: string, args: string[]) {
   const [, action, ...rest] = args.slice(args.indexOf('tokens'))
   if (action === 'create') {
     const service = flag(rest, '--service') ?? fail('usage: bx tokens create --service <name> [--env <env>] [--ttl 90d]')
     const ttl = flag(rest, '--ttl')
-    const made = await asYou(url, 'POST', '/admin/tokens', { service, env: flag(rest, '--env') ?? 'production', ...(ttl ? { ttl: seconds(ttl) } : {}) })
+    const board = flag(rest, '--name') ?? process.env.BOARD_NAME
+    const made = await asYou(url, 'POST', '/admin/tokens', { service, env: flag(rest, '--env') ?? 'production', ...(ttl ? { ttl: seconds(ttl) } : {}), ...(board ? { board } : {}) })
     process.stderr.write(`${made.sub}, until ${made.expires_at} (revoke with: bx tokens revoke ${made.jti})\n`)
     process.stdout.write(`${made.token}\n`)
     return
@@ -171,6 +215,8 @@ usage: bx <command> [options]
 bordeaux:
   login <url>                         sign in with GitHub
   logout [url]                        forget your sign-in
+  list                                the team's boards (--name <board> picks one for any command)
+  boards create|delete <name>         make or delete a named board
   token                               print a fresh access token (export BOARD_TOKEN=$(bx token))
   tokens create --service <name>      a service's token, up to 90 days [--env <env>] [--ttl 30d]
   tokens list | revoke <id>           the service tokens, and revoking one
@@ -200,8 +246,9 @@ async function help(app: { run(args: string[]): Promise<number> }, args: string[
 }
 
 async function main(argv: string[]) {
+  argv = [...argv]
   const [word] = argv.filter((arg) => !arg.startsWith('-'))
-  if (word === 'login') return login(clean(argv[argv.indexOf('login') + 1] ?? boardUrl(argv) ?? fail('usage: bx login <board url>')))
+  if (word === 'login') return login(deploymentOf(clean(argv[argv.indexOf('login') + 1] ?? deploymentUrl(argv) ?? fail('usage: bx login <board url>'))))
   if (word === 'logout') {
     const store = load()
     const url = clean(argv[argv.indexOf('logout') + 1] ?? store.current ?? fail("you aren't signed in"))
@@ -215,11 +262,10 @@ async function main(argv: string[]) {
     process.stdout.write(`${await accessToken(url, argv.includes('--fresh'))}\n`)
     return
   }
-  // Upstream sends these to Vercel's API: a bordeaux deployment names its boards itself (M2).
-  if (word === 'list' || argv.includes('--name') || argv.includes('--scope') || argv.includes('--ensure') || process.env.BOARD_NAME)
-    fail("named boards come with bordeaux's next milestone: use the board's URL")
-
-  if (word === 'tokens') return tokens(boardUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  // Upstream sends these to Vercel's API; a bordeaux deployment keeps its team's boards itself.
+  if (argv.includes('--scope')) fail('--scope names a Vercel team: a bordeaux deployment is one team')
+  if (word === 'list' || word === 'boards') return boards(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'tokens') return tokens(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
 
   const app = createApp({ appName: 'bx' })
   if (word === undefined || word === 'help' || argv.includes('--help') || argv.includes('-h')) {
@@ -227,6 +273,11 @@ async function main(argv: string[]) {
     return
   }
   const url = boardUrl(argv) ?? fail('no board: run bx login <url>')
+  const name = flag(argv, '--name') ?? process.env.BOARD_NAME
+  if (name !== undefined && argv.includes('--ensure')) await asYou(url, 'POST', '/admin/boards', { name })
+  // The board is BOARD_URL alone: upstream reads --name, --ensure, and BOARD_NAME as Vercel's.
+  argv = argv.filter((arg, at) => arg !== '--ensure' && arg !== '--name' && argv[at - 1] !== '--name')
+  delete process.env.BOARD_NAME
   process.env.BOARD_URL = url
   // A token you set yourself goes as it is, as with vb; otherwise your sign-in's.
   if (!process.env.BOARD_TOKEN) {

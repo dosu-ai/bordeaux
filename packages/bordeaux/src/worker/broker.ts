@@ -5,6 +5,7 @@ import { directory, personId } from './auth.ts'
 import type { Session } from './directory.ts'
 import type { BordeauxEnv } from './env.ts'
 import { membershipOf } from './github-app.ts'
+import { boardNamed } from './boards.ts'
 
 /** How long an access token lasts: the most `vb` and agents hold one before asking for another. */
 export const ACCESS_TTL = 12 * 3600
@@ -59,10 +60,13 @@ async function renewed(env: BordeauxEnv, session: Session, send: Fetch): Promise
   return { ...next, owner: ownerOf(env, session.login, membership.role), checkedAt: Date.now() }
 }
 
-/** The board's tokens for a sign-in: a short access token and the refresh token that renews it. */
-async function issue(env: BordeauxEnv, session: Session): Promise<Response> {
+/**
+ * The board's tokens for a sign-in: a short access token, made out to `audience` (one of the team's
+ * boards, the default one when it's left out), and the refresh token that renews it.
+ */
+async function issue(env: BordeauxEnv, session: Session, audience: string | undefined): Promise<Response> {
   const dir = directory(env)
-  const { token, expiresAt } = await dir.mint({ sub: `user:${session.id}`, login: session.login, ...(session.owner ? { owner: true } : {}) }, ACCESS_TTL)
+  const { token, expiresAt } = await dir.mint({ sub: `user:${session.id}`, login: session.login, ...(session.owner ? { owner: true } : {}) }, ACCESS_TTL, audience)
   const refresh = await dir.startSession(session)
   await dir.setOwner(personId(session.id), session.owner, session.expiresAt)
   return Response.json({
@@ -91,13 +95,14 @@ export async function broker(request: Request, env: BordeauxEnv, send: Fetch = f
   }
   if (pathname !== '/auth/token') return oauthError(404, 'invalid_request', `no route ${pathname}`)
 
-  const body = (await request.json().catch(() => ({}))) as { grant_type?: string; device_code?: string; refresh_token?: string }
+  const body = (await request.json().catch(() => ({}))) as { grant_type?: string; device_code?: string; refresh_token?: string; audience?: string }
+  if (body.audience !== undefined && boardNamed(env, body.audience) === undefined) return oauthError(400, 'invalid_target', `audience: ${body.audience} isn't one of this deployment's boards`)
   if (body.grant_type === 'refresh_token') {
     if (!body.refresh_token) return oauthError(400, 'invalid_request', 'refresh_token is required')
     const session = await directory(env).takeSession(body.refresh_token)
     if (!session) return oauthError(401, 'invalid_grant', 'that sign-in has ended: run bx login')
     const next = await renewed(env, session, send)
-    return next instanceof Response ? next : issue(env, next)
+    return next instanceof Response ? next : issue(env, next, body.audience)
   }
   if (body.grant_type !== DEVICE_GRANT) return oauthError(400, 'unsupported_grant_type', `grant_type: ${DEVICE_GRANT} or refresh_token`)
   if (!clientId) return oauthError(501, 'unsupported_grant_type', 'this board has no GitHub App to sign in with: set GITHUB_CLIENT_ID')
@@ -113,5 +118,5 @@ export async function broker(request: Request, env: BordeauxEnv, send: Fetch = f
   if (!answer.access_token) return oauthError(400, answer.error ?? 'invalid_grant', answer.error_description ?? 'GitHub gave no token', answer.interval ? { interval: answer.interval } : {})
   const who = await member(send, env, answer.access_token)
   if (who instanceof Response) return who
-  return issue(env, { ...who, checkedAt: Date.now(), expiresAt: Date.now() + REFRESH_TTL_MS })
+  return issue(env, { ...who, checkedAt: Date.now(), expiresAt: Date.now() + REFRESH_TTL_MS }, body.audience)
 }

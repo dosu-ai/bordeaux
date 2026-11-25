@@ -1,11 +1,9 @@
 // The bordeaux Worker: upstream's board() (default build) on the `durable()` backend, with
 // bordeaux's verifier chain, its token broker, and the hooks upstream expects from Vercel.
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { board } from '@vercel/board'
-import { oidcTokens } from '@vercel/board/access'
-import { bordeauxTokens, directory, issuerKeys, revokedToken } from './auth.ts'
-import { durable } from './backend.ts'
+import { directory, revokedToken } from './auth.ts'
 import { admin } from './admin.ts'
+import { boardNamed, boardOf, BOARD_NAME, exists } from './boards.ts'
 import { broker } from './broker.ts'
 import type { BordeauxEnv } from './env.ts'
 
@@ -16,29 +14,14 @@ export { DirectoryDO } from './directory.ts'
 const requestContext = new AsyncLocalStorage<{ waitUntil(promise: Promise<unknown>): void }>()
 Reflect.set(globalThis, Symbol.for('@vercel/request-context'), { get: () => requestContext.getStore() })
 
-let team: ReturnType<typeof board> | null = null
-
-function boardOf(env: BordeauxEnv) {
-  if (!env.BORDEAUX_URL) throw new Error('BORDEAUX_URL is required: the board\'s public URL, which every token is for')
-  // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
-  const tokens = oidcTokens({ oidc: { [env.BORDEAUX_URL]: issuerKeys(env) } })
-  team ??= board({
-    backend: durable(env),
-    url: env.BORDEAUX_URL,
-    // The verifier chain (spec 03): the board's own tokens, then upstream's for GitHub Actions and
-    // any issuer a grant names.
-    authenticate: async (request) => (await bordeauxTokens(env, request.credential)) ?? tokens(request),
-  })
-  return team
-}
-
 async function devToken(request: Request, env: BordeauxEnv): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { id?: number | string; login?: string; ttl?: number }
+  const body = (await request.json().catch(() => ({}))) as { id?: number | string; login?: string; ttl?: number; audience?: string }
   const id = String(body.id ?? 1)
   if (!/^\d+$/.test(id)) return Response.json({ error: { code: 'invalid_request', message: 'id: a GitHub user ID' } }, { status: 400 })
+  if (body.audience !== undefined && boardNamed(env, body.audience) === undefined) return Response.json({ error: { code: 'invalid_request', message: 'audience: one of this deployment\'s boards' } }, { status: 400 })
   const login = body.login ?? `dev${id}`
   const dir = directory(env)
-  const { token, expiresAt } = await dir.mint({ sub: `user:${id}`, login }, Math.min(body.ttl ?? 3600, 12 * 3600))
+  const { token, expiresAt } = await dir.mint({ sub: `user:${id}`, login }, Math.min(body.ttl ?? 3600, 12 * 3600), body.audience)
   // A sign-in too, so `bx` can be run against a local board with no GitHub App.
   const refresh = await dir.startSession({ id, login, owner: false, checkedAt: Date.now(), expiresAt: Date.now() + 24 * 3600 * 1000 })
   return Response.json({ access_token: token, token_type: 'Bearer', expires_at: new Date(expiresAt).toISOString(), refresh_token: refresh, login })
@@ -53,14 +36,23 @@ export default {
       if (pathname === '/.well-known/jwks.json') return Response.json(await directory(env).jwks(), { headers: { 'cache-control': 'public, max-age=300' } })
       if (pathname.startsWith('/auth/')) return broker(request, env)
       if (pathname.startsWith('/admin/')) {
-        const board = boardOf(env)
-        return admin(request, env, (asked) => board.fetch(new Request(new URL('/me', asked.url), { headers: asked.headers })))
+        // Who's asking, as the default board knows them.
+        const team = boardOf(env, null)
+        return admin(request, env, (asked) => team.fetch(new Request(new URL('/me', asked.url), { headers: asked.headers })))
       }
       if (pathname === '/__dev/token' && request.method === 'POST') {
         if (env.BORDEAUX_DEV !== '1') return new Response('not found', { status: 404 })
         return devToken(request, env)
       }
-      return boardOf(env).fetch(request)
+      // A named board at /b/<name>/, which the team must have made; the default board at the root.
+      const named = /^\/b\/([^/]+)(?:\/|$)/.exec(pathname)
+      if (named) {
+        const name = named[1]!
+        if (!BOARD_NAME.test(name) || !(await exists(env, name)))
+          return Response.json({ error: { code: 'no_board', message: `this team has no board named ${name}: bx boards create ${name}` } }, { status: 404 })
+        return boardOf(env, name).fetch(request)
+      }
+      return boardOf(env, null).fetch(request)
     })
   },
 } satisfies ExportedHandler<BordeauxEnv>

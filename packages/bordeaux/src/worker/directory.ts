@@ -21,6 +21,7 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     ctx.storage.sql.exec('create table if not exists bx_refresh (hash text primary key, data text not null, expires_at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_revoked (jti text primary key, until integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_owners (principal text primary key, until integer not null)')
+    ctx.storage.sql.exec('create table if not exists bx_boards (name text primary key, by text not null, created_at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_tokens (jti text primary key, sub text not null, by text not null, expires_at integer not null, revoked integer not null default 0)')
   }
 
@@ -46,13 +47,13 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     return { keys: rows.map((row) => JSON.parse(row.public_jwk) as JWK) }
   }
 
-  /** A token from the board's own issuer, for its URL, lasting `ttl` seconds. */
-  async mint(claims: JWTPayload & { sub: string }, ttl: number): Promise<{ token: string; jti: string; expiresAt: number }> {
+  /** A token from the board's own issuer, made out to `audience` (a board's URL), lasting `ttl` seconds. */
+  async mint(claims: JWTPayload & { sub: string }, ttl: number, audience?: string): Promise<{ token: string; jti: string; expiresAt: number }> {
     const { key, kid } = await this.key()
     const url = this.env.BORDEAUX_URL
     const jti = crypto.randomUUID()
     const now = Math.floor(Date.now() / 1000)
-    const token = await new SignJWT(claims).setProtectedHeader({ alg: ALG, kid, typ: 'JWT' }).setIssuer(url).setAudience(url).setIssuedAt(now).setExpirationTime(now + ttl).setJti(jti).sign(key)
+    const token = await new SignJWT(claims).setProtectedHeader({ alg: ALG, kid, typ: 'JWT' }).setIssuer(url).setAudience(audience ?? url).setIssuedAt(now).setExpirationTime(now + ttl).setJti(jti).sign(key)
     return { token, jti, expiresAt: (now + ttl) * 1000 }
   }
 
@@ -80,6 +81,27 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
 
   async isOwner(principal: string): Promise<boolean> {
     return this.ctx.storage.sql.exec('select 1 from bx_owners where principal = ? and until > ?', principal, Date.now()).toArray().length > 0
+  }
+
+  /** The team's named boards (the default board isn't one: it always is). */
+  async boards(): Promise<{ name: string; by: string; created_at: string }[]> {
+    return this.ctx.storage.sql
+      .exec<{ name: string; by: string; created_at: number }>('select * from bx_boards order by name')
+      .toArray()
+      .map((row) => ({ name: row.name, by: row.by, created_at: new Date(Number(row.created_at)).toISOString() }))
+  }
+
+  async hasBoard(name: string): Promise<boolean> {
+    return this.ctx.storage.sql.exec('select 1 from bx_boards where name = ?', name).toArray().length > 0
+  }
+
+  /** Makes a named board, or finds the one there: `created` says which. */
+  async createBoard(name: string, by: string): Promise<boolean> {
+    return this.ctx.storage.sql.exec('insert into bx_boards (name, by, created_at) values (?, ?, ?) on conflict (name) do nothing returning 1 as made', name, by, Date.now()).toArray().length > 0
+  }
+
+  async deleteBoard(name: string): Promise<boolean> {
+    return this.ctx.storage.sql.exec('delete from bx_boards where name = ? returning 1 as gone', name).toArray().length > 0
   }
 
   /** Keeps a service token's record, to list and revoke it: never the token itself. */

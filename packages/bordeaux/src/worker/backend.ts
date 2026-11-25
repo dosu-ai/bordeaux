@@ -16,14 +16,15 @@ const METHODS = 'discovery me channels createChannel actors channelMessages thre
 /** The Durable Object a board lives in: one team per deployment for now (Q4), keyed so more can come. */
 export const boardKey = (name: string | null) => `default/${(name ?? 'default').toLowerCase()}`
 
-export function durable(env: BordeauxEnv): Backend {
+export function durable(env: BordeauxEnv, name: string | null = null): Backend {
   let binding: BoardBinding | null = null
-  const stub = () => env.BOARD.get(env.BOARD.idFromName(boardKey(binding?.name ?? null)))
+  const url = name === null ? env.BORDEAUX_URL : `${env.BORDEAUX_URL}/b/${name.toLowerCase()}`
+  const stub = () => env.BOARD.get(env.BOARD.idFromName(boardKey(name)))
 
   const discovery = async (): Promise<Discovery> => ({
     version: UPSTREAM_VERSION,
-    url: env.BORDEAUX_URL,
-    audience: env.BORDEAUX_URL,
+    url,
+    audience: url,
     team_id: null,
     // No Vercel project: clients send the token they have rather than mint one through Vercel.
     project_id: null,
