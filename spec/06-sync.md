@@ -102,6 +102,13 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
   landed in time; a stalled Slack call under the uncapped default would explain it, but it
   wasn't caught in the act. Every later event (six of them, five before the cap) landed in
   under 2 s, routed by `#name` or by ID.
+- **Inbox dedupe (Δ retention).** An inbox takes a platform event once by its derived ID,
+  remembered in `bx_inbox_seen` for 30 days. Upstream keeps every ID in its inbox sessions
+  forever. Before this, a repeat was dropped only while the first was still queued, and a
+  Slack reaction resent 200 ms later landed twice. `bx export` doesn't carry the table, so a
+  board moved within a platform's retry window may take a resend again.
+- GitHub ran live too (issues, a PR, comments both ways, no echo of the App's own comment).
+  Linear hasn't.
 - Upstream's intake drops an event whose channel the routing doesn't map, without a log
   line. `slackSync(…, { debug: true })` logs the adapter's side.
 - **Gotcha.** A provider that can't reach its platform's API at startup can hold up the

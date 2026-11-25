@@ -33,6 +33,9 @@ In GitHub, open your org's **Settings → Developer settings → GitHub Apps →
 Members: Read-only is what lets the person's sign-in token, and the App itself, see org
 membership. Nothing else is needed for signing in.
 
+GitHub's App manifests can't turn on device flow, so an App made from one needs **Enable
+Device Flow** ticked by hand afterwards, or `bx login` is refused.
+
 After creating it, note the **App ID** and the **Client ID** at the top of its page. Under
 **Client secrets**, generate one and copy it. Under **Private keys**, generate one and save
 the `.pem` file.

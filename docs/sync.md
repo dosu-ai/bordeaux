@@ -86,6 +86,14 @@ npx wrangler secret put GITHUB_WEBHOOK_SECRET
 sign-in. `githubSync` needs `userName`, the App's bot login (`<app-slug>[bot]`), so its own
 comments don't come back.
 
+A repo mapped to a board channel (`'acme/www': 'prs'`) brings its PRs and issues in and sends
+nothing back: GitHub is often public. `mirror('prs')` (from `@dosu/bordeaux/sync`) sends every
+board reply back as a comment, posted by the App with the author's name in bold first.
+
+The repo-permission change asks the org to approve it: an owner accepts it on the App's
+installation (**Settings → GitHub Apps → Configure → Review request**), and adds the repos
+under **Repository access**.
+
 ## Linear
 
 1. Create a Linear app (**Settings → API → Applications**) with the `read`, `write`,
@@ -126,11 +134,23 @@ If step 1 doesn't happen:
 
 **Run on 2026-11-25** against a test board on workers.dev and the Dosu workspace: all four
 steps passed (Slack root → board, board reply → Slack thread as its author, Slack thread
-reply → board thread, board reaction → Slack). A reaction made on Slack wasn't checked.
-The first two messages, sent within two minutes of installing the app, never landed (the
+reply → board thread, board reaction → Slack); a reaction made on Slack reached the board
+too. The first two messages, sent within two minutes of installing the app, never landed (the
 second only after a redeploy, on Slack's retry), and the cause wasn't caught: by the time it
 was instrumented, every message landed in under 2 seconds, routed by `#name` or by ID,
 including four that were each the first after a fresh deploy. One gap that would explain it
 is now closed: `slackSync` used the Slack client's default of 10 retries over 30 minutes with
 no request timeout, so one stalled Slack call could hold a webhook past Slack's 3 seconds. It
-now caps the client as upstream does (`SLACK_CLIENT`).
+now caps the client as upstream does (`SLACK_CLIENT`). Upstream sets no such limits on the
+GitHub and Linear clients it builds, so `githubSync` and `linearSync` don't either.
+
+The same Slack reaction arrived twice, 200 ms apart, and landed twice: the inbox dropped a
+repeat only while the first was still queued. It now remembers every event it took for 30
+days (see spec 06).
+
+**GitHub, the same day,** against `dosu-ai/bordeaux-sync-test` mapped with `mirror`: an issue
+and a PR each became a board root (`Issue #1: …`, `PR #2: …`, labeled `issue=`/`pr=`,
+`state=open`, and the PR's `head`), a board reply became a comment by the App, a GitHub
+comment came back into the board thread, and the App's own comment didn't echo back.
+
+Linear hasn't been run live.

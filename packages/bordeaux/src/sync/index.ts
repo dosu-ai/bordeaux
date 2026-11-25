@@ -19,6 +19,7 @@ import { toPkcs8 } from '../worker/github-app.ts'
 export { channels } from '@vercel/board/sync-slack'
 export { repos } from '@vercel/board/sync-github'
 export { teams } from '@vercel/board/sync-linear'
+export { into, mirror } from '@vercel/board/sync'
 
 /** The secrets each platform reads, by name (`wrangler secret put <name>`). */
 export type SyncSecrets = {
