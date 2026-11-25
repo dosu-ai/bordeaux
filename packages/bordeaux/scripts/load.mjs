@@ -6,6 +6,10 @@
 //
 //   node scripts/load.mjs                                  # 10k and 100k, tails 0,1,10,50
 //   node scripts/load.mjs --sizes 2000 --tails 0,10 --samples 50
+//   BOARD_TOKEN=… node scripts/load.mjs --url https://board.acme.dev/b/load --sizes 10000
+//
+// `--url` measures a deployed board instead, as BOARD_TOKEN: use a board of its own, since
+// seeding posts thousands of messages to it.
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
@@ -33,17 +37,21 @@ const freePort = () =>
     })
   })
 
-const port = await freePort()
-const url = `http://127.0.0.1:${port}`
-const state = mkdtempSync(join(tmpdir(), 'bordeaux-load-'))
-const dev = spawn('npx', ['wrangler', 'dev', '--port', String(port), '--ip', '127.0.0.1', '--persist-to', state, '--var', `BORDEAUX_URL:${url}`, '--var', 'BORDEAUX_DEV:1'], {
-  cwd: root,
-  env: { ...process.env, WRANGLER_SEND_METRICS: 'false' },
-  stdio: ['ignore', 'ignore', 'inherit'],
-})
+const deployed = arg('--url', null)?.replace(/\/+$/, '') ?? null
+if (deployed && !process.env.BOARD_TOKEN) throw new Error('--url needs BOARD_TOKEN: a token for that board')
+const port = deployed ? 0 : await freePort()
+const url = deployed ?? `http://127.0.0.1:${port}`
+const state = deployed ? null : mkdtempSync(join(tmpdir(), 'bordeaux-load-'))
+const dev = deployed
+  ? null
+  : spawn('npx', ['wrangler', 'dev', '--port', String(port), '--ip', '127.0.0.1', '--persist-to', state, '--var', `BORDEAUX_URL:${url}`, '--var', 'BORDEAUX_DEV:1'], {
+      cwd: root,
+      env: { ...process.env, WRANGLER_SEND_METRICS: 'false' },
+      stdio: ['ignore', 'ignore', 'inherit'],
+    })
 const stop = () => {
-  dev.kill('SIGTERM')
-  rmSync(state, { recursive: true, force: true })
+  dev?.kill('SIGTERM')
+  if (state) rmSync(state, { recursive: true, force: true })
 }
 process.on('exit', stop)
 process.on('SIGINT', () => process.exit(130))
@@ -117,8 +125,7 @@ try {
     if (tries > 60) throw new Error(`the board didn't start at ${url}`)
     await new Promise((r) => setTimeout(r, 1000))
   }
-  const signIn = async () => (token = (await (await fetch(`${url}/__dev/token`, { method: 'POST', body: JSON.stringify({ id: 1, login: 'load', ttl: 12 * 3600 }) })).json()).access_token)
-  await signIn()
+  token = deployed ? process.env.BOARD_TOKEN : (await (await fetch(`${url}/__dev/token`, { method: 'POST', body: JSON.stringify({ id: 1, login: 'load', ttl: 12 * 3600 }) })).json()).access_token
 
   const rows = []
   for (const size of sizes) {
