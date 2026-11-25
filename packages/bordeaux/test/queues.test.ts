@@ -72,13 +72,20 @@ describe("a sync elsewhere's inbox", () => {
       await skipRetries('bordeaux:user:133')
     }
     expect((await api(token, 'GET', '/inbox/acme-slack/next')).body.items).toEqual([])
-    const dead = await board().deadLetters()
-    expect(dead.find((letter) => letter.id === id)).toMatchObject({ owner: 'bordeaux:user:133', queue: '@inbox:acme-slack', error: 'the platform is down', attempts: MATCH_TRIES })
+    const owner = await tokenFor(1, 'owner')
+    const { dead } = (await api(owner, 'GET', '/admin/dead-letters')).body
+    expect(dead.find((letter: { id: string }) => letter.id === id)).toMatchObject({ owner: 'bordeaux:user:133', queue: '@inbox:acme-slack', error: 'the platform is down', attempts: MATCH_TRIES })
+    expect((await api(owner, 'GET', '/admin/health')).body.dead.count).toBeGreaterThan(0)
 
-    expect(await board().replayDead(id)).toBe(true)
+    expect((await api(owner, 'POST', `/admin/dead-letters/${encodeURIComponent(id)}/retry`)).body).toEqual({ retried: id })
     const [again] = (await api(token, 'GET', '/inbox/acme-slack/next')).body.items
     expect(again).toMatchObject({ id, attempt: 0 })
-    expect((await board().deadLetters()).some((letter) => letter.id === id)).toBe(false)
+    expect((await api(owner, 'GET', '/admin/dead-letters')).body.dead.some((letter: { id: string }) => letter.id === id)).toBe(false)
+    expect((await api(owner, 'POST', `/admin/dead-letters/${encodeURIComponent(id)}/retry`)).status).toBe(404)
+  })
+
+  it('shows dead letters only to someone who manages every channel', async () => {
+    expect((await api(await tokenFor(1, 'owner'), 'GET', '/admin/dead-letters', undefined, { 'x-board-can': 'ops=read' })).status).toBe(403)
   })
 })
 

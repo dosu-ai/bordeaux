@@ -187,9 +187,10 @@ taught:
   inspector, `vb tail`), its DO keeps running the code and the secrets it started with.
   Close those clients, then check, before concluding a fix or a new secret didn't work.
 - **`wrangler tail` drops events**, whole webhooks and DO calls included: its silence proves
-  nothing. Record what you need where you can read it back, such as R2 or the DO's
-  `ownFailures()` (its last 50 failures) and `deadLetters()` (what its queues gave up on,
-  replayed with `replayDead(id)`), and remove your own instrumentation afterwards.
+  nothing. Record what you need where you can read it back, such as R2, `bx health` (queues,
+  the latest failure, sync), `bx dead-letters` (what the queues gave up on, `--retry <id>`),
+  or the DO's `ownFailures()` (its last 50 failures), and remove your own instrumentation
+  afterwards.
 - **A secret check right after `wrangler secret put`** can still hit the old version. Wait a
   few seconds and check again before asking anyone to re-enter it.
 - **Platforms have their own preconditions:** Linear sends an app's webhooks only after the

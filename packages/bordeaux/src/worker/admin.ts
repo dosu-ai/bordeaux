@@ -64,6 +64,20 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
     return Response.json({ board: name?.toLowerCase() ?? null, ...health, sync })
   }
 
+  // What a board's queues gave up on (spec 07, `bx dead-letters`), and putting one back.
+  if (pathname === '/admin/dead-letters' && request.method === 'GET') {
+    const stub = await named()
+    if (stub instanceof Response) return stub
+    return Response.json({ dead: await stub.deadLetters() })
+  }
+  const retrying = /^\/admin\/dead-letters\/([^/]+)\/retry$/.exec(pathname)
+  if (retrying && request.method === 'POST') {
+    const stub = await named()
+    if (stub instanceof Response) return stub
+    const id = decodeURIComponent(retrying[1]!)
+    return (await stub.replayDead(id)) ? Response.json({ retried: id }) : error(404, 'not_found', `no dead letter ${id} on this board: bx dead-letters lists them`)
+  }
+
   // A board's whole log, out and in (spec 07).
   if (pathname === '/admin/export' || pathname === '/admin/import') {
     const stub = await named()

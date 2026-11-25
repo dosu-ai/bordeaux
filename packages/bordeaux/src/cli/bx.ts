@@ -6,7 +6,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'n
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createApp } from '@vercel/board/cli'
-import type { Health as BoardHealth } from '../engine/engine.ts'
+import type { DeadLetter, Health as BoardHealth } from '../engine/engine.ts'
 import type { SyncHealth } from '../worker/health.ts'
 
 /** What `GET /admin/health` answers. */
@@ -198,8 +198,27 @@ async function health(url: string, args: string[]) {
   rows.push(['failed', failed ? `${failed.at}  ${failed.queue}  ${failed.error}` : 'nothing lately'])
   rows.push(['timers', `${found.timers.count}${found.timers.next ? `, next ${found.timers.next}` : ''}${found.timers.late ? `, ${found.timers.late} late: the alarm isn't running them` : ''}`])
   for (const sync of found.sync) rows.push(['sync', `${sync.key.padEnd(12)} ${sync.ok ? 'ok' : sync.error}`])
+  if (found.board === null && found.sync.length === 0) rows.push(['sync', 'none configured'])
   for (const [label, text] of rows) process.stdout.write(`${label.padEnd(7)} ${text}\n`)
   if (found.sync.some((sync) => !sync.ok) || found.timers.late > 0) process.exitCode = 1
+}
+
+/** `bx dead-letters [--consumer <owner>] [--retry <id>] [--name <board>] [--json]`: what a board's queues gave up on. */
+async function deadLetters(url: string, args: string[]) {
+  const board = flag(args, '--name') ?? process.env.BOARD_NAME
+  const query = board ? `?board=${encodeURIComponent(board)}` : ''
+  const retry = flag(args, '--retry')
+  if (retry !== undefined) {
+    await asYou(url, 'POST', `/admin/dead-letters/${encodeURIComponent(retry)}/retry${query}`)
+    process.stderr.write(`${retry} is back on its queue\n`)
+    return
+  }
+  const consumer = flag(args, '--consumer')
+  const { dead } = (await asYou(url, 'GET', `/admin/dead-letters${query}`)) as unknown as { dead: DeadLetter[] }
+  const found = consumer === undefined ? dead : dead.filter((letter) => letter.owner === consumer)
+  if (args.includes('--json')) return void process.stdout.write(`${JSON.stringify({ dead: found })}\n`)
+  if (found.length === 0) return void process.stderr.write('no dead letters\n')
+  for (const letter of found) process.stdout.write(`${letter.id}  ${letter.at}  ${letter.queue}  ${letter.owner}  ${letter.attempts} tries  ${letter.error}\n`)
 }
 
 /** `bx tokens create|list|revoke`: service tokens (spec 03), for someone who manages every channel. */
@@ -262,6 +281,7 @@ bordeaux:
   import <file>                       an export, into a board that has nothing yet
   token                               print a fresh access token (export BOARD_TOKEN=$(bx token))
   health                              a board's queues, dead letters, and sync [--json]
+  dead-letters [--retry <id>]         what its queues gave up on [--consumer <owner>], or retry one
   tokens create --service <name>      a service's token, up to 90 days [--env <env>] [--ttl 30d]
   tokens list | revoke <id>           the service tokens, and revoking one
   grants create --service <name>      let a service's tokens in [--env <env>], or
@@ -310,6 +330,7 @@ async function main(argv: string[]) {
   if (argv.includes('--scope')) fail('--scope names a Vercel team: a bordeaux deployment is one team')
   if (word === 'list' || word === 'boards') return boards(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'export' || word === 'import') return exporting(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+  if (word === 'dead-letters') return deadLetters(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'health') return health(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
   if (word === 'tokens') return tokens(deploymentUrl(argv) ?? fail('no board: run bx login <url>'), argv)
 

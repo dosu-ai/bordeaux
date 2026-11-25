@@ -175,6 +175,6 @@ inspector's live feed, `vb tail`), the board's Durable Object keeps running the 
 secrets it started with: a deploy reaches it only once it's idle. In this run, roots posted
 right after a secret was fixed still failed, until the inspector closed; the new code was
 answering 12 seconds later. Close long-polling clients to pick up a deploy or a new secret
-at once. `BoardDO.ownFailures()` lists the board's recent failures (its own runs, and events
-matching couldn't handle), newest first; `deadLetters()` lists what a queue gave up on, and
-`replayDead(id)` runs one again.
+at once. `bx health` shows the board's latest failure (its own runs, and events matching
+couldn't handle) and whether each sync reaches its platform; `bx dead-letters` lists what a
+queue gave up on, and `bx dead-letters --retry <id>` runs one again.

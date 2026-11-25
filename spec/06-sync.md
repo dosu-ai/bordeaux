@@ -118,7 +118,8 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
   its own runs that threw, and events matching couldn't handle, which are passed so they
   never hold up the rest. What a queue gives up on (10 tries for the board's own runs, 5 for
   a registrant's, as upstream) is kept with its event in `bx_dead` (`deadLetters()`), and
-  `replayDead(id)` puts it back on its queue. A UI and `bx` commands for them are M4.
+  `replayDead(id)` puts it back on its queue. `bx dead-letters` lists them and `--retry <id>`
+  replays one; `bx health` shows the count and the latest failure.
 - **Slow runs.** A run of the board's own code that outlasts a minute keeps its lease while
   the runner moves on, and is acked when it settles: it's never run twice at once.
 - **A sync whose secrets aren't set is left out**, with an error in the logs; the boards
