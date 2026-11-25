@@ -138,7 +138,7 @@ characters, for idempotency), and `after?` (replies only). A stale `after` answe
 | --- | --- | --- |
 | `POST /attachments` | `upload` | Raw body, at most 4 MB (413 `too_large`). Needs `post` or `sync` somewhere. A dotfile name answers 400 `invalid_attachment`. |
 | `GET /attachments/:id` | `attachment` | Bytes, with upstream's safety headers (`csp: sandbox`, `nosniff`). Inline only for safe media types. |
-| `POST /attachments/uploads` | `uploadStart` | `{ name?, type?, size≤100MB, sha256? }` → `{ id, url, headers, expiresAt }`. **Δ** bordeaux supports this through an R2 presigned PUT, where `local()` answers 501. |
+| `POST /attachments/uploads` | `uploadStart` | `{ name?, type?, size≤100MB, sha256? }` → `{ id, url, headers, expiresAt }`. `url` is on the board itself ([08](08-cloudflare.md#files)). **Δ** bordeaux supports this through an R2 presigned PUT, where `local()` answers 501. |
 | `POST /attachments/uploads/:id` | `uploadFinish` | → 201 `{ attachment }`. Answers 409 `not_uploaded` before the bytes arrive and 400 `size_mismatch` on a size mismatch. Calling it again is idempotent. |
 
 ### Schedules · Tasks · Grants · Schemas · Watchers

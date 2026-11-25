@@ -151,16 +151,19 @@ the client stays connected, and CPU time counts only active work, resetting on e
 
 ## Files
 
-- **Small uploads.** `upload` (up to 4 MB) streams the body to R2 at `<boardId>/<id>`. The
-  object's metadata records the uploader principal, name, type, size, and sha256. The DO
-  records only what authorizes reads (uploader and carriers); the bytes stay in R2.
-- **Direct uploads.** `uploadStart` (up to 100 MB) returns an R2 presigned PUT URL from the
-  S3-compatible API. It signs `content-type` and `content-length` into the URL. R2 enforces
-  SHA-256 only on multipart uploads, and upstream's `local()` ignores the optional `sha256`, so
-  bordeaux does too (M0). `uploadFinish` HEADs the object, checks the size, and records it. Before the bytes exist it answers 409
-  `not_uploaded`.
-- **Downloads.** `attachment` is authorized in the DO, then streamed from R2 by the Worker
-  with upstream's safety headers.
+- **Small uploads.** `upload` (up to 4 MB) stores the bytes in R2 at
+  `boards/<board DO id>/attachments/<id>`. The DO keeps each file's record in `bx_files`:
+  name, type, size, and uploader, which with the messages that carry it decides who may read
+  it.
+- **Direct uploads (Δ, as built in M2).** `uploadStart` (up to 100 MB) returns a URL on the
+  board itself, `<board>/__bordeaux/uploads/<id>?t=<secret>`, instead of an R2 presigned URL.
+  The Worker streams the `PUT` body into R2 through its binding, taking exactly the
+  `Content-Length` the start named, once. That needs no R2 API keys and works the same on a
+  local board. `uploadFinish` HEADs the object, checks the size, and marks it stored. Before
+  the bytes exist it answers 409 `not_uploaded`. Like upstream's `local()`, the optional
+  `sha256` isn't checked (M0).
+- **Downloads.** `attachment` is authorized in the DO, which streams the R2 object back to
+  board() over RPC.
 - **Deletes.** Deleting a message hides its files. The bytes are deleted only by
   `bx gc`, which removes unreferenced attachments that are more than 30 days old. This is
   **Δ**: upstream never deletes bytes.

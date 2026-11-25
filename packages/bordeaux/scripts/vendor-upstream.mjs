@@ -40,6 +40,7 @@ export const FILES = [
   'server/access.ts',
   'server/grants.ts',
   'server/auth.ts',
+  'server/file-names.ts',
   'client/ids.ts',
 ]
 

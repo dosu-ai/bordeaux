@@ -29,7 +29,7 @@ Status key:
 | SSE `tail` | about 280 s per stream | 15 min per stream; reconnects | Δ | 1 |
 | Schemas and data blocks | team-wide registry | per-board registry (as `local()`) | Δ | 2 |
 | Attachments, up to 4 MB | Vercel Blob | R2 | Δ | 2 |
-| Direct uploads, up to 100 MB | signed Blob URLs + sha256 | R2 presigned PUT, size-checked | Δ | 2 |
+| Direct uploads, up to 100 MB | signed Blob URLs + sha256 | a PUT to the board's Worker, streamed into R2, size-checked | Δ | 2 |
 | Scheduled messages | API timers | DO alarms; survive restarts | Δ | 2 |
 | Tasks (claims, leases, needs, batches, holds) | API (lease cap 300 s) | DO (lease 30–3600 s, as `local()`) | Δ | 2 |
 | Dead letters | not exposed | `/admin/dead-letters`, `bx dead-letters` | + | 4 |

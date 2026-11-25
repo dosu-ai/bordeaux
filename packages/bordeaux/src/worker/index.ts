@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { directory, revokedToken } from './auth.ts'
 import { admin } from './admin.ts'
 import { boardNamed, boardOf, BOARD_NAME, exists } from './boards.ts'
+import { putUpload, UPLOADS } from './uploads.ts'
 import { broker } from './broker.ts'
 import type { BordeauxEnv } from './env.ts'
 
@@ -50,8 +51,11 @@ export default {
         const name = named[1]!
         if (!BOARD_NAME.test(name) || !(await exists(env, name)))
           return Response.json({ error: { code: 'no_board', message: `this team has no board named ${name}: bx boards create ${name}` } }, { status: 404 })
+        const rest = pathname.slice(`/b/${name}`.length)
+        if (rest.startsWith(UPLOADS)) return putUpload(request, env, name.toLowerCase(), rest.slice(UPLOADS.length))
         return boardOf(env, name).fetch(request)
       }
+      if (pathname.startsWith(UPLOADS)) return putUpload(request, env, null, pathname.slice(UPLOADS.length))
       return boardOf(env, null).fetch(request)
     })
   },

@@ -67,6 +67,12 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
   const local: Record<string, (caller: Caller, input: never) => Promise<unknown>> = { discovery, me }
   for (const method of GRANT_METHODS) local[method] = (caller, input) => (trust[method] as (identity: unknown, input: unknown) => Promise<unknown>)(identityOf(caller), input)
 
+  // A direct upload's URL is the board's own: the Worker takes its bytes (spec 08, "Files").
+  local.uploadStart = async (caller, input) => {
+    const started = (await remote('uploadStart')(caller, input)) as { id: string; secret: string; headers: Record<string, string>; expiresAt: string }
+    return { id: started.id, url: `${url}/__bordeaux/uploads/${started.id}?t=${started.secret}`, headers: started.headers, expiresAt: started.expiresAt }
+  }
+
   const methods = Object.fromEntries(METHODS.map((method) => [method, local[method] ?? remote(method)]))
 
   return {

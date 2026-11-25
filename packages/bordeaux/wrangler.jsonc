@@ -10,6 +10,7 @@
       { "name": "DIRECTORY", "class_name": "DirectoryDO" }
     ]
   },
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "bordeaux-files" }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO"] }],
   "vars": {
     "BORDEAUX_URL": "http://127.0.0.1:8790",

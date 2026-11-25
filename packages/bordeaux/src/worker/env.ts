@@ -7,6 +7,8 @@ export interface BordeauxEnv {
   BOARD: DurableObjectNamespace<BoardDO>
   /** One per team: signing keys, refresh tokens, revoked token IDs. */
   DIRECTORY: DurableObjectNamespace<DirectoryDO>
+  /** The team's files (spec 08, "Files"): each board's under its own prefix. */
+  FILES?: R2Bucket
   /** The board's public URL, which every token's audience must equal. */
   BORDEAUX_URL: string
   /** The GitHub org whose members are the board's people (spec 03). */

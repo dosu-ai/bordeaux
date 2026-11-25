@@ -25,6 +25,7 @@ import type { MessageFilter, MessageTables, ThreadPosition } from '../upstream/s
 import { createTables, doDb } from './db.ts'
 import { createLogTables, DuplicateEventError, Log, registerSession, type NewEvent } from './log.ts'
 import { ACCESS_SESSION, accessEvents, foldAccess, startingAccess, type AccessState } from './access.ts'
+import { attachmentNotFound, createFileTables, Files } from './files.ts'
 import { emptySchemas, findSchema, foldSchemas, listSchemas, registering, schemaEvents, schemaView, SCHEMAS_SESSION, type SchemasState } from './schemas.ts'
 
 registerSession(ACCESS_SESSION, accessEvents)
@@ -155,9 +156,15 @@ export class BoardEngine {
   private schemaState: SchemasState
   /** Resolves once the tables have every event the log has. */
   readonly ready: Promise<void>
+  private readonly files: Files
 
-  constructor(private readonly storage: DurableObjectStorage) {
+  constructor(
+    private readonly storage: DurableObjectStorage,
+    options: { bucket?: R2Bucket | null; prefix?: string } = {},
+  ) {
     createLogTables(storage)
+    createFileTables(storage)
+    this.files = new Files(storage, options.bucket ?? null, options.prefix ?? 'local')
     createViewTables(storage)
     createTables(storage)
     this.log = new Log(storage)
@@ -234,6 +241,26 @@ export class BoardEngine {
     }
     for (const row of rows) if (!(await this.tables.applyNext(row))) await this.catchUp()
     return rows
+  }
+
+  /**
+   * Whether `access` may have a file: one its principal uploaded, or one a message it can read
+   * carries. A deleted message drops its files, so it no longer counts (upstream a2.ts).
+   */
+  private async attachmentReadable(principal: Identity['principal'], id: string, uploadedBy: string | null): Promise<boolean> {
+    if (principal.access.readsAll || uploadedBy === principal.id) return true
+    return (await this.tables.withAttachment(id)).some((message) => principal.access.readable(message.channel))
+  }
+
+  /** Files a write carries, as the board stored them: each one the caller may have, or 404 as if it didn't exist. */
+  private async attachmentsFor(principal: Identity['principal'], ids: readonly string[] | undefined) {
+    return Promise.all(
+      [...new Set(ids ?? [])].map(async (id) => {
+        const found = this.files.read(id)
+        if (!found || !(await this.attachmentReadable(principal, id, found.uploadedBy))) throw attachmentNotFound(id)
+        return found.attachment
+      }),
+    )
   }
 
   /** The reader of views whose links point to `linked`, for a reader that can't read every channel. */
@@ -441,7 +468,6 @@ export class BoardEngine {
     const { access } = principal
     if (parsed.text.length > MESSAGE_TEXT_MAX) throw textTooLong()
     if ((parsed.attachments?.length ?? 0) > ATTACHMENTS_PER_MESSAGE_MAX) throw badRequest(`attachments: a message carries at most ${ATTACHMENTS_PER_MESSAGE_MAX}`)
-    if (parsed.attachments?.length) throw notKeptHere('files')
     if (parsed.sync?.length) throw notKeptHere('sync')
     const re = parsed.re === undefined ? undefined : messageAt(parsed.re)
     const labeled = Object.keys(parsed.labels ?? {}).length > 0
@@ -466,6 +492,8 @@ export class BoardEngine {
       if (given.startsWith('key:') && !isKeyIdOf(given, principal.id)) throw badRequest(`id: key:… IDs derive from a client's key, and this token's are key:${principal.id}:…`)
       if (given.startsWith('sync:')) throw badRequest('id: sync:… IDs are what sync imports, under the principal that imports them')
     }
+
+    const attachments = await this.attachmentsFor(principal, parsed.attachments)
 
     // writePost: where it lands, from what the board looked up.
     const sent = parsed.text
@@ -513,6 +541,7 @@ export class BoardEngine {
             by: caller.author,
             origin: null,
             from: null,
+            ...(attachments.length ? { attachments } : {}),
             ...(caller.schedule ? { schedule: caller.schedule } : {}),
             ...(access.readable(channel) ? {} : { blind: true as const }),
           },
@@ -601,6 +630,40 @@ export class BoardEngine {
       ])
       return { ok: true as const }
     })
+  }
+
+  // --- Files (upstream a2.ts upload, uploadStart, uploadFinish, attachment) ---
+
+  /** Uploading needs `post` or `sync` somewhere: a file is no use until a post or an import carries it. */
+  private mayUpload(caller: Caller) {
+    if (!caller.principal.access.anywhere('post') && !caller.principal.access.anywhere('sync')) throw forbidden("this token can't post anywhere, so it can't upload")
+  }
+
+  async upload(caller: Caller, { data, name, type }: In<'upload'>): Promise<Out<'upload'>> {
+    this.mayUpload(caller)
+    return { attachment: await this.files.upload({ data, name: name ?? null, type: type ?? null, uploadedBy: caller.principal.id }) }
+  }
+
+  /** A direct upload's start: the Worker makes its URL from the ID and secret. */
+  async uploadStart(caller: Caller, { name, type, size }: In<'uploadStart'>) {
+    this.mayUpload(caller)
+    const started = await this.files.start({ name: name ?? null, type: type ?? null, size, uploadedBy: caller.principal.id })
+    return { id: started.id, secret: started.secret, headers: { 'content-type': started.type }, expiresAt: started.expiresAt }
+  }
+
+  /** Where the Worker puts a direct upload's bytes. */
+  uploadTarget(id: string, secret: string) {
+    return this.files.target(id, secret)
+  }
+
+  async uploadFinish(caller: Caller, { id }: In<'uploadFinish'>): Promise<Out<'uploadFinish'>> {
+    return { attachment: await this.files.finish(id, caller.principal.id) }
+  }
+
+  async attachment(caller: Caller, { id }: In<'attachment'>): Promise<Out<'attachment'>> {
+    const found = this.files.read(id)
+    if (!found || !(await this.attachmentReadable(caller.principal, id, found.uploadedBy))) throw attachmentNotFound(id)
+    return { attachment: found.attachment, data: await this.files.body(id) }
   }
 
   // --- The schema registry (upstream src/server/schemas.ts). Anyone the board let in reads it. ---

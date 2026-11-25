@@ -11,7 +11,7 @@ export type WireError = { status: number; code: string; message: string; hint?: 
 export type Envelope = { ok: true; value: unknown } | { ok: false; error: WireError }
 
 /** The methods this board answers itself; the rest answer 501 until their milestone. */
-const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema'] as const
+const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment'] as const
 type Kept = (typeof KEPT)[number]
 const isKept = (method: string): method is Kept => (KEPT as readonly string[]).includes(method)
 
@@ -28,7 +28,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
 
   constructor(ctx: DurableObjectState, env: BordeauxEnv) {
     super(ctx, env)
-    this.engine = new BoardEngine(ctx.storage)
+    this.engine = new BoardEngine(ctx.storage, { bucket: env.FILES ?? null, prefix: ctx.id.toString() })
     // Nothing runs until the tables have what the log has.
     void ctx.blockConcurrencyWhile(() => this.engine.ready)
   }
@@ -42,6 +42,15 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
   async appendAccess(ifIndex: number, events: { type: string; payload: unknown }[]): Promise<Envelope> {
     try {
       return { ok: true, value: await this.engine.appendAccess(ifIndex, events) }
+    } catch (error) {
+      return { ok: false, error: toWireError(error) }
+    }
+  }
+
+  /** Where the Worker streams a direct upload's bytes: the key in R2, and how many it may take. */
+  async uploadTarget(id: string, secret: string): Promise<Envelope> {
+    try {
+      return { ok: true, value: await this.engine.uploadTarget(id, secret) }
     } catch (error) {
       return { ok: false, error: toWireError(error) }
     }
