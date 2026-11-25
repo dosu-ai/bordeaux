@@ -275,9 +275,11 @@ upstream's contract or bordeaux's storage asks it to:
   delete the board's copies.
 - **The platform copies.** Upstream's sync already deletes, on each platform, the copies the
   board made when the message is deleted (step 1), so every redaction does. It never deletes the
-  original a platform sent, so `--everywhere` deletes that one, through the board's own sync's
-  provider. A message a sync elsewhere imported (`importedBy`) is that sync's to delete: the
-  answer says so.
+  original a platform sent, so `--everywhere` tries that one, through the board's own sync's
+  provider. A platform may refuse: a Slack app's bot token deletes only the app's own messages,
+  so a person's Slack message answers `cant_delete_message`, and `bx redact` exits 1 and says
+  to delete it there. A message a sync elsewhere imported (`importedBy`) is that sync's to
+  delete: the answer says so.
 - **Files.** Its attachments' bytes and records go at once, unless another message carries one.
 - **The TailDO forgets.** It keeps the newest events and board reads in memory for its readers
   (spec 08), so the route has it drop them.
@@ -286,6 +288,20 @@ upstream's contract or bordeaux's storage asks it to:
   schema strips.
 - Not covered: a schedule's own text (session `schedules`) when a schedule posted it. Cancel the
   schedule too.
+
+**Checked live (2026-11-25)** on the test deployment's default board, synced with
+`#bordeaux-test` in a real Slack workspace. A person posted a fake key in the channel; it came
+onto the board as #38, and a board reply with the same key (#39) went back to the Slack thread
+as the app.
+- `bx redact 39`: one event rewritten, two copies removed. Upstream's sync deleted the app's
+  copy from the Slack thread within 10 s.
+- `bx redact 38 --everywhere`: the board side went as for #39; Slack refused to delete the
+  person's message (`cant_delete_message`), and `bx` said so and exited 1. The person deletes
+  it in Slack.
+- Afterwards `/events?after=37&all=true`, from the board and through the TailDO (`wait=2`),
+  showed the posts as `[redacted]` and both deletions; the board's export held no trace of the
+  key; `bx redactions` listed both.
+- Not checked live: files, queued inbox items, and GitHub or Linear originals.
 
 
 ## Limits

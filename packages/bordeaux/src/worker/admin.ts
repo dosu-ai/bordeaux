@@ -178,7 +178,8 @@ export type Everywhere = { deleted: boolean; target: string | null; error?: stri
 /**
  * Deletes a redacted message where it came from, through its sync's provider (`--everywhere`).
  * Upstream's sync already deletes the copies the board made on each platform when the message is
- * deleted; it never deletes the original a platform sent, so this does.
+ * deleted; it never deletes the original a platform sent, so this tries. A platform may refuse:
+ * a Slack app deletes only its own messages (`cant_delete_message`), and the answer says so.
  */
 async function deleteOrigin(env: BordeauxEnv, name: string | null, redacted: Redacted): Promise<Everywhere> {
   const { origin, importedBy } = redacted

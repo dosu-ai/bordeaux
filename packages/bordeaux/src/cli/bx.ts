@@ -262,7 +262,7 @@ async function redact(url: string, args: string[]) {
     ['queued', `${redacted.queued} removed`],
     ['files', `${redacted.files} deleted`],
   ]
-  if (found.everywhere) rows.push(['origin', found.everywhere.deleted ? `${found.everywhere.target} deleted` : `not deleted: ${found.everywhere.error}`])
+  if (found.everywhere) rows.push(['origin', found.everywhere.deleted ? `${found.everywhere.target} deleted` : `not deleted: ${found.everywhere.error}${found.everywhere.target ? `; delete ${found.everywhere.target} there yourself` : ''}`])
   else if (redacted.origin) rows.push(['origin', `${redacted.origin.subthread ?? redacted.origin.thread} kept (--everywhere deletes it)`])
   process.stderr.write(`#${redacted.id} redacted\n`)
   for (const [label, text] of rows) process.stdout.write(`${label.padEnd(7)} ${text}\n`)
