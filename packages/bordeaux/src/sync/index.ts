@@ -38,13 +38,23 @@ function need(env: Env, platform: string, ...names: (keyof Env)[]): string[] {
   return names.map((name) => env[name] as string)
 }
 
+/**
+ * The Slack client's limits, as upstream sets them for the adapters it builds (sync-slack's
+ * `SLACK_CLIENT`): 3 more tries per call and 30 seconds per request. The client's own default,
+ * 10 tries over about 30 minutes with no request timeout, outlives any function, so a Slack
+ * call that stalls on a cold start (a rate limit, a hiccup) holds up the webhook past Slack's
+ * 3 seconds, and Slack's retries wait on the same stalled call.
+ */
+export const SLACK_CLIENT = { retryConfig: { retries: 3, factor: 2, minTimeout: 500, randomize: true }, timeout: 30_000 } as const
+
 /** A Slack workspace, as its app: `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET`. */
 export function slackSync(env: Env, sync: Parameters<typeof slack>[1], options: { join?: boolean; debug?: boolean } = {}) {
   const [botToken, signingSecret] = need(env, 'Slack', 'SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET')
   const { debug, ...rest } = options
   // `debug` logs what the Chat SDK adapter does with each webhook: what it ignored, and why.
   const logger = debug ? { logger: new ConsoleLogger('debug') } : {}
-  return slack({ adapter: createSlackAdapter({ botToken: botToken!, signingSecret: signingSecret!, ...logger }), ...rest }, sync)
+  const adapter = createSlackAdapter({ botToken: botToken!, signingSecret: signingSecret!, webClientOptions: { ...SLACK_CLIENT, retryConfig: { ...SLACK_CLIENT.retryConfig } }, ...logger })
+  return slack({ adapter, ...rest }, sync)
 }
 
 /**

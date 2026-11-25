@@ -1,5 +1,7 @@
 import { SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
+import { env } from 'cloudflare:test'
+import { channels, SLACK_CLIENT, slackSync } from '../src/sync/index.ts'
 import { BASE } from './helpers.ts'
 
 /** A request as Slack signs it: v0, HMAC-SHA256 of `v0:<timestamp>:<body>` under the app's signing secret. */
@@ -19,6 +21,11 @@ describe('Slack sync from secrets', () => {
     const real = await SELF.fetch(`${BASE}/webhooks/slack`, { method: 'POST', headers: await signed(body), body })
     expect(real.status).toBe(200)
     expect(await real.text()).toContain('c-123')
+  })
+
+  it("caps the Slack client's retries and request time, as upstream does for its own adapters", () => {
+    const provider = slackSync(env as never, channels({ '#ops': 'ops' })) as unknown as { transport: { adapter: { webClientOptions?: unknown } } }
+    expect(provider.transport.adapter.webClientOptions).toEqual(SLACK_CLIENT)
   })
 
   it('lists its entry in discovery', async () => {

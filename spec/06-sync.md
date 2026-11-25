@@ -95,10 +95,15 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
 - Tested end to end with Chat SDK's fake platform (`test/own-sync.test.ts`), and Slack's
   webhook verification with a real `slackSync` provider. A live round trip with a real Slack
   workspace passed on a deployed board (2026-11-25).
-- **Gotcha (live).** Upstream's webhook intake drops an event whose channel its routing
-  doesn't map, without logging. A `#name` routing key matched nothing on the live workspace,
-  while the same channel by ID worked. The cause isn't pinned down; docs/sync.md says to map
-  by ID.
+- **Gotcha (live).** Upstream caps the Slack client it builds for a Connect connector (3
+  retries, 30 s per request) because the client's default, 10 retries over about 30 minutes
+  with no timeout, outlives any function. An adapter you pass yourself gets no such cap, so
+  `slackSync` sets the same one (`SLACK_CLIENT`). Without it, the live check's first two
+  events, right after the app was installed, stalled and never landed in time. The stall
+  wasn't caught in the act (no retry reason was recorded then); with the cap, every later
+  event landed in under 2 s, routed by `#name` or by ID.
+- Upstream's intake drops an event whose channel the routing doesn't map, without a log
+  line. `slackSync(…, { debug: true })` logs the adapter's side.
 - **Gotcha.** A provider that can't reach its platform's API at startup can hold up the
   others in the same isolate, because board() starts every provider on the first webhook.
 

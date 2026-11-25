@@ -19,8 +19,7 @@ import { channels, repos, slackSync, githubSync } from '@dosu/bordeaux/sync'
 
 configure((env) => ({
   sync: {
-    // Slack channels by ID (right-click a channel → View channel details): IDs never change.
-    slack: slackSync(env, channels({ C0123SUPPORT: 'support', C0456OPS: 'ops' })),
+    slack: slackSync(env, channels({ '#support': 'support', '#ops': 'ops' })),
     github: githubSync(env, repos({ 'acme/www': 'prs' }), { userName: 'acme-board[bot]' }),
   },
 }))
@@ -62,8 +61,9 @@ see what's synced.
    ```
 
 5. Invite the app to each channel it syncs (`/invite @your-app`). It never joins on its own.
-6. Map channels by **ID** (`C0…`), not by `#name`. In the live check, a `#name` mapping left
-   every event unmatched: upstream drops events from unmapped channels without a log line.
+6. Map channels by `#name` or by ID (`C0…`, in the channel's details). A name is looked up
+   by listing the workspace's channels; an ID needs no lookup, and survives a rename.
+   An event from a channel the routing doesn't map is dropped without a log line.
    `slackSync(env, routing, { debug: true })` logs what the Slack adapter does with each
    webhook.
 
@@ -117,12 +117,18 @@ With Slack wired to a deployed board and the app in `#support`:
 
 If step 1 doesn't happen:
 - Slack's Event Subscriptions page says whether it reached the URL.
-- If the webhook got through (`npx wrangler tail` shows `POST /webhooks/slack - Ok`) but
-  nothing lands, check the channel mapping: an event from a channel the routing doesn't map
-  is dropped silently.
+- If the webhook got through but nothing lands, check the channel mapping: an event from a
+  channel the routing doesn't map is dropped silently.
+- `wrangler tail` drops events under load: it missed whole webhooks in the live check. Don't
+  read its silence as nothing happening.
 - `[bordeaux] @inbox:slack failed …` in the tail gives the reason when the board couldn't
   bring an event on.
 
 **Run on 2026-11-25** against a test board on workers.dev and the Dosu workspace: all four
 steps passed (Slack root → board, board reply → Slack thread as its author, Slack thread
 reply → board thread, board reaction → Slack). A reaction made on Slack wasn't checked.
+The first two messages, sent right after the app was installed, never landed (one only after
+a redeploy, on Slack's retry); `slackSync` then used the Slack client's default of 10 retries
+over 30 minutes with no request timeout, so a stalled call could hold a webhook past Slack's
+3 seconds. It now caps the client as upstream does (`SLACK_CLIENT`), and seven more messages,
+four of them each the first after a fresh deploy, all landed in under 2 seconds.
