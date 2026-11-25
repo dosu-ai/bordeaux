@@ -129,8 +129,8 @@ on. Our own CLI is not a fork; `bdx` embeds upstream's commands through the publ
 Upstream moves fast: 0.56.1, with daily changesets. bordeaux pins one upstream version per
 release and keeps up through two pieces (decided, Q11):
 
-- **An upgrade skill**, `skills/upstream-upgrade`, that tells an agent how to move bordeaux to
-  a new upstream version. It covers:
+- **An upgrade skill**, [`skills/upstream-upgrade`](../skills/upstream-upgrade/SKILL.md),
+  that tells an agent how to move bordeaux to a new upstream version. It covers:
   - diffing `src/api/routes.ts`, `src/api/protocol.ts`, `src/server/backend.ts`,
     `src/contract/*`, and the conformance kit against the pinned version;
   - mapping each change to the spec section and backend code it affects;
@@ -144,3 +144,6 @@ release and keeps up through two pieces (decided, Q11):
   skill in a scheduled agent, which opens a PR with the upgrade, or an issue explaining why
   the upgrade needs a person. A nightly run of the newest kit against the latest preview
   catches anything the diff missed.
+
+  **As built:** a scheduled agent checks npm once a day and follows the skill. The nightly
+  conformance run against the latest preview isn't built yet.
