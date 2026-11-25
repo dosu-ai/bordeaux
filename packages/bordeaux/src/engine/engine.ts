@@ -994,6 +994,13 @@ export class BoardEngine {
     if (records && caller.principal.scope !== undefined) throw forbidden(`this token is narrowed with x-board-can, so it can't ${what}: that's its project's sync's job`)
   }
 
+  /** The syncs elsewhere registered here, and who registered each: what discovery lists after the board's own. */
+  registeredSync(): { principal: Registration['principal']; sync: { key: string; platform: string }[] }[] {
+    return Object.values(this.registry.byOwner)
+      .filter((registration) => !registration.own && registration.sync.length > 0)
+      .map((registration) => ({ principal: registration.principal, sync: registration.sync.map(({ key, platform }) => ({ key, platform })) }))
+  }
+
   /** This board's own sync's entries: board()'s, as the config in this isolate has them. */
   private ownEntries(): readonly SyncEntrySpec[] {
     return this.binding()?.sync ?? []

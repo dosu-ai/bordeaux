@@ -65,6 +65,12 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     }
   }
 
+  /** The syncs registered here, for the Worker's discovery to list. */
+  async registeredSync() {
+    await this.engine.ready
+    return this.engine.registeredSync()
+  }
+
   /** Where the Worker streams a direct upload's bytes: the key in R2, and how many it may take. */
   async uploadTarget(id: string, secret: string): Promise<Envelope> {
     try {

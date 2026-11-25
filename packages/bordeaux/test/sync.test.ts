@@ -20,6 +20,8 @@ describe('a sync elsewhere', () => {
   it('imports as a profile of itself, records where it delivered, and gets every change as @sync', async () => {
     const token = await tokenFor(82, 'bridge')
     await api(token, 'POST', '/watchers', { watch: {}, sync })
+    // Discovery lists the board's own sync first, then what's registered here.
+    expect((await api(token, 'GET', '/')).body.sync).toEqual([{ key: 'chat', platform: 'chat' }, ...sync])
     const origin = { channel: 'acme-slack:C1', thread: 'acme-slack:C1:100', subthread: null, message: '100', context: null }
     const imported = await api(token, 'POST', '/sync/imports', { op: 'post', author, from: 'acme-slack', channel: 'support', text: 'help!', origin, id: 'slack-100' })
     expect(imported.status).toBe(200)
