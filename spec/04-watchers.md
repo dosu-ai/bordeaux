@@ -99,6 +99,22 @@ These are exactly upstream's `foldQueue`:
     `retryAt = now + min(30s, 1s·2^(n−1))`.
   - With `skip`: `watch.skipped`.
 
+### As built (M2)
+
+- **Matching runs in the board's DO** after each write, from a stored position, so a restart
+  picks up where it stopped. It's upstream's `dispatch` (src/server/watch.ts) and queue
+  (src/server/registered.ts), with the queue kept per registrant in `bx_queues`.
+- **Δ Access at registration.** Upstream works out a registrant's access at each match with
+  board()'s policy, which lives in the Worker. bordeaux matches with the access the registrant
+  had when it registered, and each pull filters again by what it may read then. A registrant
+  whose access narrowed gets less, never more; one whose access widened re-registers (its
+  hash changes when its watchers do, and any registration refreshes the access).
+- **Δ Wakes come from the DO's alarm**, not a Queue: a registrant with matches and a `url` gets
+  one `POST <url>/wake` per batch of matches, with `x-board-watchers` set to its hash, retried
+  with backoff when it fails. Not yet covered by a test (the test runner can't receive it).
+- Config watchers (`board({ watch })` in `bordeaux.config.ts`) and the `@sync` queue come with
+  the template and sync (M3).
+
 ## Wake-ups without Vercel (Δ)
 
 | Mechanism | Registration | Who uses it |

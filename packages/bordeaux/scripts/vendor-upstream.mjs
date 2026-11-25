@@ -33,6 +33,11 @@ export const FILES = [
   'store/sql.ts',
   'store/project.ts',
   'store/types.ts',
+  // The protocol's shapes, and watchers' tails.
+  'api/routes.ts',
+  'api/tail.ts',
+  'server/watch-spec.ts',
+  'server/watchers-hash.ts',
   // Views, filters, and the feed.
   'server/feed.ts',
   'server/carried.ts',

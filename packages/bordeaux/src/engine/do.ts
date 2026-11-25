@@ -17,7 +17,7 @@ export type WireError = { status: number; code: string; message: string; hint?: 
 export type Envelope = { ok: true; value: unknown } | { ok: false; error: WireError }
 
 /** The methods this board answers itself; the rest answer 501 until their milestone. */
-const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule', 'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask'] as const
+const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule', 'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask', 'watchers', 'register', 'matches', 'ack'] as const
 type Kept = (typeof KEPT)[number]
 const isKept = (method: string): method is Kept => (KEPT as readonly string[]).includes(method)
 
@@ -81,6 +81,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     for (const timer of this.engine.takeDue(Date.now())) {
       try {
         if (timer.kind === 'lease.due') await this.engine.leaseDue(timer.payload, timer.name)
+        else if (timer.kind === 'wake') await this.wake(timer.payload.owner)
         else await this.send(timer)
       } catch (error) {
         console.error(`[bordeaux] ${timer.name} failed:`, (error as Error).message)
@@ -88,6 +89,17 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       }
     }
     await this.engine.rearm()
+  }
+
+  /**
+   * Wakes a registrant that has matches (spec 04, Δ wake by URL): `POST <url>/wake`, saying which
+   * watchers the board holds for it. One wake covers every match since; a failed one is tried again.
+   */
+  private async wake(owner: string) {
+    const target = this.engine.wakeTarget(owner)
+    if (!target) return
+    const response = await fetch(new URL('wake', target.url.endsWith('/') ? target.url : `${target.url}/`), { method: 'POST', headers: { 'x-board-watchers': target.hash } })
+    if (!response.ok && response.status !== 202) throw new Error(`${target.url} answered ${response.status} to a wake`)
   }
 
   /**

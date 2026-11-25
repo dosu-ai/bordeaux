@@ -37,6 +37,7 @@ registerSession(SCHEDULES_SESSION, scheduleEvents)
 export type Timer =
   | { name: string; dueAt: number; kind: 'schedule.due'; payload: { id: number; n: number; at: number }; attempt: number }
   | { name: string; dueAt: number; kind: 'lease.due'; payload: { id: number; epoch: number; at: number }; attempt: number }
+  | { name: string; dueAt: number; kind: 'wake'; payload: { owner: string }; attempt: number }
 
 /** A schedule's text as its creator sees it where it can't read (upstream a2.ts `blindSchedule`). */
 const blindSchedule = (schedule: ScheduleView, access: Access, ownActor: string): ScheduleView =>
@@ -44,6 +45,9 @@ const blindSchedule = (schedule: ScheduleView, access: Access, ownActor: string)
 import { createViewTables, Views } from './views.ts'
 import { seenFor, type Along, type AlongEach, type WriteContext } from './writes.ts'
 import { createTasks, LEASE_MIN_S, taskLimits } from './tasks.ts'
+import { ack as ackMatch, emptyQueue, foldQueue, matchesFor, pull, viewOf, watchersHash, type QueueState, type Registration, type RegistryState } from './watchers.ts'
+import { compileWatcher } from '../upstream/server/watch-spec.ts'
+import { RemoteWatcherId } from '../upstream/contract/schemas.ts'
 import { TASK_BATCH_MAX } from '../upstream/contract/schemas.ts'
 
 type Caller = Identity & { request: boolean; schedule?: { id: number; n: number } }
@@ -156,6 +160,10 @@ export class BoardEngine {
   private schemaState: SchemasState
   /** The schedules, folded from session `schedules`. */
   private scheduleState: SchedulesState
+  /** Registered watchers, by owner (upstream's registry). */
+  private registry: RegistryState
+  /** Whether matching is running now: one run at a time, from the stored position. */
+  private matching: Promise<void> | null = null
   /** Resolves once the tables have every event the log has. */
   readonly ready: Promise<void>
   private readonly files: Files
@@ -178,6 +186,8 @@ export class BoardEngine {
     this.access = this.loadState('access', startingAccess)
     this.schemaState = this.loadState('schemas', emptySchemas)
     this.scheduleState = this.loadState('schedules', emptySchedules)
+    this.registry = this.loadState('registry', () => ({ byOwner: {} }) as RegistryState)
+    storage.sql.exec('create table if not exists bx_queues (owner text primary key, data text not null)')
     storage.sql.exec('create table if not exists bx_timers (name text primary key, due_at integer not null, kind text not null, payload text not null, attempt integer not null default 1)')
     this.ready = this.catchUp()
     const writes: WriteContext = {
@@ -260,7 +270,47 @@ export class BoardEngine {
       throw error
     }
     for (const row of rows) if (!(await this.tables.applyNext(row))) await this.catchUp()
+    // Registered watchers match it after the write answers.
+    if (Object.keys(this.registry.byOwner).length > 0) void this.match()
     return rows
+  }
+
+  /** A registrant's queue, as `bx_queues` keeps it. */
+  private queueOf(owner: string): QueueState {
+    const [row] = this.storage.sql.exec<{ data: string }>('select data from bx_queues where owner = ?', owner).toArray()
+    return row ? (JSON.parse(row.data) as QueueState) : emptyQueue()
+  }
+
+  private saveQueue(owner: string, state: QueueState) {
+    this.storage.sql.exec('insert into bx_queues (owner, data) values (?, ?) on conflict (owner) do update set data = excluded.data', owner, JSON.stringify(state))
+  }
+
+  /** Matches what the log has past the stored position against every registration, a page at a time (upstream's `board-watch` consumer). */
+  match(): Promise<void> {
+    this.matching ??= (async () => {
+      try {
+        for (;;) {
+          const from = this.loadState<number>('watch-position', () => this.log.head())
+          const events = this.log.history({ gte: from + 1, lte: from + 200 })
+          if (events.length === 0) return
+          const registrations = Object.values(this.registry.byOwner)
+          const woken = new Set<string>()
+          for (const event of events) {
+            for (const [owner, matched] of await matchesFor(event, registrations, this.reads, this.views.actors)) {
+              const state = this.queueOf(owner)
+              for (const one of matched) foldQueue(state, one)
+              this.saveQueue(owner, state)
+              woken.add(owner)
+            }
+          }
+          this.storage.sql.exec("insert into bx_state (key, data) values ('watch-position', ?) on conflict (key) do update set data = excluded.data", String(events.at(-1)!.index))
+          for (const owner of woken) if (this.registry.byOwner[owner]?.url) this.arm(`wake-${owner}`, Date.now(), { kind: 'wake', payload: { owner } })
+        }
+      } finally {
+        this.matching = null
+      }
+    })()
+    return this.matching
   }
 
   /**
@@ -1009,6 +1059,82 @@ export class BoardEngine {
     const found = this.files.read(id)
     if (!found || !(await this.attachmentReadable(caller.principal, id, found.uploadedBy))) throw attachmentNotFound(id)
     return { attachment: found.attachment, data: await this.files.body(id) }
+  }
+
+  // --- Registered watchers (upstream a2.ts watchers, register, matches, ack) ---
+
+  /** A caller narrowed with x-board-can doesn't run its principal's watchers (upstream `ownWatchers`). */
+  private ownWatchers(caller: Caller) {
+    if (caller.principal.scope !== undefined) throw forbidden("this token is narrowed with x-board-can: registering and running watchers is its project's job")
+  }
+
+  async watchers(caller: Caller): Promise<Out<'watchers'>> {
+    const all = Object.values(this.registry.byOwner).sort((a, b) => a.owner.localeCompare(b.owner)).map(viewOf)
+    return { watchers: caller.principal.access.everywhere('manage') ? all : all.filter((found) => found.owner === caller.principal.id) }
+  }
+
+  async register(caller: Caller, body: In<'register'>): Promise<Out<'register'>> {
+    // A path wakes a Vercel project's deployment, which only Vercel's board can.
+    if (body.path) throw new HttpError(501, 'no_wake_by_path', 'this board wakes by URL, not by path: register a url, or pull your matches')
+    const { principal } = caller
+    this.ownWatchers(caller)
+    if (!principal.access.anywhere('read')) throw forbidden("this token can't read anywhere, so a watcher it registers would see nothing")
+    if ((body.sync?.length ?? 0) > 0 && !principal.access.anywhere('sync')) throw forbidden("this token can't register a sync: it needs sync somewhere")
+    if (body.url !== undefined && body.url !== null && !/^https:\/\/|^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(body.url)) throw badRequest('url: an https URL (http only on localhost), where the board wakes you', 'invalid_url')
+    if (Object.keys(body.watch).length > 64) throw badRequest('a registration holds at most 64 watchers', 'too_many_watchers')
+    for (const [id, spec] of Object.entries(body.watch)) {
+      const name = RemoteWatcherId.safeParse(id)
+      if (!name.success) throw badRequest(`watch ${id}: ${name.error.issues[0]!.message}`, 'bad_watcher')
+      try {
+        compileWatcher(id, spec)
+      } catch (error) {
+        throw badRequest((error as Error).message, 'bad_watcher')
+      }
+    }
+    const sync = body.sync ?? []
+    const view = { owner: principal.id, url: body.url ?? null, watch: Object.fromEntries(Object.entries(body.watch).map(([id, spec]) => [id, { tail: spec.tail }])), sync, hash: await watchersHash(body.watch, sync) }
+    return this.exclusive(async () => {
+      // Matching starts here for the first registration: what came before is no one's.
+      if (Object.keys(this.registry.byOwner).length === 0) this.storage.sql.exec("insert into bx_state (key, data) values ('watch-position', ?) on conflict (key) do update set data = excluded.data", String(this.log.head()))
+      this.registry.byOwner[principal.id] = { ...view, principal: { id: principal.id, kind: principal.kind, handle: principal.handle }, can: principal.access.summary() }
+      this.storage.sql.exec("insert into bx_state (key, data) values ('registry', ?) on conflict (key) do update set data = excluded.data", JSON.stringify(this.registry))
+      return view
+    })
+  }
+
+  async matches(caller: Caller, query: In<'matches'>): Promise<Out<'matches'>> {
+    const { principal } = caller
+    this.ownWatchers(caller)
+    if (!this.registry.byOwner[principal.id]) throw notFound('this token has no watchers registered here', 'no_registration')
+    const deadline = Date.now() + (query.wait ?? 0) * 1000
+    for (let pause = 100; ; pause = Math.min(pause * 2, 1000)) {
+      await this.match()
+      const found = await this.exclusive(async () => {
+        const state = this.queueOf(principal.id)
+        const { events, matches } = pull(state, { access: principal.access, limit: query.limit ?? 10, now: Date.now() })
+        for (const event of events) foldQueue(state, event)
+        if (events.length > 0) this.saveQueue(principal.id, state)
+        return matches
+      })
+      if (found.length > 0 || Date.now() >= deadline) return { matches: found }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(pause, Math.max(0, deadline - Date.now()))))
+    }
+  }
+
+  async ack(caller: Caller, { id, ...body }: In<'ack'>): Promise<Out<'ack'>> {
+    this.ownWatchers(caller)
+    return this.exclusive(async () => {
+      const state = this.queueOf(caller.principal.id)
+      for (const event of ackMatch(state, id, body, Date.now())) foldQueue(state, event)
+      this.saveQueue(caller.principal.id, state)
+      return { ok: true as const }
+    })
+  }
+
+  /** Where to wake a registrant, and the hash it checks its registration by; null when it has no URL now. */
+  wakeTarget(owner: string): { url: string; hash: string } | null {
+    const found = this.registry.byOwner[owner]
+    return found?.url ? { url: found.url, hash: found.hash ?? '' } : null
   }
 
   // --- The schema registry (upstream src/server/schemas.ts). Anyone the board let in reads it. ---
