@@ -25,7 +25,7 @@ const github = (send: Fetch, path: string, token: string) =>
   send(`https://api.github.com${path}`, { headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'bordeaux' } })
 
 /** Who a GitHub token belongs to, and whether they're a member (and an owner) of the board's org. */
-async function member(send: Fetch, env: BordeauxEnv, token: string): Promise<{ id: string; login: string; owner: boolean } | Response> {
+export async function member(send: Fetch, env: BordeauxEnv, token: string): Promise<{ id: string; login: string; owner: boolean } | Response> {
   const user = await github(send, '/user', token)
   if (!user.ok) return oauthError(502, 'server_error', `GitHub didn't say who signed in: ${user.status}`)
   const { id, login } = (await user.json()) as { id: number; login: string }
@@ -49,7 +49,7 @@ function ownerOf(env: BordeauxEnv, login: string, role: string | undefined): boo
  * person's GitHub token isn't kept, so the board's App asks; a board with no App can't, and asks
  * the person to sign in again instead.
  */
-async function renewed(env: BordeauxEnv, session: Session, send: Fetch): Promise<Session | Response> {
+export async function renewed(env: BordeauxEnv, session: Session, send: Fetch): Promise<Session | Response> {
   const next = { ...session, expiresAt: Date.now() + REFRESH_TTL_MS }
   if (Date.now() - session.checkedAt < RECHECK_MS) return next
   const org = env.BORDEAUX_GITHUB_ORG
@@ -60,17 +60,20 @@ async function renewed(env: BordeauxEnv, session: Session, send: Fetch): Promise
   return { ...next, owner: ownerOf(env, session.login, membership.role), checkedAt: Date.now() }
 }
 
-/**
- * The board's tokens for a sign-in: a short access token, made out to `audience` (one of the team's
- * boards, the default one when it's left out), and the refresh token that renews it.
- */
-async function issue(env: BordeauxEnv, session: Session, audience: string | undefined): Promise<Response> {
+/** A sign-in's tokens: a short access token made out to `audience` (the default board's when it's left out), and the refresh token that renews it. */
+export async function tokensFor(env: BordeauxEnv, session: Session, audience: string | undefined) {
   const dir = directory(env)
   const { token, expiresAt } = await dir.mint({ sub: `user:${session.id}`, login: session.login, ...(session.owner ? { owner: true } : {}) }, ACCESS_TTL, audience)
   const refresh = await dir.startSession(session)
   await dir.setOwner(personId(session.id), session.owner, session.expiresAt)
+  return { access: token, expiresAt, refresh }
+}
+
+/** The board's tokens for a sign-in, as the token endpoint answers them. */
+async function issue(env: BordeauxEnv, session: Session, audience: string | undefined): Promise<Response> {
+  const { access, expiresAt, refresh } = await tokensFor(env, session, audience)
   return Response.json({
-    access_token: token,
+    access_token: access,
     token_type: 'Bearer',
     expires_in: ACCESS_TTL,
     expires_at: new Date(expiresAt).toISOString(),

@@ -61,6 +61,9 @@ export const FILES = [
   'server/watch-run.ts',
   'server/attempts.ts',
   'server/wait-until.ts',
+  // The inspector's page: its HTML shell, look, and policy (the hosted inspector, spec 07).
+  'inspect/shell.ts',
+  'inspect/style.ts',
 ]
 
 const here = dirname(fileURLToPath(import.meta.url))
