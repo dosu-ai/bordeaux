@@ -189,6 +189,23 @@ The inspector is upstream's React page. bordeaux serves it two ways:
    behind Deployment Protection". bordeaux's hosted inspector instead acts as the signed-in
    person, which is what a team UI needs.
 
+   **As built (M3).**
+   - People sign in with GitHub's web flow, as spec 03 decided, not with Cloudflare Access.
+     Access would name people by email, while board principals are GitHub IDs. Access can
+     still sit in front as an extra wall.
+   - The callback is `<board URL>/inspect/callback`, and it needs `GITHUB_CLIENT_SECRET`.
+   - The sign-in is kept in two HttpOnly cookies on the board's `/inspect` path: the access
+     token, and the refresh token that renews it. Each named board's inspector is at
+     `/b/<name>/inspect` and has its own sign-in.
+   - The proxy sends the person's own token to the board, so nothing is minted internally.
+   - The page runs in upstream's local mode (no `inspect-named`), so it treats the proxy's
+     caller as "you".
+   - `app.js` comes from a Static Assets binding (`ASSETS`) on `@vercel/board/dist/inspect`,
+     so there's no copy step. `run_worker_first` keeps it from being served at the root.
+   - `src/upstream/inspect/{shell,style}.ts` are vendored.
+   - With `BORDEAUX_DEV=1` and no client secret, `/inspect/login?id=<n>` signs in a made-up
+     person.
+
 The inspector covers:
 
 - the activity feed, channels, threads, and filters;

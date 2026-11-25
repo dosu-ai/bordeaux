@@ -33,7 +33,7 @@ export function boardOf(env: BordeauxEnv, name: string | null) {
   if (!found) {
     // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
     const tokens = oidcTokens({ oidc: { [env.BORDEAUX_URL]: issuerKeys(env) } })
-    const config = configOf()
+    const config = configOf(env)
     found = board({
       backend: durable(env, name),
       ...(config.middleware ? { middleware: config.middleware } : {}),

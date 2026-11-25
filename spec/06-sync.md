@@ -84,6 +84,20 @@ See [QUESTIONS Q7](../QUESTIONS.md#q7) and
 Both queues reuse the registered-watcher queue machinery (leases, acks, and per-thread order)
 from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registrant.
 
+**As built (M3).**
+- The pipelines run in the board's DO, not the Worker ([08](08-cloudflare.md#consumers-and-the-worker)).
+- The inbox is queue `@inbox:<key>` in `bx_queues`, not a table of its own. Raw payloads are
+  kept as upstream keeps them: the 256 KB cap and 30-day retention aren't built yet (M4).
+- Credentials: `@dosu/bordeaux/sync` builds each provider from Worker secrets (`slackSync`,
+  `githubSync`, `linearSync`). `configure()` takes `(env) => config`, so a deployment's sync
+  can read them. Setup: [docs/sync.md](../docs/sync.md).
+- Linear also takes `LINEAR_API_KEY` in place of the client credentials.
+- Tested end to end with Chat SDK's fake platform (`test/own-sync.test.ts`), and Slack's
+  webhook verification with a real `slackSync` provider. A round trip with a real Slack
+  workspace is M3's remaining exit check.
+- **Gotcha.** A provider that can't reach its platform's API at startup can hold up the
+  others in the same isolate, because board() starts every provider on the first webhook.
+
 ### Runtime compatibility
 
 - The sync code needs `node:async_hooks` and `node:crypto`. Both work under the `nodejs_compat`

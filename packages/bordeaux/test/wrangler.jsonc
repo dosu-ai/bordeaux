@@ -14,7 +14,12 @@
   "assets": { "directory": "../node_modules/@vercel/board/dist/inspect", "binding": "ASSETS", "run_worker_first": true },
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "bordeaux-files" }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO"] }],
+  // Upstream's providers import Vercel Connect even when given their own adapter (spec 06, Q7).
+  "alias": { "@vercel/connect/chat": "../src/sync/connect-chat.ts" },
   "vars": {
+    // Test values only: what a Slack app's secrets would be.
+    "SLACK_BOT_TOKEN": "xoxb-test",
+    "SLACK_SIGNING_SECRET": "slack-test-secret",
     "BORDEAUX_URL": "http://127.0.0.1:8790",
     "BORDEAUX_GITHUB_ORG": "",
     "BORDEAUX_DEV": "1"
