@@ -13,7 +13,7 @@ import { foldMessages, type ActorsState, type Channel, type Message, type Messag
 import { extractMentions, isEmail, replaceMentions } from '../upstream/contract/mentions.ts'
 import { own } from '../upstream/contract/own.ts'
 import { platformProfile } from '../upstream/contract/profiles.ts'
-import { ATTACHMENTS_PER_MESSAGE_MAX, EDITED_HOLD, MESSAGE_TEXT_MAX, type Author } from '../upstream/contract/schemas.ts'
+import { ATTACHMENTS_PER_MESSAGE_MAX, EDITED_HOLD, MESSAGE_TEXT_MAX, type Attachment, type Author } from '../upstream/contract/schemas.ts'
 import { actorSeen, ownedActor } from '../upstream/server/actors.ts'
 import { wroteAs } from '../upstream/server/auth.ts'
 import { badRequest, duplicateId, forbidden, notFound, textTooLong } from '../upstream/server/errors.ts'
@@ -33,13 +33,18 @@ registerSession(ACCESS_SESSION, accessEvents)
 registerSession(SCHEMAS_SESSION, schemaEvents)
 registerSession(SCHEDULES_SESSION, scheduleEvents)
 
-/** A timer the DO's alarm runs: a schedule's send due at `at`. */
-export type Timer = { name: string; dueAt: number; kind: 'schedule.due'; payload: { id: number; n: number; at: number }; attempt: number }
+/** A timer the DO's alarm runs: a schedule's send due at `at`, or the end of a task's lease. */
+export type Timer =
+  | { name: string; dueAt: number; kind: 'schedule.due'; payload: { id: number; n: number; at: number }; attempt: number }
+  | { name: string; dueAt: number; kind: 'lease.due'; payload: { id: number; epoch: number; at: number }; attempt: number }
 
 /** A schedule's text as its creator sees it where it can't read (upstream a2.ts `blindSchedule`). */
 const blindSchedule = (schedule: ScheduleView, access: Access, ownActor: string): ScheduleView =>
   access.readable(schedule.channel) ? schedule : { ...schedule, text: blindText(schedule.text, ownActor) }
 import { createViewTables, Views } from './views.ts'
+import { seenFor, type Along, type AlongEach, type WriteContext } from './writes.ts'
+import { createTasks, LEASE_MIN_S, taskLimits } from './tasks.ts'
+import { TASK_BATCH_MAX } from '../upstream/contract/schemas.ts'
 
 type Caller = Identity & { request: boolean; schedule?: { id: number; n: number } }
 type In<M extends keyof Protocol> = Protocol[M]['input']
@@ -93,20 +98,6 @@ function authorize(access: Access, permission: Permission, channel: string, hidd
 }
 
 const messageNotFound = (id: number) => () => notFound(`message not found: #${id}`, 'message_not_found')
-
-/** Whether the board checked who a write is by, as it shows them (upstream writes.ts `verifiedAs`). */
-function verifiedAs({ principal, author, actor }: Identity): boolean {
-  if (principal.kind === 'external') return (actor as { verified?: true }).verified === true
-  if (principal.id.startsWith('board:')) return false
-  const named = ownedActor(principal, author, actor)
-  return named.handle === actor.handle && named.name === actor.name && named.avatar === actor.avatar && named.via?.name === actor.via?.name && named.via?.environment === actor.via?.environment
-}
-
-/** The `actor.seen` a write carries, or null when the board knows its author already (upstream writes.ts). */
-function seenFor(identity: Identity, actors: ActorsState) {
-  const { verified: _verified, ...actor } = identity.actor as Identity['actor'] & { verified?: true }
-  return actorSeen(verifiedAs(identity) ? { ...actor, verified: true } : actor, actors, identity.principal.facts?.issuer === 'host')
-}
 
 /** The actors with a write's author as the board now records them (upstream writes.ts `knownWith`). */
 const knownWith = (actors: ActorsState, identity: Identity, seen: ReturnType<typeof seenFor>): ActorsState =>
@@ -168,6 +159,8 @@ export class BoardEngine {
   /** Resolves once the tables have every event the log has. */
   readonly ready: Promise<void>
   private readonly files: Files
+  /** Tasks, as upstream's tasks.ts keeps them (src/engine/tasks.ts). */
+  private readonly tasks: ReturnType<typeof createTasks>
 
   constructor(
     private readonly storage: DurableObjectStorage,
@@ -187,6 +180,20 @@ export class BoardEngine {
     this.scheduleState = this.loadState('schedules', emptySchedules)
     storage.sql.exec('create table if not exists bx_timers (name text primary key, due_at integer not null, kind text not null, payload text not null, attempt integer not null default 1)')
     this.ready = this.catchUp()
+    const writes: WriteContext = {
+      session: { state: (async (reducer: { name: string }) => ({ state: reducer.name === 'board.actors' ? this.views.actors : this.views.channels, index: this.log.head() })) as WriteContext['session']['state'] },
+      reads: {
+        tables: this.tables,
+        message: (id) => this.tables.message(id),
+        position: () => this.tables.position(),
+        roots: (filter, page) => this.tables.roots(filter, page),
+        reader: (access, messages) => this.reads.reader(access, messages),
+      },
+      exclusive: (write) => this.exclusive(write),
+      append: (events) => this.append(events),
+    }
+    this.tasks = createTasks({ arm: (name, at, payload) => this.arm(name, at, { kind: 'lease.due', payload }) })
+    this.tasks.bind({ writes })
   }
 
   /** A side session's fold, as `bx_state` keeps it, or where it starts. */
@@ -476,7 +483,8 @@ export class BoardEngine {
     return { message: shown }
   }
 
-  async post(caller: Caller, parsed: In<'post'>): Promise<Out<'post'>> {
+  /** A post; with `along`, a new thread's root with what makes it a task, in one append (upstream writes.ts `writePost`). */
+  async post(caller: Caller, parsed: In<'post'>, along?: Along): Promise<Out<'post'>> {
     const { principal } = caller
     const { access } = principal
     if (parsed.text.length > MESSAGE_TEXT_MAX) throw textTooLong()
@@ -538,6 +546,8 @@ export class BoardEngine {
       }
       const seen = seenFor(caller, this.views.actors)
       const known = knownWith(this.views.actors, caller, seen)
+      // What comes with a new thread's root: its ID and thread key are known before it's written.
+      const came = along ? (await along()).events({ id: this.log.head() + 1 + (seen ? 1 : 0), thread }) : []
       const rows = await this.append([
         ...(seen ? [seen] : []),
         {
@@ -557,8 +567,11 @@ export class BoardEngine {
             ...(attachments.length ? { attachments } : {}),
             ...(caller.schedule ? { schedule: caller.schedule } : {}),
             ...(access.readable(channel) ? {} : { blind: true as const }),
+            // How many came with it, so a replay tells its own append from what was written since.
+            ...(came.length > 0 ? { along: came.length } : {}),
           },
         },
+        ...came,
       ])
       const posted = rows.find((row) => row.type === 'message.posted')!
       const folded: MessagesState = { byId: {}, replies: {} }
@@ -669,8 +682,8 @@ export class BoardEngine {
   }
 
   /** Arms a timer, once for its name, and sets the alarm to the earliest. */
-  private arm(name: string, dueAt: number, payload: Timer['payload'], attempt = 1) {
-    this.storage.sql.exec('insert or ignore into bx_timers (name, due_at, kind, payload, attempt) values (?, ?, ?, ?, ?)', name, dueAt, 'schedule.due', JSON.stringify(payload), attempt)
+  private arm(name: string, dueAt: number, what: Pick<Timer, 'kind' | 'payload'>, attempt = 1) {
+    this.storage.sql.exec('insert or ignore into bx_timers (name, due_at, kind, payload, attempt) values (?, ?, ?, ?, ?)', name, dueAt, what.kind, JSON.stringify(what.payload), attempt)
     void this.rearm()
   }
 
@@ -685,7 +698,7 @@ export class BoardEngine {
   takeDue(now: number): Timer[] {
     const rows = this.storage.sql.exec<{ name: string; due_at: number; kind: string; payload: string; attempt: number }>('select * from bx_timers where due_at <= ? order by due_at', now).toArray()
     for (const row of rows) this.storage.sql.exec('delete from bx_timers where name = ?', row.name)
-    return rows.map((row) => ({ name: row.name, dueAt: Number(row.due_at), kind: row.kind as Timer['kind'], payload: JSON.parse(row.payload) as Timer['payload'], attempt: Number(row.attempt) }))
+    return rows.map((row) => ({ name: row.name, dueAt: Number(row.due_at), kind: row.kind, payload: JSON.parse(row.payload), attempt: Number(row.attempt) }) as Timer)
   }
 
   /** A timer that failed, armed again a little later, up to 10 tries (as A2 retries a consumer). */
@@ -694,7 +707,7 @@ export class BoardEngine {
       console.error(`[bordeaux] gave up on ${timer.name} after ${timer.attempt} tries`)
       return
     }
-    this.arm(`${timer.name}#${timer.attempt + 1}`, Date.now() + Math.min(1000 * 2 ** timer.attempt, 3_600_000), timer.payload, timer.attempt + 1)
+    this.arm(`${timer.name}#${timer.attempt + 1}`, Date.now() + Math.min(1000 * 2 ** timer.attempt, 3_600_000), timer, timer.attempt + 1)
   }
 
   async schedule(caller: Caller, parsed: In<'schedule'>): Promise<Out<'schedule'>> {
@@ -733,7 +746,7 @@ export class BoardEngine {
         },
       ])
       const created = this.scheduleState.byId[row!.index]!
-      if (created.next !== null) this.arm(`first-${created.id}-${created.sent}`, created.next, { id: created.id, n: created.sent, at: created.next })
+      if (created.next !== null) this.arm(`first-${created.id}-${created.sent}`, created.next, { kind: 'schedule.due', payload: { id: created.id, n: created.sent, at: created.next } })
       return { schedule: scheduleView(created, this.views.actors) }
     })
   }
@@ -772,7 +785,7 @@ export class BoardEngine {
    * What a due timer does now (upstream schedules.ts `due`): nothing for one canceled, done, or
    * stale; a cancel when its thread is gone; or the schedule to send as its creator.
    */
-  async dueSend({ id, n, at }: Timer['payload']): Promise<{ skip: true } | { schedule: Schedule }> {
+  async dueSend({ id, n, at }: { id: number; n: number; at: number }): Promise<{ skip: true } | { schedule: Schedule }> {
     const schedule = this.scheduleState.byId[id]
     if (!schedule || schedule.next !== at || schedule.sent !== n) return { skip: true }
     if (schedule.re !== null) {
@@ -791,13 +804,177 @@ export class BoardEngine {
     if (!schedule || schedule.sent !== n) return
     const next = nextSend(schedule, n, at, Date.now())
     this.appendSchedules([{ type: 'schedule.fired', payload: { id, n, message, next } }])
-    if (next !== null) this.arm(`next-${id}-${n + 1}`, next, { id, n: n + 1, at: next })
+    if (next !== null) this.arm(`next-${id}-${n + 1}`, next, { kind: 'schedule.due', payload: { id, n: n + 1, at: next } })
   }
 
   /** A schedule the board ends itself: its thread is gone, its creator can't post there now, or the middleware dropped it. */
   endSchedule(id: number, reason: 'thread_deleted' | 'dropped' | 'revoked') {
     const by = { actor: 'board:schedule', principal: 'board:schedule', profile: null }
     if (this.scheduleState.byId[id]?.next !== null) this.appendSchedules([{ type: 'schedule.canceled', payload: { id, by, reason } }])
+  }
+
+  // --- Tasks (upstream a2.ts's task methods, on src/engine/tasks.ts) ---
+
+  /** The IDs a batch made under `id` carries (upstream a2.ts `batchRoot` and `batchAsked`). */
+  private batchRoot = (id: string, at: number) => derivedId('board-batch', id, String(at))
+  private batchAsked = (id: string, request: string) => derivedId('board-batch-request', id, request)
+
+  /** A batch a caller made under an `id`, found by the IDs its events carry (upstream writes.ts `landedBatch`). */
+  private async landedBatch(identity: Identity, rootId: (at: number) => Promise<string>, asked: string | undefined): Promise<{ tasks: MessageView[] } | { not: 'made' | 'yours' | 'asked' }> {
+    const first = await this.tables.byEventId(await rootId(0))
+    if (!first) return { not: 'made' }
+    const tasks: MessageView[] = []
+    for (let at = 0, landed: Message | null = first; landed; landed = await this.tables.byEventId(await rootId(++at))) {
+      const mine = await this.landedFor(identity, landed)
+      if (!mine) return { not: 'yours' }
+      tasks.push(mine)
+    }
+    if (asked !== undefined) {
+      const [, made] = this.log.history({ gte: first.id, lte: first.id + 1 })
+      if (made?.id !== asked) return { not: 'asked' }
+    }
+    return { tasks }
+  }
+
+  /**
+   * Several new threads in `channel` in one append, each root with what `more` makes of it right
+   * after it, all or none (upstream writes.ts `writeRoots`).
+   */
+  private writeRoots(caller: Caller, channel: string, roots: { id: string; text: string; labels?: Record<string, string> | undefined; noSync?: boolean | undefined; attachments?: Attachment[] }[], more: AlongEach, again?: { asked: string; landed: () => ReturnType<BoardEngine['landedBatch']> }): Promise<MessageView[]> {
+    const { access } = caller.principal
+    const blind = !access.readable(channel)
+    return this.exclusive(async () => {
+      const found = again ? await again.landed() : null
+      if (found && 'not' in found && found.not !== 'made') throw duplicateId()
+      if (found && 'tasks' in found) return found.tasks
+      const seen = seenFor(caller, this.views.actors)
+      const { counts, events: made } = await more()
+      let next = this.log.head() + 1 + (seen ? 1 : 0)
+      const placed = roots.map((root, at) => {
+        const here = { id: next, thread: root.id }
+        next += 1 + counts[at]!
+        return here
+      })
+      const came = made(placed)
+      // The event right after the first root says what the batch was asked for, by its ID.
+      if (again && came[0]?.[0]) came[0][0] = { ...came[0][0], id: again.asked }
+      const events: NewEvent[] = seen ? [seen] : []
+      for (const [at, root] of roots.entries()) {
+        if (came[at]!.length !== counts[at]) throw new Error(`a root's append carries the ${counts[at]} events it said, not ${came[at]!.length}`)
+        events.push(
+          {
+            type: 'message.posted',
+            id: root.id,
+            payload: { channel, text: root.text, re: null, replyTo: null, thread: root.id, labels: root.labels ?? {}, noSync: root.noSync ?? false, by: caller.author, origin: null, from: null, ...(root.attachments?.length ? { attachments: root.attachments } : {}), ...(blind ? { blind: true as const } : {}), ...(came[at]!.length > 0 ? { along: came[at]!.length } : {}) },
+          },
+          ...came[at]!,
+        )
+      }
+      const rows = await this.append(events)
+      const folded: MessagesState = { byId: {}, replies: {} }
+      for (const row of rows) foldMessages(folded, row)
+      const known = knownWith(this.views.actors, caller, seen)
+      const posted = rows.filter((row) => row.type === 'message.posted')
+      return Promise.all(posted.map(async (row, at) => shownTo(view(folded.byId[row.index]!, known, await this.reads.reader(access, [folded.byId[row.index]!])), access, roots[at]!.text)))
+    })
+  }
+
+  tasksList = (caller: Caller, query: In<'tasks'>) => this.tasks.list(caller, query)
+
+  async createTask(caller: Caller, body: In<'createTask'>): Promise<Out<'createTask'>> {
+    if (body.re === undefined) {
+      if ((body.text ?? '').length > MESSAGE_TEXT_MAX) throw textTooLong()
+      if ((body.attachments?.length ?? 0) > ATTACHMENTS_PER_MESSAGE_MAX) throw badRequest(`attachments: a message carries at most ${ATTACHMENTS_PER_MESSAGE_MAX}`)
+    }
+    taskLimits.needs(body.needs)
+    taskLimits.lease(body.lease)
+    const about = { needs: body.needs, for: body.for, claim: body.claim, lease: body.lease, token: body.token }
+    if (body.re !== undefined) return this.tasks.adopt(caller, messageAt(body.re), about)
+    const made = this.tasks.starting(caller, { channel: body.channel!, ...about })
+    const { message: task } = await this.post(caller, { channel: body.channel, text: body.text ?? '', labels: body.labels, noSync: body.noSync, id: body.id, attachments: body.attachments } as In<'post'>, made.along)
+    // A retry gets back the post that landed with its ID: one that was no task's is another write's.
+    if (!task.task) throw duplicateId()
+    const claim = await made.claimed(messageAt(task.id))
+    return { task, ...(claim ? { claim } : {}) }
+  }
+
+  async createTasks(caller: Caller, body: In<'createTasks'>): Promise<Out<'createTasks'>> {
+    taskLimits.batch(body.tasks)
+    for (const [at, task] of body.tasks.entries()) {
+      if (task.text.length > MESSAGE_TEXT_MAX) throw textTooLong()
+      if ((task.attachments?.length ?? 0) > ATTACHMENTS_PER_MESSAGE_MAX) throw badRequest(`tasks.${at}.attachments: a message carries at most ${ATTACHMENTS_PER_MESSAGE_MAX}`)
+    }
+    const { principal } = caller
+    authorize(principal.access, 'post', body.channel)
+    if (body.tasks.some((task) => Object.keys(task.labels ?? {}).length > 0)) authorize(principal.access, 'label', body.channel)
+    if (caller.request && body.id !== undefined && DERIVED_ID.test(body.id)) throw badRequest("id: UUIDv8s are the board's own, for the writes it makes itself")
+    const made = this.tasks.startingMany(caller, body.tasks)
+    const rootId = (at: number) => (body.id !== undefined ? this.batchRoot(body.id, at) : Promise.resolve(crypto.randomUUID()))
+    const roots = await Promise.all(body.tasks.map(async (task, at) => ({ id: await rootId(at), text: task.text, labels: task.labels, noSync: task.noSync, attachments: await this.attachmentsFor(principal, task.attachments) })))
+    const { id } = body
+    const asked = id !== undefined ? await this.batchAsked(id, body.request ?? '') : undefined
+    const again = id !== undefined && asked !== undefined ? { asked, landed: () => this.landedBatch(caller, (at) => this.batchRoot(id, at), asked) } : undefined
+    return { tasks: await this.writeRoots(caller, body.channel, roots, made, again) }
+  }
+
+  async createdTasks(caller: Caller, { id, request }: In<'createdTasks'>): Promise<Out<'createdTasks'>> {
+    const found = await this.landedBatch(caller, (at) => this.batchRoot(id, at), request !== undefined ? await this.batchAsked(id, request) : undefined)
+    if ('tasks' in found) return found
+    if (found.not === 'asked') throw duplicateId()
+    throw notFound(`no batch of yours has id ${id}`, 'batch_not_found')
+  }
+
+  async claimReadyTask(caller: Caller, body: In<'claimReadyTask'>): Promise<Out<'claimReadyTask'>> {
+    taskLimits.lease(body.lease)
+    taskLimits.from(body.from)
+    return this.tasks.claimReady(caller, body, AbortSignal.timeout(((body.wait ?? 0) + 30) * 1000))
+  }
+
+  async claimTask(caller: Caller, { id, lease, token }: In<'claimTask'>): Promise<Out<'claimTask'>> {
+    taskLimits.lease(lease)
+    return this.tasks.claim(caller, messageAt(id), lease, token)
+  }
+
+  async renewTask(caller: Caller, { id, epoch, token, lease }: In<'renewTask'>): Promise<Out<'renewTask'>> {
+    taskLimits.lease(lease)
+    return this.tasks.renew(caller, messageAt(id), { epoch, token }, lease)
+  }
+
+  releaseTask = (caller: Caller, { id, epoch, token }: In<'releaseTask'>) => this.tasks.settle(caller, messageAt(id), { epoch, token }, { type: 'task.released' })
+
+  async completeTask(caller: Caller, { id, epoch, token, result }: In<'completeTask'>) {
+    taskLimits.note('result', result)
+    return this.tasks.settle(caller, messageAt(id), { epoch, token }, { type: 'task.completed', result: result ?? null })
+  }
+
+  async failTask(caller: Caller, { id, epoch, token, reason }: In<'failTask'>) {
+    taskLimits.note('reason', reason)
+    return this.tasks.settle(caller, messageAt(id), { epoch, token }, { type: 'task.failed', reason })
+  }
+
+  async blockTask(caller: Caller, { id, reason, kind, epoch, token }: In<'blockTask'>) {
+    taskLimits.note('reason', reason)
+    taskLimits.kind(kind)
+    return this.tasks.block(caller, messageAt(id), { reason, kind, ...(epoch !== undefined && token !== undefined ? { proof: { epoch, token } } : {}) })
+  }
+
+  unblockTask = (caller: Caller, { id }: In<'unblockTask'>) => this.tasks.unblock(caller, messageAt(id))
+  reopenTask = (caller: Caller, { id }: In<'reopenTask'>) => this.tasks.reopen(caller, messageAt(id))
+  assignTask = (caller: Caller, { id, for: actor }: In<'assignTask'>) => this.tasks.assign(caller, messageAt(id), actor)
+
+  async setTaskNeeds(caller: Caller, { id, needs }: In<'setTaskNeeds'>) {
+    taskLimits.needs(needs)
+    return this.tasks.needs(caller, messageAt(id), needs)
+  }
+
+  async cancelTask(caller: Caller, { id, reason }: In<'cancelTask'>) {
+    taskLimits.note('reason', reason)
+    return this.tasks.cancel(caller, messageAt(id), reason)
+  }
+
+  /** A claim's lease ran out: expire it, if it's still that claim (upstream's `board-leases`). */
+  leaseDue(payload: { id: number; epoch: number; at: number }, name: string) {
+    return this.tasks.due(payload, name)
   }
 
   // --- Files (upstream a2.ts upload, uploadStart, uploadFinish, attachment) ---

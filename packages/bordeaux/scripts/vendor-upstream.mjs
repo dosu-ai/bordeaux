@@ -28,6 +28,7 @@ export const FILES = [
   'contract/mentions.ts',
   'contract/blocks.ts',
   'contract/data-schemas.ts',
+  'contract/task-batch.ts',
   // The tables a board reads from, as SQL over a three-call Db.
   'store/sql.ts',
   'store/project.ts',

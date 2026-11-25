@@ -17,7 +17,7 @@ export type WireError = { status: number; code: string; message: string; hint?: 
 export type Envelope = { ok: true; value: unknown } | { ok: false; error: WireError }
 
 /** The methods this board answers itself; the rest answer 501 until their milestone. */
-const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule'] as const
+const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule', 'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask'] as const
 type Kept = (typeof KEPT)[number]
 const isKept = (method: string): method is Kept => (KEPT as readonly string[]).includes(method)
 
@@ -80,7 +80,8 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     await this.engine.ready
     for (const timer of this.engine.takeDue(Date.now())) {
       try {
-        await this.send(timer)
+        if (timer.kind === 'lease.due') await this.engine.leaseDue(timer.payload, timer.name)
+        else await this.send(timer)
       } catch (error) {
         console.error(`[bordeaux] ${timer.name} failed:`, (error as Error).message)
         this.engine.retry(timer)
@@ -93,7 +94,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
    * A schedule's send, as its creator, through board(): its middleware sees it as any post, and the
    * creator's access is worked out again by board()'s policy now (upstream schedules.ts `due`).
    */
-  private async send(timer: Timer) {
+  private async send(timer: Extract<Timer, { kind: 'schedule.due' }>) {
     const { id, n, at } = timer.payload
     // A timer that fires this early just waits again.
     if (Date.now() < at - 1000) return this.engine.retry({ ...timer, attempt: 0 })
@@ -131,7 +132,8 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       this.named(board)
       if (!isKept(method)) throw notKeptHere(method)
       const caller = fromWire(wire)
-      const run = this.engine[method] as (caller: ReturnType<typeof fromWire>, input: unknown) => Promise<unknown>
+      // `tasks` is the task list's method; the engine names it apart from its task store.
+      const run = (method === 'tasks' ? this.engine.tasksList : this.engine[method]) as (caller: ReturnType<typeof fromWire>, input: unknown) => Promise<unknown>
       return { ok: true, value: await run.call(this.engine, caller, input) }
     } catch (error) {
       return { ok: false, error: toWireError(error) }
