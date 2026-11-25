@@ -11,14 +11,17 @@ import { indexOf } from '../upstream/server/feed.ts'
 import { bindingOf } from '../worker/backend.ts'
 import { boardOf } from '../worker/boards.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
+import type { DeadLetter, Failure } from './engine.ts'
+
+/** What a run that's still going when the runner moves on resolves to. */
+const SLOW = Symbol('slow')
 import type { BordeauxEnv } from '../worker/env.ts'
 
-/** A failed run of the board's own code, kept for an operator to read. */
-export type OwnFailure = { at: string; queue: string; item: string; attempt: number; error: string; stack: string }
-/** How many of the latest failures the board keeps. */
-const OWN_FAILURES_KEPT = 50
-
-/** How long one run of the board's own code (a watcher, a delivery, a platform event) may take. */
+/**
+ * How long one run of the board's own code (a watcher, a delivery, a platform event) holds up
+ * the next before the runner moves on. The run isn't stopped: it keeps its lease, and its
+ * outcome is recorded when it settles. `BORDEAUX_RUN_TIMEOUT_MS` changes it, for tests.
+ */
 const RUN_MS = 60_000
 
 export type WireError = { status: number; code: string; message: string; hint?: string }
@@ -126,41 +129,54 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     const binding = bindingOf(name)
     if (!binding) return
     const until = Date.now() + 10 * 60_000
+    const runMs = Number(this.env.BORDEAUX_RUN_TIMEOUT_MS) || RUN_MS
     while (Date.now() < until) {
       const items = await this.engine.leaseOwn(10)
       if (items.length === 0) return
       for (const item of items) {
-        try {
-          const meta = { trigger: item.id, attempt: item.attempt + 1 }
-          // Each run gets a minute: a platform that never answers fails the try, which is tried again.
-          const signal = AbortSignal.timeout(RUN_MS)
-          const ran = item.queue.startsWith('@inbox:')
-            ? binding.receive(item.queue.slice('@inbox:'.length), item.event as never, { id: item.id, attempt: item.attempt + 1, signal })
-            : binding.run(item.queue, item.event as never, meta)
-          await Promise.race([ran, new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error(`${item.queue} took over ${RUN_MS / 1000} s`)), { once: true }))])
-          await this.engine.ackOwn(item.id, item.lease)
-        } catch (error) {
-          const message = ((error as Error).message || 'failed').slice(0, 500)
-          console.error(`[bordeaux] ${item.queue} failed on ${item.id}:`, message)
-          this.noteFailure({ at: new Date().toISOString(), queue: item.queue, item: item.id, attempt: item.attempt + 1, error: message, stack: String((error as Error).stack ?? '').slice(0, 1500) })
-          await this.engine.ackOwn(item.id, item.lease, message)
+        const meta = { trigger: item.id, attempt: item.attempt + 1 }
+        const signal = AbortSignal.timeout(runMs)
+        const ran = (item.queue.startsWith('@inbox:')
+          ? binding.receive(item.queue.slice('@inbox:'.length), item.event as never, { id: item.id, attempt: item.attempt + 1, signal })
+          : binding.run(item.queue, item.event as never, meta)
+        ).then(
+          () => undefined,
+          (error: unknown) => error ?? new Error('failed'),
+        )
+        const outcome = await Promise.race([ran, new Promise<typeof SLOW>((resolve) => setTimeout(() => resolve(SLOW), runMs))])
+        if (outcome === SLOW) {
+          // Still running: it keeps its lease, so nothing runs it twice, and it's acked when it settles.
+          this.ctx.waitUntil(ran.then((error) => this.finish(item, error)))
+          continue
         }
+        await this.finish(item, outcome)
       }
     }
   }
 
-  /** The board's own runs that failed lately, newest first: what `ownFailures` answers. */
-  private noteFailure(failure: OwnFailure) {
-    const [row] = this.ctx.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'own-failures'").toArray()
-    const failures = [failure, ...(row ? (JSON.parse(row.data) as OwnFailure[]) : [])].slice(0, OWN_FAILURES_KEPT)
-    this.ctx.storage.sql.exec("insert into bx_state (key, data) values ('own-failures', ?) on conflict (key) do update set data = excluded.data", JSON.stringify(failures))
+  /** Records how a run of the board's own code went: done, or an error it's tried again for. */
+  private async finish(item: { id: string; queue: string; lease: string; attempt: number }, error: unknown) {
+    if (error === undefined) return this.engine.ackOwn(item.id, item.lease)
+    this.engine.noteFailure(item.queue, item.id, item.attempt + 1, error)
+    await this.engine.ackOwn(item.id, item.lease, (((error as Error)?.message || String(error)) || 'failed').slice(0, 500))
   }
 
-  /** The board's own runs (config watchers, its sync) that failed lately, for an operator to read. */
-  async ownFailures(): Promise<OwnFailure[]> {
+  /** The board's own runs, and matches, that failed lately, newest first, for an operator to read. */
+  async ownFailures(): Promise<Failure[]> {
     await this.engine.ready
-    const [row] = this.ctx.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'own-failures'").toArray()
-    return row ? (JSON.parse(row.data) as OwnFailure[]) : []
+    return this.engine.failures()
+  }
+
+  /** What the board's queues gave up on after their last try, newest first. */
+  async deadLetters(): Promise<DeadLetter[]> {
+    await this.engine.ready
+    return this.engine.deadLetters()
+  }
+
+  /** Puts a dead letter back on its queue: false when there's no such one. */
+  async replayDead(id: string): Promise<boolean> {
+    await this.engine.ready
+    return this.engine.replayDead(id)
   }
 
   /**

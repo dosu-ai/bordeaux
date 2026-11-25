@@ -33,4 +33,17 @@ describe("a deployment's own watchers", () => {
     expect(failures[0]).toMatchObject({ queue: 'broken', error: 'the broken watcher broke', attempt: 1 })
     expect(message.id).toBeTruthy()
   })
+
+  it("doesn't run a watcher again while its last run is still going", async () => {
+    const token = await tokenFor(92, 'patient')
+    const { message } = (await api(token, 'POST', '/messages', { channel: 'slow', text: 'take your time' })).body
+    const board = env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+    const replies = async () => ((await api(token, 'GET', `/messages/${message.id}`)).body.replies as unknown[]).length
+    for (const deadline = Date.now() + 4000; Date.now() < deadline; ) {
+      await runDurableObjectAlarm(board)
+      await later(200)
+    }
+    expect(await replies()).toBe(1)
+    expect((await board.ownFailures()).some((failure: { queue: string }) => failure.queue === 'slow')).toBe(false)
+  }, 10_000)
 })

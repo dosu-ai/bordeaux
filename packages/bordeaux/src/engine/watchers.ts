@@ -6,7 +6,7 @@
 // Δ Matching uses the access a registrant had when it registered (its `x-board-can`-free summary),
 // and every pull filters again by what it may read then: a narrower view, never a wider one.
 // Δ A registration with a `url` is woken (`POST <url>/wake`) when it has matches, by the DO's alarm.
-import { HttpError, type BoardEventView, type MatchView, type RegistrationView } from '@vercel/board'
+import { HttpError, type BoardEventView, type Identity, type MatchView, type RegistrationView } from '@vercel/board'
 import { compileAccess, type AccessSummary } from '@vercel/board/access'
 import { derivedId } from '../upstream/client/ids.ts'
 import type { BoardEvent } from '../upstream/contract/events.ts'
@@ -33,7 +33,7 @@ const RECEIPTS = new Set(['message.synced', 'message.files_synced', 'task.renewe
 const SYNCED = new Set(['message.posted', 'message.edited', 'message.deleted', 'reaction.added', 'reaction.removed', 'labels.changed', 'thread.synced'])
 
 /** A registration, with what its registrant could read when it registered. */
-export type Registration = RegistrationView & { principal: { id: string; kind: string; handle: string }; can: AccessSummary; own?: true }
+export type Registration = RegistrationView & { principal: { id: string; kind: string; handle: string; facts?: Identity['principal']['facts']; scope?: string }; can: AccessSummary; own?: true }
 
 /** The registrant the board's own watchers and sync queue under, as if registered: they run in the board's DO. */
 export const OWN = '@board'
@@ -49,7 +49,7 @@ export const viewOf = ({ principal: _principal, can: _can, ...view }: Registrati
 
 // --- The queue: upstream's registered.ts. ---
 
-type Pending = { id: string; queue: string; thread: string; event: unknown; attempts: number; lease: { id: string; until: number } | null; retryAt: number | null }
+export type Pending = { id: string; queue: string; thread: string; event: unknown; attempts: number; lease: { id: string; until: number } | null; retryAt: number | null }
 export type QueueState = { queues: Record<string, string[]>; pending: Record<string, Pending> }
 export const emptyQueue = (): QueueState => ({ queues: {}, pending: {} })
 
@@ -62,6 +62,28 @@ type QueueEvent =
   | { type: 'watch.skipped'; payload: { matched: string; reason: string } }
 
 const queueKey = (queue: string, thread: string) => `${queue}\u001f${thread}`
+
+/**
+ * When a queue next has something to do: each lane's head, at its retry or when its lease runs
+ * out, or now when it's free. Only heads count: what waits behind one waits for it.
+ */
+export function nextDue(state: QueueState, now: number): number | undefined {
+  let due: number | undefined
+  for (const ids of Object.values(state.queues)) {
+    const head = state.pending[ids[0]!]
+    if (!head) continue
+    const at = Math.max(now, head.retryAt ?? head.lease?.until ?? now)
+    if (due === undefined || at < due) due = at
+  }
+  return due
+}
+
+/** Puts a dead letter back at the end of its lane, with its tries counted again from none. */
+export function revive(state: QueueState, item: Pending) {
+  if (state.pending[item.id]) return
+  state.pending[item.id] = { ...item, attempts: 0, lease: null, retryAt: null }
+  ;(state.queues[queueKey(item.queue, item.thread)] ??= []).push(item.id)
+}
 
 function remove(state: QueueState, id: string) {
   const found = state.pending[id]

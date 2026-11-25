@@ -156,7 +156,13 @@ async function callback(request: Request, env: BordeauxEnv): Promise<Response> {
   return new Response(null, { status: 302, headers })
 }
 
+/** Signing out: a POST from this page only, so another site can't sign anyone out. A GET shows the button. */
 async function logout(request: Request, env: BordeauxEnv, board: InspectedBoard): Promise<Response> {
+  if (request.method === 'GET' || request.method === 'HEAD') {
+    const page = `<!doctype html><meta charset="utf-8"><title>sign out</title><form method="post"><button type="submit">sign out of ${board.base}</button></form>`
+    return new Response(page, { headers: { ...HEADERS, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'" } })
+  }
+  if (request.method !== 'POST' || !sameOrigin(request)) return text(403, 'sign out from the board\'s own page')
   const refresh = cookies(request)[REFRESH_COOKIE]
   if (refresh) await directory(env).takeSession(refresh)
   const headers = new Headers({ ...HEADERS, 'content-type': 'text/plain; charset=utf-8' })

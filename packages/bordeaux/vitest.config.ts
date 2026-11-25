@@ -9,7 +9,7 @@ export default defineConfig({
       // Slack's Web API as a workspace with nothing in it.
       miniflare: {
         outboundService: (request: Request) =>
-          new URL(request.url).hostname === 'slack.com' ? Response.json({ ok: true, user_id: 'UBOT', bot_id: 'BBOT', team_id: 'T1', channels: [], messages: [] }) : new Response(null, { status: 202 }), bindings: { BORDEAUX_URL: 'https://board.test', BORDEAUX_GITHUB_ORG: 'acme', GITHUB_CLIENT_ID: 'Iv1.test', BORDEAUX_DEV: '1' },
+          new URL(request.url).hostname === 'slack.com' ? Response.json({ ok: true, user_id: 'UBOT', bot_id: 'BBOT', team_id: 'T1', channels: [], messages: [] }) : new Response(null, { status: 202 }), bindings: { BORDEAUX_URL: 'https://board.test', BORDEAUX_GITHUB_ORG: 'acme', GITHUB_CLIENT_ID: 'Iv1.test', BORDEAUX_DEV: '1', BORDEAUX_RUN_TIMEOUT_MS: '300' },
       },
     }),
   ],

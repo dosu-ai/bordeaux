@@ -56,8 +56,15 @@ export default {
         const rest = pathname.slice(`/b/${name}`.length)
         if (rest.startsWith(UPLOADS)) return putUpload(request, env, name.toLowerCase(), rest.slice(UPLOADS.length))
         if (rest === '/inspect' || rest.startsWith('/inspect/')) {
+          const lower = name.toLowerCase()
+          // One path per board, as its sign-in cookies are: `/b/Ops/inspect` is `/b/ops/inspect`.
+          if (name !== lower) {
+            const url = new URL(request.url)
+            url.pathname = `/b/${lower}${rest}`
+            return Response.redirect(url.toString(), 301)
+          }
           const board = boardOf(env, name)
-          return inspect(request, env, { name: name.toLowerCase(), url: `${env.BORDEAUX_URL}/b/${name.toLowerCase()}`, base: `/b/${name}/inspect`, fetch: (asked) => board.fetch(asked) })
+          return inspect(request, env, { name: lower, url: `${env.BORDEAUX_URL}/b/${lower}`, base: `/b/${lower}/inspect`, fetch: (asked) => board.fetch(asked) })
         }
         return boardOf(env, name).fetch(request)
       }

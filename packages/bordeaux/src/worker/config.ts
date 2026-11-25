@@ -9,8 +9,11 @@ export type BordeauxConfig = {
   middleware?: BoardOptions['middleware']
   /** The default board's own watchers: `{ triage: { tail: 'errors-www', run } }`, run by the board itself. */
   watch?: BoardOptions['watch']
-  /** The default board's two-way sync: `{ slack: slack({ adapter }, channels({ '#ops': 'ops' })) }`. */
-  sync?: BoardOptions['sync']
+  /**
+   * The default board's two-way sync: `{ slack: slackSync(env, channels({ '#ops': 'ops' })) }`.
+   * An entry that's null (a sync helper whose secrets aren't set) is left out.
+   */
+  sync?: Record<string, NonNullable<BoardOptions['sync']>[string] | null>
 }
 
 type Given = BordeauxConfig | ((env: BordeauxEnv) => BordeauxConfig)

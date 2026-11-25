@@ -43,7 +43,8 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
     const found = new Map<string, { key: string; platform: string }>()
     for (const { key, platform } of binding?.sync ?? []) found.set(key, { key, platform })
     for (const { principal, sync } of await stub().registeredSync()) {
-      if (!(await binding?.accessNow(principal as never))?.anywhere('sync')) continue
+      // Worked out again from its facts, as the board judges any principal it stored.
+      if (!(await binding?.accessNow(principal as Parameters<BoardBinding['accessNow']>[0]))?.anywhere('sync')) continue
       for (const { key, platform } of sync) if (!found.has(key)) found.set(key, { key, platform })
     }
     return [...found.values()]

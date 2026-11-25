@@ -57,7 +57,7 @@ import type { Actor, ExternalCopy } from '../upstream/contract/folds.ts'
 import { INBOX_EVENT_ID_MAX } from '../upstream/api/routes.ts'
 import type { SyncEntrySpec } from '../upstream/server/watchers-hash.ts'
 import { pullInbox } from './watchers.ts'
-import { ack as ackMatch, emptyQueue, foldQueue, leaseAll, matchesFor, OWN, pull, viewOf, watchersHash, type QueueState, type Registration, type RegistryState } from './watchers.ts'
+import { ack as ackMatch, emptyQueue, foldQueue, leaseAll, matchesFor, nextDue, OWN, pull, revive, viewOf, watchersHash, type Pending, type QueueState, type Registration, type RegistryState } from './watchers.ts'
 import { compileWatcher } from '../upstream/server/watch-spec.ts'
 import { RemoteWatcherId } from '../upstream/contract/schemas.ts'
 import { TASK_BATCH_MAX } from '../upstream/contract/schemas.ts'
@@ -204,6 +204,13 @@ function atRevision(message: Message | undefined, id: number, revision: number) 
 
 export const notKeptHere = (what: string) => new HttpError(501, 'not_implemented', `this bordeaux board doesn't keep ${what} yet`)
 
+/** A failed run of the board's own code, or a failed match, kept for an operator to read. */
+export type Failure = { at: string; queue: string; item: string; attempt: number; error: string; stack: string }
+/** How many of the latest failures the board keeps. */
+const FAILURES_KEPT = 50
+/** An item a queue gave up on after its last try, kept so it can be replayed (spec 06, the dead-letter table). */
+export type DeadLetter = { id: string; owner: string; queue: string; thread: string; error: string; at: string; attempts: number }
+
 /** How long an inbox remembers an event it took, to drop a platform's resend: 30 days. */
 const INBOX_SEEN_MS = 30 * 86_400_000
 
@@ -253,6 +260,8 @@ export class BoardEngine {
     // first was handled lands once (upstream keeps its inbox sessions for this, forever).
     storage.sql.exec('create table if not exists bx_inbox_seen (id text primary key, at integer not null)')
     storage.sql.exec('create index if not exists bx_inbox_seen_at on bx_inbox_seen (at)')
+    // What a queue gave up on, with all it needs to run again.
+    storage.sql.exec('create table if not exists bx_dead (id text primary key, owner text not null, item text not null, error text not null, at integer not null)')
     storage.sql.exec('create table if not exists bx_timers (name text primary key, due_at integer not null, kind text not null, payload text not null, attempt integer not null default 1)')
     this.ready = this.catchUp()
     const writes: WriteContext = {
@@ -339,7 +348,8 @@ export class BoardEngine {
     for (const row of rows) if (!(await this.tables.applyNext(row))) await this.catchUp()
     // Registered watchers, and the board's own, match it before the write answers. With none, the
     // position moves with the log: a watcher added later starts from then, not from the board's start.
-    if (Object.keys(this.registry.byOwner).length > 0 || this.ownRegistration()) await this.match()
+    // A match that fails is the board's to note, never the write's: the write has landed.
+    if (Object.keys(this.registry.byOwner).length > 0 || this.ownRegistration()) await this.match().catch((error) => this.noteFailure('(matching)', 'all', 1, error))
     else if (rows.length > 0) this.storage.sql.exec("update bx_state set data = ? where key = 'watch-position'", String(rows.at(-1)!.index))
     return rows
   }
@@ -352,6 +362,55 @@ export class BoardEngine {
 
   private saveQueue(owner: string, state: QueueState) {
     this.storage.sql.exec('insert into bx_queues (owner, data) values (?, ?) on conflict (owner) do update set data = excluded.data', owner, JSON.stringify(state))
+  }
+
+  /** Folds a queue event, first keeping an item the queue gives up on as a dead letter. */
+  private settle(owner: string, state: QueueState, event: Parameters<typeof foldQueue>[1]) {
+    if (event.type === 'watch.failed') {
+      const item = state.pending[event.payload.matched]
+      if (item) this.storage.sql.exec('insert or replace into bx_dead (id, owner, item, error, at) values (?, ?, ?, ?, ?)', item.id, owner, JSON.stringify(item), event.payload.error, Date.now())
+    }
+    foldQueue(state, event)
+  }
+
+  /** Notes a failure for an operator: the latest FAILURES_KEPT, newest first. */
+  noteFailure(queue: string, item: string, attempt: number, error: unknown) {
+    const failure: Failure = { at: new Date().toISOString(), queue, item, attempt, error: ((error as Error)?.message || String(error) || 'failed').slice(0, 500), stack: String((error as Error)?.stack ?? '').slice(0, 1500) }
+    console.error(`[bordeaux] ${queue} failed on ${item}:`, failure.error)
+    const failures = [failure, ...this.failures()].slice(0, FAILURES_KEPT)
+    this.storage.sql.exec("insert into bx_state (key, data) values ('own-failures', ?) on conflict (key) do update set data = excluded.data", JSON.stringify(failures))
+  }
+
+  /** The latest failures, newest first. */
+  failures(): Failure[] {
+    const [row] = this.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'own-failures'").toArray()
+    return row ? (JSON.parse(row.data) as Failure[]) : []
+  }
+
+  /** What the queues gave up on, newest first. */
+  deadLetters(): DeadLetter[] {
+    return this.storage.sql
+      .exec<{ owner: string; item: string; error: string; at: number }>('select owner, item, error, at from bx_dead order by at desc')
+      .toArray()
+      .map((row) => {
+        const item = JSON.parse(row.item) as Pending
+        return { id: item.id, owner: row.owner, queue: item.queue, thread: item.thread, error: row.error, at: new Date(Number(row.at)).toISOString(), attempts: item.attempts }
+      })
+  }
+
+  /** Puts a dead letter back on its queue, its tries counted from none: false when there's no such one. */
+  replayDead(id: string): Promise<boolean> {
+    return this.exclusive(async () => {
+      const [row] = this.storage.sql.exec<{ owner: string; item: string }>('select owner, item from bx_dead where id = ?', id).toArray()
+      if (!row) return false
+      const state = this.queueOf(row.owner)
+      revive(state, JSON.parse(row.item) as Pending)
+      this.saveQueue(row.owner, state)
+      this.storage.sql.exec('delete from bx_dead where id = ?', id)
+      if (row.owner === OWN) this.arm('run', Date.now(), { kind: 'run', payload: {} })
+      else if (this.registry.byOwner[row.owner]?.url) this.arm(`wake-${row.owner}`, Date.now(), { kind: 'wake', payload: { owner: row.owner } })
+      return true
+    })
   }
 
   /** Matches what the log has past the stored position against every registration, a page at a time (upstream's `board-watch` consumer). */
@@ -372,7 +431,14 @@ export class BoardEngine {
    * subscriptions in this isolate (the deployment's `bordeaux.config.ts`). Null when it has none.
    */
   private ownRegistration(): Registration | null {
-    const binding = this.binding()
+    let binding: BoardBinding | null
+    try {
+      binding = this.binding()
+    } catch (error) {
+      // The deployment's config couldn't be built: its own watchers and sync wait for it, the board doesn't.
+      this.noteFailure('(config)', 'binding', 1, error)
+      return null
+    }
     if (!binding) return null
     const watch = Object.fromEntries(Object.entries(binding.subscriptions).flatMap(([id, sub]) => (sub.kind === 'tail' ? [[id, { tail: sub.tail }]] : [])))
     const sync = binding.subscriptions['@sync'] ? [...binding.sync] : []
@@ -385,8 +451,11 @@ export class BoardEngine {
     return this.exclusive(async () => {
       const state = this.queueOf(OWN)
       const { events, leased } = leaseAll(state, { limit, now: Date.now() })
-      for (const event of events) foldQueue(state, event)
+      for (const event of events) this.settle(OWN, state, event)
       if (events.length > 0) this.saveQueue(OWN, state)
+      // If this run dies with these leased, the next comes when their leases run out.
+      const until = Math.min(...leased.map((item) => (state.pending[item.id]?.lease?.until ?? Infinity)))
+      if (Number.isFinite(until)) this.arm(`run-${until}`, until, { kind: 'run', payload: {} })
       return leased
     })
   }
@@ -396,13 +465,13 @@ export class BoardEngine {
     return this.exclusive(async () => {
       const state = this.queueOf(OWN)
       try {
-        for (const event of ackMatch(state, id, { lease, ...(error !== undefined ? { error } : {}) }, Date.now(), 10)) foldQueue(state, event)
+        for (const event of ackMatch(state, id, { lease, ...(error !== undefined ? { error } : {}) }, Date.now(), 10)) this.settle(OWN, state, event)
       } catch {
         // Its lease ran out while it ran, and the next run has it.
       }
       this.saveQueue(OWN, state)
-      // An item waiting out a retry, or a lease that ran out, comes back then.
-      const later = Object.values(state.pending).map((item) => item.retryAt ?? item.lease?.until ?? Date.now()).sort((a, b) => a - b)[0]
+      // A lane's head waiting out a retry, or a lease that ran out, comes back then.
+      const later = nextDue(state, Date.now())
       if (later !== undefined) this.arm(`run-${later}`, later, { kind: 'run', payload: {} })
     })
   }
@@ -417,7 +486,15 @@ export class BoardEngine {
       const registrations = [...Object.values(this.registry.byOwner), ...(own ? [own] : [])]
       const woken = new Set<string>()
       for (const event of events) {
-        for (const [owner, matched] of await matchesFor(event, registrations, this.reads, this.views.actors, async (thread) => (await this.tables.byEventId(thread)) ?? undefined)) {
+        let found: Awaited<ReturnType<typeof matchesFor>>
+        try {
+          found = await matchesFor(event, registrations, this.reads, this.views.actors, async (thread) => (await this.tables.byEventId(thread)) ?? undefined)
+        } catch (error) {
+          // One event that can't be matched is noted and passed: it never holds up the ones after it.
+          this.noteFailure('(matching)', String(event.index), 1, error)
+          continue
+        }
+        for (const [owner, matched] of found) {
           const state = this.queueOf(owner)
           for (const one of matched) foldQueue(state, one)
           this.saveQueue(owner, state)
@@ -1229,7 +1306,8 @@ export class BoardEngine {
       if (landed && access.can('sync', landed.channel)) message = ref(landed.id)
     }
     if (query.thread !== undefined) {
-      const key = query.message === undefined ? await this.tables.threadOf(query.thread) : await this.tables.threadOf(query.thread)
+      // Upstream waits for its tables when a thread synced just now isn't in them yet; these are never behind.
+      const key = await this.tables.threadOf(query.thread)
       const synced = key === null ? null : await this.tables.syncOf(key)
       if (synced && access.can('sync', synced.channel)) thread = key
       if (query.message !== undefined) {
@@ -1321,7 +1399,7 @@ export class BoardEngine {
       // This board's own sync: its inbox, run by the board itself, one platform thread at a time.
       const pushed = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
       await this.exclusive(async () => {
-        const fresh = this.unseen(pushed)
+        const fresh = this.unseen(OWN, pushed)
         if (fresh.length === 0) return
         const state = this.queueOf(OWN)
         for (const one of fresh) foldQueue(state, one)
@@ -1333,7 +1411,7 @@ export class BoardEngine {
     // A sync elsewhere: its own queue, for it to pull back. A platform's retry lands once.
     const matched = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
     await this.exclusive(async () => {
-      const fresh = this.unseen(matched)
+      const fresh = this.unseen(caller.principal.id, matched)
       if (fresh.length === 0) return
       const state = this.queueOf(caller.principal.id)
       for (const one of fresh) foldQueue(state, one)
@@ -1343,16 +1421,18 @@ export class BoardEngine {
   }
 
   /**
-   * The inbox events not taken before, now noted as taken. Δ upstream keeps every one; this
-   * forgets them after INBOX_SEEN_MS, long past any platform's retries.
+   * The inbox events `owner`'s inbox hasn't taken before, now noted as taken. Δ upstream keeps
+   * every one; this forgets them after INBOX_SEEN_MS, long past any platform's retries.
    */
-  private unseen<T extends { id: string }>(events: T[]): T[] {
+  private unseen<T extends { id: string }>(owner: string, events: T[]): T[] {
     const now = Date.now()
     this.storage.sql.exec('delete from bx_inbox_seen where at < ?', now - INBOX_SEEN_MS)
     const fresh: T[] = []
     for (const event of events) {
-      if (this.storage.sql.exec('select 1 from bx_inbox_seen where id = ?', event.id).toArray().length > 0) continue
-      this.storage.sql.exec('insert into bx_inbox_seen (id, at) values (?, ?)', event.id, now)
+      // Each inbox on its own, as upstream keeps them: two syncs may share a key's name.
+      const seen = `${owner}\u001f${event.id}`
+      if (this.storage.sql.exec('select 1 from bx_inbox_seen where id = ?', seen).toArray().length > 0) continue
+      this.storage.sql.exec('insert into bx_inbox_seen (id, at) values (?, ?)', seen, now)
       fresh.push(event)
     }
     return fresh
@@ -1364,7 +1444,7 @@ export class BoardEngine {
     return this.exclusive(async () => {
       const state = this.queueOf(caller.principal.id)
       const { events, leased } = pullInbox(state, key, { access: caller.principal.access, limit: limit ?? 10, now: Date.now() })
-      for (const event of events) foldQueue(state, event)
+      for (const event of events) this.settle(caller.principal.id, state, event)
       if (events.length > 0) this.saveQueue(caller.principal.id, state)
       return {
         items: leased.map(({ id, thread, lease, attempt, event }) => {
@@ -1386,7 +1466,7 @@ export class BoardEngine {
         if (thrown instanceof HttpError && thrown.code === 'no_match') throw notFound(`no inbox event ${id} is waiting for this token`, 'no_item')
         throw thrown
       }
-      for (const event of acked) foldQueue(state, event)
+      for (const event of acked) this.settle(caller.principal.id, state, event)
       this.saveQueue(caller.principal.id, state)
       return { ok: true } as Out<'inboxAck'>
     })
@@ -1724,7 +1804,9 @@ export class BoardEngine {
     return this.exclusive(async () => {
       // Matching starts here for the first registration: what came before is no one's.
       if (Object.keys(this.registry.byOwner).length === 0) this.storage.sql.exec("insert into bx_state (key, data) values ('watch-position', ?) on conflict (key) do update set data = excluded.data", String(this.log.head()))
-      this.registry.byOwner[principal.id] = { ...view, principal: { id: principal.id, kind: principal.kind, handle: principal.handle }, can: principal.access.summary() }
+      // Its facts and scope too: what it may do is worked out again from them (discovery's `accessNow`).
+      const kept = { id: principal.id, kind: principal.kind, handle: principal.handle, ...(principal.facts ? { facts: principal.facts } : {}), ...(principal.scope !== undefined ? { scope: principal.scope } : {}) }
+      this.registry.byOwner[principal.id] = { ...view, principal: kept, can: principal.access.summary() }
       this.storage.sql.exec("insert into bx_state (key, data) values ('registry', ?) on conflict (key) do update set data = excluded.data", JSON.stringify(this.registry))
       return view
     })
@@ -1736,11 +1818,11 @@ export class BoardEngine {
     if (!this.registry.byOwner[principal.id]) throw notFound('this token has no watchers registered here', 'no_registration')
     const deadline = Date.now() + (query.wait ?? 0) * 1000
     for (let pause = 100; ; pause = Math.min(pause * 2, 1000)) {
-      await this.match()
+      await this.match().catch((error) => this.noteFailure('(matching)', 'all', 1, error))
       const found = await this.exclusive(async () => {
         const state = this.queueOf(principal.id)
         const { events, matches } = pull(state, { access: principal.access, limit: query.limit ?? 10, now: Date.now() })
-        for (const event of events) foldQueue(state, event)
+        for (const event of events) this.settle(principal.id, state, event)
         if (events.length > 0) this.saveQueue(principal.id, state)
         return matches
       })
@@ -1753,7 +1835,7 @@ export class BoardEngine {
     this.ownWatchers(caller)
     return this.exclusive(async () => {
       const state = this.queueOf(caller.principal.id)
-      for (const event of ackMatch(state, id, body, Date.now())) foldQueue(state, event)
+      for (const event of ackMatch(state, id, body, Date.now())) this.settle(caller.principal.id, state, event)
       this.saveQueue(caller.principal.id, state)
       return { ok: true as const }
     })

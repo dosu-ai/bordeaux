@@ -103,7 +103,8 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
   wasn't caught in the act. Every later event (six of them, five before the cap) landed in
   under 2 s, routed by `#name` or by ID.
 - **Inbox dedupe (Δ retention).** An inbox takes a platform event once by its derived ID,
-  remembered in `bx_inbox_seen` for 30 days. Upstream keeps every ID in its inbox sessions
+  remembered per inbox (the board's own, or each registrant's, as upstream keeps them) in
+  `bx_inbox_seen` for 30 days. Upstream keeps every ID in its inbox sessions
   forever. Before this, a repeat was dropped only while the first was still queued, and a
   Slack reaction resent 200 ms later landed twice. `bx export` doesn't carry the table, so a
   board moved within a platform's retry window may take a resend again.
@@ -111,8 +112,15 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
   Linear issue, and no echo of either app's own writes.
 - **Gotcha (Linear).** Linear sends an app's webhooks only after the app's first token, so
   a new deployment hears nothing from Linear until the board delivers something there.
-- **Own failures.** The board keeps its last 50 failed own runs (`BoardDO.ownFailures()`):
-  queue, item, attempt, error. A first step toward M4's dead letters.
+- **Failures and dead letters.** The board keeps its last 50 failures (`BoardDO.ownFailures()`):
+  its own runs that threw, and events matching couldn't handle, which are passed so they
+  never hold up the rest. What a queue gives up on (10 tries for the board's own runs, 5 for
+  a registrant's, as upstream) is kept with its event in `bx_dead` (`deadLetters()`), and
+  `replayDead(id)` puts it back on its queue. A UI and `bx` commands for them are M4.
+- **Slow runs.** A run of the board's own code that outlasts a minute keeps its lease while
+  the runner moves on, and is acked when it settles: it's never run twice at once.
+- **A sync whose secrets aren't set is left out**, with an error in the logs; the boards
+  work without it.
 - Upstream's intake drops an event whose channel the routing doesn't map, without a log
   line. `slackSync(…, { debug: true })` logs the adapter's side.
 - **Gotcha.** A provider that can't reach its platform's API at startup can hold up the

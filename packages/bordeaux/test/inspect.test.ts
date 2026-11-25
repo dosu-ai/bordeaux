@@ -56,8 +56,12 @@ describe('the hosted inspector', () => {
     expect((await page(cookie, '/inspect/board/messages', write)).status).toBe(403)
     expect((await page(cookie, '/inspect/board/../admin/boards')).status).not.toBe(200)
     expect((await page('', '/inspect/board/me')).status).toBe(401)
-    // Signing out ends the sign-in.
-    const out = await SELF.fetch(`${BASE}/inspect/logout`, { headers: { cookie } })
+    // Signing out is a POST from this page: a link or another site can't do it.
+    const shown = await SELF.fetch(`${BASE}/inspect/logout`, { headers: { cookie } })
+    expect(shown.headers.getSetCookie()).toEqual([])
+    expect(await shown.text()).toContain('<form method="post">')
+    expect((await SELF.fetch(`${BASE}/inspect/logout`, { method: 'POST', headers: { cookie, origin: 'https://elsewhere.test' } })).status).toBe(403)
+    const out = await SELF.fetch(`${BASE}/inspect/logout`, { method: 'POST', headers: { cookie, origin: BASE } })
     expect(out.headers.getSetCookie().every((set) => set.includes('Max-Age=0'))).toBe(true)
   })
 
@@ -68,5 +72,9 @@ describe('the hosted inspector', () => {
     const cookie = jar(login)
     expect(await (await page(cookie, '/b/eng/inspect/board/')).json()).toMatchObject({ url: `${BASE}/b/eng` })
     expect((await page(cookie, '/b/eng/inspect/board/me')).status).toBe(200)
+    // One path per board, as its cookies are.
+    const mixed = await SELF.fetch(`${BASE}/b/Eng/inspect/`, { redirect: 'manual' })
+    expect(mixed.status).toBe(301)
+    expect(mixed.headers.get('location')).toBe(`${BASE}/b/eng/inspect/`)
   })
 })

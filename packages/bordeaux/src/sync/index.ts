@@ -33,10 +33,15 @@ export type SyncSecrets = {
 }
 type Env = BordeauxEnv & SyncSecrets
 
-function need(env: Env, platform: string, ...names: (keyof Env)[]): string[] {
+/**
+ * The secrets a platform's sync reads, or null when one isn't set: that sync is left out, with
+ * an error in the logs, and the boards work without it.
+ */
+function need(env: Env, platform: string, ...names: (keyof Env)[]): string[] | null {
   const missing = names.filter((name) => !env[name])
-  if (missing.length) throw new Error(`${platform} sync needs ${missing.join(', ')}: set ${missing.length > 1 ? 'them' : 'it'} with wrangler secret put`)
-  return names.map((name) => env[name] as string)
+  if (missing.length === 0) return names.map((name) => env[name] as string)
+  console.error(`[bordeaux] ${platform} sync is off: it needs ${missing.join(', ')}; set ${missing.length > 1 ? 'them' : 'it'} with wrangler secret put`)
+  return null
 }
 
 /**
@@ -48,9 +53,11 @@ function need(env: Env, platform: string, ...names: (keyof Env)[]): string[] {
  */
 export const SLACK_CLIENT = { retryConfig: { retries: 3, factor: 2, minTimeout: 500, randomize: true }, timeout: 30_000 } as const
 
-/** A Slack workspace, as its app: `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET`. */
+/** A Slack workspace, as its app: `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET`. Null when one isn't set. */
 export function slackSync(env: Env, sync: Parameters<typeof slack>[1], options: { join?: boolean; debug?: boolean } = {}) {
-  const [botToken, signingSecret] = need(env, 'Slack', 'SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET')
+  const secrets = need(env, 'Slack', 'SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET')
+  if (!secrets) return null
+  const [botToken, signingSecret] = secrets
   const { debug, ...rest } = options
   // `debug` logs what the Chat SDK adapter does with each webhook: what it ignored, and why.
   const logger = debug ? { logger: new ConsoleLogger('debug') } : {}
@@ -61,23 +68,25 @@ export function slackSync(env: Env, sync: Parameters<typeof slack>[1], options: 
 /**
  * GitHub, as the board's own GitHub App (the one people sign in with): `GITHUB_APP_ID`,
  * `GITHUB_PRIVATE_KEY`, `GITHUB_INSTALLATION_ID`, and `GITHUB_WEBHOOK_SECRET`. `userName` is the
- * App's bot login (`acme-board[bot]`), so its own comments don't come back.
+ * App's bot login (`acme-board[bot]`), so its own comments don't come back. Null when a secret isn't set.
  */
 export function githubSync(env: Env, sync: Parameters<typeof github>[1], options: { userName: string; botUserId?: number }) {
-  const [appId, privateKey, installationId, webhookSecret] = need(env, 'GitHub', 'GITHUB_APP_ID', 'GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID', 'GITHUB_WEBHOOK_SECRET')
+  const secrets = need(env, 'GitHub', 'GITHUB_APP_ID', 'GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID', 'GITHUB_WEBHOOK_SECRET')
+  if (!secrets) return null
+  const [appId, privateKey, installationId, webhookSecret] = secrets
   const adapter = createGitHubAdapter({ appId: appId!, privateKey: toPkcs8(privateKey!), installationId: Number(installationId), webhookSecret: webhookSecret!, userName: options.userName })
   return github({ adapter, ...(options.botUserId !== undefined ? { botUserId: options.botUserId } : {}) }, sync)
 }
 
 /**
  * Linear, as its app: `LINEAR_API_KEY`, or `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET` for an
- * OAuth app's client credentials, and `LINEAR_WEBHOOK_SECRET`.
+ * OAuth app's client credentials, and `LINEAR_WEBHOOK_SECRET`. Null when one isn't set.
  */
 export function linearSync(env: Env, sync: Parameters<typeof linear>[1], options: { userName?: string } = {}) {
-  const [webhookSecret] = need(env, 'Linear', 'LINEAR_WEBHOOK_SECRET')
+  const secrets = env.LINEAR_API_KEY ? need(env, 'Linear', 'LINEAR_WEBHOOK_SECRET', 'LINEAR_API_KEY') : need(env, 'Linear', 'LINEAR_WEBHOOK_SECRET', 'LINEAR_CLIENT_ID', 'LINEAR_CLIENT_SECRET')
+  if (!secrets) return null
+  const [webhookSecret, first, second] = secrets
   const base = { webhookSecret: webhookSecret!, ...(options.userName ? { userName: options.userName } : {}) }
-  const adapter = env.LINEAR_API_KEY
-    ? createLinearAdapter({ ...base, apiKey: env.LINEAR_API_KEY })
-    : createLinearAdapter({ ...base, clientCredentials: { clientId: need(env, 'Linear', 'LINEAR_CLIENT_ID')[0]!, clientSecret: need(env, 'Linear', 'LINEAR_CLIENT_SECRET')[0]! } })
+  const adapter = env.LINEAR_API_KEY ? createLinearAdapter({ ...base, apiKey: first! }) : createLinearAdapter({ ...base, clientCredentials: { clientId: first!, clientSecret: second! } })
   return linear({ adapter }, sync)
 }

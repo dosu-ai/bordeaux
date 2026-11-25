@@ -114,6 +114,8 @@ the board's API.
   Keep all of them.
 - **The sign-in lives in two HttpOnly cookies on the board's own `/inspect` path**: each
   named board's inspector signs in separately. The board never keeps a GitHub token.
+- **Signing out is a POST from the page** (`/inspect/logout` shows the button), and a named
+  board's inspector lives at its lowercase path, as its cookies do.
 - **Check it in a browser** against `pnpm dev` (`/inspect/login?id=<n>` signs in a made-up
   person on a dev board) before saying a change works.
 
@@ -186,8 +188,8 @@ taught:
   Close those clients, then check, before concluding a fix or a new secret didn't work.
 - **`wrangler tail` drops events**, whole webhooks and DO calls included: its silence proves
   nothing. Record what you need where you can read it back, such as R2 or the DO's
-  `ownFailures()` (the board's last 50 failed own runs), and remove that instrumentation
-  afterwards.
+  `ownFailures()` (its last 50 failures) and `deadLetters()` (what its queues gave up on,
+  replayed with `replayDead(id)`), and remove your own instrumentation afterwards.
 - **A secret check right after `wrangler secret put`** can still hit the old version. Wait a
   few seconds and check again before asking anyone to re-enter it.
 - **Platforms have their own preconditions:** Linear sends an app's webhooks only after the

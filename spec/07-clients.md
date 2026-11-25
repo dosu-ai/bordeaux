@@ -205,6 +205,8 @@ The inspector is upstream's React page. bordeaux serves it two ways:
    - `src/upstream/inspect/{shell,style}.ts` are vendored.
    - With `BORDEAUX_DEV=1` and no client secret, `/inspect/login?id=<n>` signs in a made-up
      person.
+   - Signing out is a same-origin POST to `/inspect/logout` (a GET shows the button), so no
+     other site can sign anyone out. `/b/<Name>/inspect` redirects to its lowercase path.
 
 The inspector covers:
 

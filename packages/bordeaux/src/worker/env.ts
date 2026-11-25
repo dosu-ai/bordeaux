@@ -27,6 +27,8 @@ export interface BordeauxEnv {
   GITHUB_PRIVATE_KEY?: string
   /** The App's installation on the board's org. */
   GITHUB_INSTALLATION_ID?: string
+  /** How long one of the board's own runs holds up the next before the runner moves on, in ms (default 60000). For tests. */
+  BORDEAUX_RUN_TIMEOUT_MS?: string
   /** "1" turns on `POST /__dev/token`, which mints a person token with no sign-in: local development and tests only. */
   BORDEAUX_DEV?: string
 }

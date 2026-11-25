@@ -34,12 +34,13 @@ export function boardOf(env: BordeauxEnv, name: string | null) {
     // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
     const tokens = oidcTokens({ oidc: { [env.BORDEAUX_URL]: issuerKeys(env) } })
     const config = configOf(env)
+    const sync = config.sync && Object.fromEntries(Object.entries(config.sync).filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
     found = board({
       backend: durable(env, name),
       ...(config.middleware ? { middleware: config.middleware } : {}),
       // A deployment's own watchers and sync are its default board's.
       ...(name === null && config.watch ? { watch: config.watch } : {}),
-      ...(name === null && config.sync ? { sync: config.sync } : {}),
+      ...(name === null && sync && Object.keys(sync).length > 0 ? { sync } : {}),
       url: boardUrl(env, name),
       ...(name !== null ? { basePath: `/b/${key}` } : {}),
       // The verifier chain (spec 03): the board's own tokens, then upstream's.

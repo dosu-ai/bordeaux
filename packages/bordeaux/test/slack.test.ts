@@ -32,4 +32,11 @@ describe('Slack sync from secrets', () => {
     const { sync } = (await (await SELF.fetch(`${BASE}/`)).json()) as { sync: { key: string }[] }
     expect(sync.map((entry) => entry.key)).toContain('slack')
   })
+
+  it('leaves out a sync whose secrets are missing, and the board works without it', async () => {
+    const answer = await SELF.fetch(`${BASE}/`)
+    expect(answer.status).toBe(200)
+    const { sync } = (await answer.json()) as { sync: { key: string }[] }
+    expect(sync.map((entry) => entry.key)).not.toContain('github')
+  })
 })
