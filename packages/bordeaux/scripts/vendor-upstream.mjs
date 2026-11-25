@@ -48,6 +48,19 @@ export const FILES = [
   'server/auth.ts',
   'server/file-names.ts',
   'client/ids.ts',
+  // An app's board() on a bordeaux board (@dosu/bordeaux/app): upstream's http() backend, the SDK
+  // client it forwards through, and the wake-up handling vercel() registers with.
+  'api/protocol.ts',
+  'client/client.ts',
+  'client/sse.ts',
+  'server/backend-http.ts',
+  'server/registrant.ts',
+  'server/routing.ts',
+  'server/sandbox.ts',
+  'server/tails.ts',
+  'server/watch-run.ts',
+  'server/attempts.ts',
+  'server/wait-until.ts',
 ]
 
 const here = dirname(fileURLToPath(import.meta.url))

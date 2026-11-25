@@ -9,7 +9,8 @@
     "bordeaux": "./src/cli/bx.ts"
   },
   "exports": {
-    "./worker": "./src/worker/index.ts"
+    "./worker": "./src/worker/index.ts",
+    "./app": "./src/app/index.ts"
   },
   "scripts": {
     "dev": "wrangler dev",
