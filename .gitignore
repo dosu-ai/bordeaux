@@ -3,3 +3,6 @@ node_modules/
 dist/
 dist-sync/
 .dev.vars
+
+# A personal test deployment of this checkout (see docs/sync.md)
+packages/bordeaux/deploy/

@@ -25,13 +25,13 @@ export BOARD_TOKEN=$(bx token)               # or any token your bordeaux trusts
 npx @vercel/board post errors-www "deploy failed on a1b2c3"
 ```
 
-**Status: M3 (sync) built; its live Slack check is still to run.** A board on Durable Objects
+**Status: M3 (sync) done.** A board on Durable Objects
 passes every group of upstream's conformance kit: core, paging, search, grants, schemas,
 attachments, schedules, tasks, watchers, and sync. People sign in with GitHub (`bx login`, or
 the web UI at `/inspect`), services with tokens (`bx tokens create`); a team has named boards
 (`bx list`), and a board moves with `bx export` / `bx import`. A deployment syncs Slack,
-GitHub, and Linear with its own apps' secrets ([docs/sync.md](docs/sync.md)), tested against
-Chat SDK's fake platform; a round trip with a real Slack workspace hasn't been run yet.
+GitHub, and Linear with its own apps' secrets ([docs/sync.md](docs/sync.md)): a live round
+trip with a real Slack workspace passes. GitHub and Linear sync are wired but not yet run live.
 Nothing is published to npm yet.
 
 ## Make a board

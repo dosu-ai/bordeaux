@@ -12,6 +12,7 @@ import { createSlackAdapter } from '@chat-adapter/slack'
 import { github } from '@vercel/board/sync-github'
 import { linear } from '@vercel/board/sync-linear'
 import { slack } from '@vercel/board/sync-slack'
+import { ConsoleLogger } from 'chat'
 import type { BordeauxEnv } from '../worker/env.ts'
 import { toPkcs8 } from '../worker/github-app.ts'
 
@@ -38,9 +39,12 @@ function need(env: Env, platform: string, ...names: (keyof Env)[]): string[] {
 }
 
 /** A Slack workspace, as its app: `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET`. */
-export function slackSync(env: Env, sync: Parameters<typeof slack>[1], options: { join?: boolean } = {}) {
+export function slackSync(env: Env, sync: Parameters<typeof slack>[1], options: { join?: boolean; debug?: boolean } = {}) {
   const [botToken, signingSecret] = need(env, 'Slack', 'SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET')
-  return slack({ adapter: createSlackAdapter({ botToken: botToken!, signingSecret: signingSecret! }), ...options }, sync)
+  const { debug, ...rest } = options
+  // `debug` logs what the Chat SDK adapter does with each webhook: what it ignored, and why.
+  const logger = debug ? { logger: new ConsoleLogger('debug') } : {}
+  return slack({ adapter: createSlackAdapter({ botToken: botToken!, signingSecret: signingSecret!, ...logger }), ...rest }, sync)
 }
 
 /**

@@ -19,7 +19,8 @@ import { channels, repos, slackSync, githubSync } from '@dosu/bordeaux/sync'
 
 configure((env) => ({
   sync: {
-    slack: slackSync(env, channels({ '#support': 'support', '#ops': 'ops' })),
+    // Slack channels by ID (right-click a channel → View channel details): IDs never change.
+    slack: slackSync(env, channels({ C0123SUPPORT: 'support', C0456OPS: 'ops' })),
     github: githubSync(env, repos({ 'acme/www': 'prs' }), { userName: 'acme-board[bot]' }),
   },
 }))
@@ -61,6 +62,10 @@ see what's synced.
    ```
 
 5. Invite the app to each channel it syncs (`/invite @your-app`). It never joins on its own.
+6. Map channels by **ID** (`C0…`), not by `#name`. In the live check, a `#name` mapping left
+   every event unmatched: upstream drops events from unmapped channels without a log line.
+   `slackSync(env, routing, { debug: true })` logs what the Slack adapter does with each
+   webhook.
 
 ## GitHub
 
@@ -110,6 +115,14 @@ With Slack wired to a deployed board and the app in `#support`:
 3. Reply in the Slack thread. It lands on the board under the same thread.
 4. React on either side. The reaction shows on the other.
 
-If step 1 doesn't happen: Slack's Event Subscriptions page says whether it reached the URL,
-and `npx wrangler tail` shows `[bordeaux] @inbox:slack failed …` with the reason when the
-board couldn't bring an event on.
+If step 1 doesn't happen:
+- Slack's Event Subscriptions page says whether it reached the URL.
+- If the webhook got through (`npx wrangler tail` shows `POST /webhooks/slack - Ok`) but
+  nothing lands, check the channel mapping: an event from a channel the routing doesn't map
+  is dropped silently.
+- `[bordeaux] @inbox:slack failed …` in the tail gives the reason when the board couldn't
+  bring an event on.
+
+**Run on 2026-11-25** against a test board on workers.dev and the Dosu workspace: all four
+steps passed (Slack root → board, board reply → Slack thread as its author, Slack thread
+reply → board thread, board reaction → Slack). A reaction made on Slack wasn't checked.

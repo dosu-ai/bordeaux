@@ -93,8 +93,12 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
   can read them. Setup: [docs/sync.md](../docs/sync.md).
 - Linear also takes `LINEAR_API_KEY` in place of the client credentials.
 - Tested end to end with Chat SDK's fake platform (`test/own-sync.test.ts`), and Slack's
-  webhook verification with a real `slackSync` provider. A round trip with a real Slack
-  workspace is M3's remaining exit check.
+  webhook verification with a real `slackSync` provider. A live round trip with a real Slack
+  workspace passed on a deployed board (2026-11-25).
+- **Gotcha (live).** Upstream's webhook intake drops an event whose channel its routing
+  doesn't map, without logging. A `#name` routing key matched nothing on the live workspace,
+  while the same channel by ID worked. The cause isn't pinned down; docs/sync.md says to map
+  by ID.
 - **Gotcha.** A provider that can't reach its platform's API at startup can hold up the
   others in the same isolate, because board() starts every provider on the first webhook.
 
