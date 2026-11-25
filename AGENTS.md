@@ -69,8 +69,7 @@ messages, or PR descriptions. Say what the other side does instead ("Vercel's AP
 ## pr titles and descriptions
 
 **Title:** `<type>(<area>): <what it does>`, in the imperative, about 60 characters at most:
-`fix(sync): cap slackSync's Slack client as upstream does`. A milestone's PR may be titled
-`M<n>: <what it delivers>`.
+`fix(sync): cap slackSync's Slack client as upstream does`.
 
 - `type` is `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, or `chore`, with `!` when it
   breaks someone.

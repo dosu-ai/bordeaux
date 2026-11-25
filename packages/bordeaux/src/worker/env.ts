@@ -27,7 +27,7 @@ export interface BordeauxEnv {
   GITHUB_CLIENT_SECRET?: string
   /** Upstream's prebuilt inspector page (`@vercel/board/dist/inspect`), as Static Assets. */
   ASSETS?: Fetcher
-  /** The GitHub App, as the board itself: checking membership on renewal now, sync in M3 (spec 06). */
+  /** The GitHub App, as the board itself: checking membership on renewal, and sync (spec 06). */
   GITHUB_APP_ID?: string
   /** The App's private key, PEM, PKCS#1 as GitHub hands it out or PKCS#8. A secret. */
   GITHUB_PRIVATE_KEY?: string

@@ -124,7 +124,7 @@ under **Repository access**.
 linear: linearSync(env, teams({ ENG: 'eng' })),
 ```
 
-## Checking a live round trip (M3's exit check)
+## Checking a live round trip
 
 With Slack wired to a deployed board and the app in `#support`:
 

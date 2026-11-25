@@ -4,7 +4,7 @@
 
 | # | Question | Decision (2026-11-24) | Spec |
 | --- | --- | --- | --- |
-| <a id="q1"></a>Q1 | How much of upstream do we run? | **Our own `Backend` on DO SQLite**, mounted under upstream's `board()` in the Worker. We port upstream's engine logic as a reference, but never copy the internal engine (`a2.ts`, `experimental-a2`) wholesale. Upstream's pure modules (the data model, the tables, the feed) are copied byte for byte into `src/upstream/` instead of rewritten (M1). | [08](spec/08-cloudflare.md#the-durable-backend) |
+| <a id="q1"></a>Q1 | How much of upstream do we run? | **Our own `Backend` on DO SQLite**, mounted under upstream's `board()` in the Worker. We port upstream's engine logic as a reference, but never copy the internal engine (`a2.ts`, `experimental-a2`) wholesale. Upstream's pure modules (the data model, the tables, the feed) are copied byte for byte into `src/upstream/` instead of rewritten. | [08](spec/08-cloudflare.md#the-durable-backend) |
 | <a id="q2"></a>Q2 | How do people log in? | **GitHub device flow.** `bdx login`, which issues bordeaux JWTs. Principals are GitHub numeric user IDs. Cloudflare Access and generic OIDC come later. | [03](spec/03-identity-access.md#people) |
 | Q2b | Separate OAuth App for login? | **No. Reuse the sync GitHub App.** | [03](spec/03-identity-access.md#people) |
 | <a id="q3"></a>Q3 | How are Workers named in grants? | **`bdx grants create --service www --env production`**, which expands to an `oidc` grant on bordeaux-issued service tokens. No new principal kind. | [03](spec/03-identity-access.md#deployments-and-services-δ-workers-have-no-platform-oidc) |
@@ -19,7 +19,7 @@
 | <a id="q9"></a>Q9 | Retention and redaction | **Retention for inbox payloads, message copies, and deleted attachments (30 days each). Messages and the log are never pruned. Plus an admin redaction tool for leaked secrets.** | [02](spec/02-model.md#retention-δ-decided-q9) |
 | <a id="q13"></a>Q13 | Our own CLI? | **Both.** `bdx` is bordeaux's CLI: it embeds upstream's commands through the public `createApp()` and adds login and admin commands. Upstream `vb` with `BOARD_URL` + `BOARD_TOKEN` stays fully supported. If embedding gets too complex or rigid, `bdx` becomes a standalone CLI ([fallback](spec/07-clients.md#fallback-a-standalone-bdx)). | [07](spec/07-clients.md#bdx) |
 | <a id="q10b"></a>Q10b | npm scope | **`@dosu`.** One package, `@dosu/bordeaux` (bins `bdx` and `bordeaux`, subpaths `/app` and `/worker`), plus `@dosu/create-bordeaux` for `npm create @dosu/bordeaux`. | [07](spec/07-clients.md#packages) |
-| <a id="q12"></a>Q12 | Who is the first user? | **Teams that never used Vercel's board.** So: no migration from Vercel, and onboarding (`npm create @dosu/bordeaux`, GitHub App guide, skill) moves into M2. | [08](spec/08-cloudflare.md#milestones) |
+| <a id="q12"></a>Q12 | Who is the first user? | **Teams that never used Vercel's board.** So: no migration from Vercel, and onboarding (`npm create @dosu/bordeaux`, GitHub App guide, skill) comes first. | [07](spec/07-clients.md) |
 
 ### How each upstream mismatch is handled under Q7
 

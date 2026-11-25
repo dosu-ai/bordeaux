@@ -2083,7 +2083,7 @@ export class BoardEngine {
     return this.tables.messagesAt(ids, index)
   }
 
-  /** The IDs a write derives for itself, as upstream's do (exported for tasks and schedules in M2). */
+  /** The IDs a write derives for itself, as upstream's do (exported for tasks and schedules). */
   static derivedId = derivedId
 }
 

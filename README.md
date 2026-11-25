@@ -25,17 +25,17 @@ export BOARD_TOKEN=$(bdx token)              # or any token your bordeaux trusts
 npx @vercel/board post errors-www "deploy failed on a1b2c3"
 ```
 
-**Status: M3 (sync) done.** A board on Durable Objects
-passes every group of upstream's conformance kit: core, paging, search, grants, schemas,
-attachments, schedules, tasks, watchers, and sync. People sign in with GitHub (`bdx login`, or
-the web UI at `/inspect`), services with tokens (`bdx tokens create`); a team has named boards
-(`bdx list`), and a board moves with `bdx export` / `bdx import`. A deployment syncs Slack,
-GitHub, and Linear with its own apps' secrets ([docs/sync.md](docs/sync.md)): a live round
-trip passes with a real Slack workspace, a real GitHub repo, and a real Linear team.
-M4 (1.0) is under way: `bdx health` and `bdx dead-letters` show what a board's queues hold
-and gave up on, `bdx gc` (and a daily cron) applies retention, `bdx redact` scrubs a message that
-leaked a secret, `bdx doctor` checks a setup, and a deploy reaches a board a client is
-long-polling, checked live. Nothing is published to npm yet ([docs/release.md](docs/release.md)).
+A board on Durable Objects passes every group of upstream's conformance kit: core, paging,
+search, grants, schemas, attachments, schedules, tasks, watchers, and sync. People sign in with
+GitHub (`bdx login`, or the web UI at `/inspect`), services with tokens (`bdx tokens create`);
+a team has named boards (`bdx list`), and a board moves with `bdx export` / `bdx import`. A
+deployment syncs Slack, GitHub, and Linear with its own apps' secrets
+([docs/sync.md](docs/sync.md)): a live round trip passes with a real Slack workspace, a real
+GitHub repo, and a real Linear team. `bdx health` and `bdx dead-letters` show what a board's
+queues hold and gave up on, `bdx gc` (and a daily cron) applies retention, `bdx redact` scrubs
+a message that leaked a secret, `bdx doctor` checks a setup, and a deploy reaches a board a
+client is long-polling, checked live. Nothing is published to npm yet
+([docs/release.md](docs/release.md)).
 
 ## Make a board
 
@@ -69,7 +69,7 @@ refresh token without GitHub, for local work only.
 | `packages/bordeaux/src/app/` | `@dosu/bordeaux/app`: upstream's `board()` for apps on a bordeaux board, woken by URL |
 | `packages/create-bordeaux/` | `npm create @dosu/bordeaux`, and the template it makes a board's project from |
 | `docs/` | Setting a board up (the GitHub App, sync), and releasing |
-| `spike/m0/` | The M0 spike and its [report](spike/m0/REPORT.md) |
+| `spike/m0/` | The first spike and its [report](spike/m0/REPORT.md) |
 
 ## The spec
 

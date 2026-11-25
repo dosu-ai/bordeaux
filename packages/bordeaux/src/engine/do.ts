@@ -31,7 +31,7 @@ const RUN_MS = 60_000
 export type WireError = { status: number; code: string; message: string; hint?: string }
 export type Envelope = { ok: true; value: unknown } | { ok: false; error: WireError }
 
-/** The methods this board answers itself; the rest answer 501 until their milestone. */
+/** The methods this board answers itself; the rest answer 501. */
 const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule', 'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask', 'watchers', 'register', 'matches', 'ack', 'synced', 'linked', 'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox', 'typing', 'readSource', 'joinSource'] as const
 type Kept = (typeof KEPT)[number]
 const isKept = (method: string): method is Kept => (KEPT as readonly string[]).includes(method)

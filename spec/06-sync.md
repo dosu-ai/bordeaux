@@ -65,7 +65,7 @@ do one of the following:
 - **(a)** Alias `@vercel/connect/chat` to a bordeaux stub at bundle time *(chosen)*. The
   stub's `connect*Adapter` functions throw "bordeaux uses your own adapter". They are never
   called, because bordeaux always passes its own adapter.
-- **(b)** Fallback: install `@vercel/connect` as an inert dependency. Not needed: M0
+- **(b)** Fallback: install `@vercel/connect` as an inert dependency. Not needed: the spike
   confirmed the alias works.
 
 See [QUESTIONS Q7](../QUESTIONS.md#q7) and
@@ -84,7 +84,7 @@ See [QUESTIONS Q7](../QUESTIONS.md#q7) and
 Both queues reuse the registered-watcher queue machinery (leases, acks, and per-thread order)
 from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registrant.
 
-**As built (M3).**
+**As built.**
 - The pipelines run in the board's DO, not the Worker ([08](08-cloudflare.md#consumers-and-the-worker)).
 - The inbox is queue `@inbox:<key>` in `bx_queues`, not a table of its own. A raw payload is
   kept with its item until it's handled; one over 256 KB of JSON is cut short as it's pushed,
@@ -135,8 +135,9 @@ from [04](04-watchers.md#queue-semantics). The Worker is the queue's own registr
 - The sync code needs `node:async_hooks` and `node:crypto`. Both work under the `nodejs_compat`
   flag.
 - `chat` and `@chat-adapter/{slack,github,linear}` load on Workers and verify webhook
-  signatures ([M0](../spike/m0/REPORT.md)). Full delivery round trips are still M3's to prove.
-- **Fallback (decided, Q8; likely unneeded after M0):** run sync in a **Cloudflare Container**, which runs the full
+  signatures (the [spike](../spike/m0/REPORT.md)). Full delivery round trips pass live
+  ([docs/sync.md](../docs/sync.md#checking-a-live-round-trip)).
+- **Fallback (decided, Q8; likely unneeded after the spike):** run sync in a **Cloudflare Container**, which runs the full
   Node runtime. It runs upstream `board()` with the `@dosu/bordeaux/app` backend and the sync
   entries, and speaks to the board through the "sync elsewhere" routes (`/sync/*`,
   `/inbox/*`, and `@sync` registrations).
