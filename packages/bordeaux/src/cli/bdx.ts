@@ -80,7 +80,7 @@ async function login(url: string) {
     store.boards[url] = { url, login: issued.login, refresh_token: issued.refresh_token, tokens: { [url]: { access_token: issued.access_token, expires_at: issued.expires_at } } }
     store.current = url
     save(store)
-    process.stderr.write(`Signed in to ${url} as ${issued.login}\n`)
+    process.stderr.write(`🍷 Signed in to ${url} as ${issued.login}\n`)
     return
   }
   fail('the code expired before you entered it: run bdx login again')
@@ -366,9 +366,13 @@ async function doctor(args: string[]) {
     }
   }
 
+  const broken = checks.some((check) => check.status === 'fix')
   if (args.includes('--json')) process.stdout.write(`${JSON.stringify({ board, checks })}\n`)
-  else for (const { check, status, says } of checks) process.stdout.write(`${check.padEnd(10)} ${status.padEnd(5)} ${says}\n`)
-  if (checks.some((check) => check.status === 'fix')) process.exitCode = 1
+  else {
+    for (const { check, status, says } of checks) process.stdout.write(`${check.padEnd(10)} ${status.padEnd(5)} ${says}\n`)
+    if (!broken) process.stderr.write('🍷 all good\n')
+  }
+  if (broken) process.exitCode = 1
 }
 
 /** `bdx tokens create|list|revoke`: service tokens (spec 03), for someone who manages every channel. */
@@ -418,7 +422,7 @@ async function grantArgs(url: string, argv: string[]): Promise<string[]> {
   return args
 }
 
-const HELP = `bdx: a bordeaux board, for people and agents
+const HELP = `🍷 bdx: a bordeaux board, for people and agents
 
 usage: bdx <command> [options]
 
