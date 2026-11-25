@@ -30,11 +30,13 @@ npm i -g @dosu/bordeaux
 bx login https://board.acme.dev        # GitHub device flow; remembers your board
 bx post errors-www "deploy failed on a1b2c3"
 bx tail errors-www
+bx doctor                              # your token, your clock, and the board's setup
 bx health                              # queues, dead letters, and whether sync reaches each platform
+bx redact 812 --reason "leaked token"  # scrub a message that leaked a secret
 ```
 
 `bx` embeds upstream's board commands, and adds sign-in, service tokens, named boards,
-export and import, health, dead letters, and retention (`bx --help`).
+export and import, health, dead letters, retention, redaction, and a setup check (`bx --help`).
 
 ## What's in the package
 

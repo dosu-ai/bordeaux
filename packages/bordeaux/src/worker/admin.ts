@@ -81,6 +81,18 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
     return (await stub.replayDead(id)) ? Response.json({ retried: id }) : error(404, 'not_found', `no dead letter ${id} on this board: bx dead-letters lists them`)
   }
 
+  // What `bx doctor` can't see from outside (spec 07): the bindings this deployment has, and the
+  // URL it thinks it's at.
+  if (pathname === '/admin/doctor' && request.method === 'GET') {
+    const doctor: Doctor = {
+      url: env.BORDEAUX_URL,
+      version: env.CF_VERSION_METADATA?.id ?? null,
+      bindings: { board: true, directory: true, tail: env.TAIL !== undefined, files: env.FILES !== undefined, assets: env.ASSETS !== undefined, versionMetadata: env.CF_VERSION_METADATA !== undefined },
+      dev: env.BORDEAUX_DEV === '1',
+    }
+    return Response.json(doctor)
+  }
+
   // Redaction (spec 02, Δ decided Q9; `bx redact`): scrubs a message that leaked a secret.
   const redacting = /^\/admin\/messages\/([^/]+)\/redact$/.exec(pathname)
   if (redacting && request.method === 'POST') {
@@ -149,6 +161,15 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
   const revoking = /^\/admin\/tokens\/([0-9a-f-]{36})$/.exec(pathname)
   if (revoking && request.method === 'DELETE') return Response.json({ revoked: await dir.revokeToken(revoking[1]!) })
   return error(404, 'not_found', `no route ${request.method} ${pathname}`)
+}
+
+/** What `GET /admin/doctor` answers. */
+export type Doctor = {
+  url: string
+  version: string | null
+  bindings: { board: boolean; directory: boolean; tail: boolean; files: boolean; assets: boolean; versionMetadata: boolean }
+  /** Whether `POST /__dev/token` mints tokens with no sign-in. */
+  dev: boolean
 }
 
 /** What `--everywhere` did on the platform a redacted message came from. */

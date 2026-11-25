@@ -55,3 +55,13 @@ describe('health', () => {
     expect(found).toMatchObject({ key: 'linear', ok: false, error: expect.stringContaining('Linear') })
   })
 })
+
+describe('doctor', () => {
+  it("says which bindings a deployment has, and that its dev token route is on, to someone who manages it", async () => {
+    const owner = await tokenFor(1, 'owner')
+    const found = await SELF.fetch(`${BASE}/admin/doctor`, { headers: { authorization: `Bearer ${owner}` } })
+    expect(await found.json()).toMatchObject({ url: BASE, dev: true, bindings: { board: true, directory: true, tail: true, files: true } })
+    const narrowed = await SELF.fetch(`${BASE}/admin/doctor`, { headers: { authorization: `Bearer ${owner}`, 'x-board-can': 'ops=read' } })
+    expect(narrowed.status).toBe(403)
+  })
+})

@@ -166,10 +166,12 @@ Worker → upstream `board()` → `durable()` backend → the board's Durable Ob
   canned decorations, keyword triggers, heuristics that rewrite a message. Deliver what the
   author wrote and give agents the tools.
 - **One log per board.** Every board fact is an event in the DO's `bx_log`, in session
-  `board`, `access`, `schemas`, or `schedules`. Tables and folds are built from it with
-  upstream's code (`src/upstream/store/sql.ts`, `contract/folds.ts`); nothing else writes
-  them, except retention pruning old `board_versions` copies (spec 02). Bookkeeping people don't read (queues, timers, seen inbox IDs, failures) lives in
-  `bx_*` side tables, never in the log.
+  `board`, `access`, `schemas`, `schedules`, or `admin` (redactions). Tables and folds are
+  built from it with upstream's code (`src/upstream/store/sql.ts`, `contract/folds.ts`);
+  nothing else writes them, except retention pruning old `board_versions` copies and
+  redaction (spec 02). The log is append-only but for that one path: `bx redact` rewrites
+  what one message's events said. Bookkeeping people don't read (queues, timers, seen inbox
+  IDs, failures) lives in `bx_*` side tables, never in the log.
 - **Writes are exclusive.** A check-then-append runs inside the engine's `exclusive()` lock,
   so two writes never both pass a check that only one should.
 - **Folds mutate in place.** Never share a fold's state object outside the fold.

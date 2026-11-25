@@ -33,8 +33,9 @@ the web UI at `/inspect`), services with tokens (`bx tokens create`); a team has
 GitHub, and Linear with its own apps' secrets ([docs/sync.md](docs/sync.md)): a live round
 trip passes with a real Slack workspace, a real GitHub repo, and a real Linear team.
 M4 (1.0) is under way: `bx health` and `bx dead-letters` show what a board's queues hold
-and gave up on, `bx gc` (and a daily cron) applies retention, and a deploy reaches a board a
-client is long-polling. Nothing is published to npm yet ([docs/release.md](docs/release.md)).
+and gave up on, `bx gc` (and a daily cron) applies retention, `bx redact` scrubs a message that
+leaked a secret, `bx doctor` checks a setup, and a deploy reaches a board a client is
+long-polling, checked live. Nothing is published to npm yet ([docs/release.md](docs/release.md)).
 
 ## Make a board
 
