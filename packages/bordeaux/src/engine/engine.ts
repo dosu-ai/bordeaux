@@ -5,7 +5,7 @@
 // What's different from upstream: the DO is the log's only writer, so a write looks at the board and
 // appends in one critical section (`exclusive`) instead of a conditional append that retries when
 // the head moves, and the tables apply each write before it answers instead of through a consumer.
-import { HttpError, type Identity, type MessageView, type Protocol } from '@vercel/board'
+import { HttpError, type Identity, type MessageView, type Protocol, type ScheduleView } from '@vercel/board'
 import type { Access, Permission } from '@vercel/board/access'
 import { derivedId, isKeyIdOf } from '../upstream/client/ids.ts'
 import { ALONG_MAX, BOARD_SESSION, type BoardEvent } from '../upstream/contract/events.ts'
@@ -26,10 +26,19 @@ import { createTables, doDb } from './db.ts'
 import { createLogTables, DuplicateEventError, Log, registerSession, type NewEvent } from './log.ts'
 import { ACCESS_SESSION, accessEvents, foldAccess, startingAccess, type AccessState } from './access.ts'
 import { attachmentNotFound, createFileTables, Files } from './files.ts'
+import { createdBy, emptySchedules, foldSchedules, nextSend, scheduleEvents, scheduleView, SCHEDULES_SESSION, storedPrincipal, timing, type Schedule, type SchedulesState } from './schedules.ts'
 import { emptySchemas, findSchema, foldSchemas, listSchemas, registering, schemaEvents, schemaView, SCHEMAS_SESSION, type SchemasState } from './schemas.ts'
 
 registerSession(ACCESS_SESSION, accessEvents)
 registerSession(SCHEMAS_SESSION, schemaEvents)
+registerSession(SCHEDULES_SESSION, scheduleEvents)
+
+/** A timer the DO's alarm runs: a schedule's send due at `at`. */
+export type Timer = { name: string; dueAt: number; kind: 'schedule.due'; payload: { id: number; n: number; at: number }; attempt: number }
+
+/** A schedule's text as its creator sees it where it can't read (upstream a2.ts `blindSchedule`). */
+const blindSchedule = (schedule: ScheduleView, access: Access, ownActor: string): ScheduleView =>
+  access.readable(schedule.channel) ? schedule : { ...schedule, text: blindText(schedule.text, ownActor) }
 import { createViewTables, Views } from './views.ts'
 
 type Caller = Identity & { request: boolean; schedule?: { id: number; n: number } }
@@ -154,6 +163,8 @@ export class BoardEngine {
   private access: AccessState
   /** The schema registry, folded from session `schemas`, the same way. */
   private schemaState: SchemasState
+  /** The schedules, folded from session `schedules`. */
+  private scheduleState: SchedulesState
   /** Resolves once the tables have every event the log has. */
   readonly ready: Promise<void>
   private readonly files: Files
@@ -173,6 +184,8 @@ export class BoardEngine {
     storage.sql.exec('create table if not exists bx_state (key text primary key, data text not null)')
     this.access = this.loadState('access', startingAccess)
     this.schemaState = this.loadState('schemas', emptySchemas)
+    this.scheduleState = this.loadState('schedules', emptySchedules)
+    storage.sql.exec('create table if not exists bx_timers (name text primary key, due_at integer not null, kind text not null, payload text not null, attempt integer not null default 1)')
     this.ready = this.catchUp()
   }
 
@@ -451,8 +464,8 @@ export class BoardEngine {
       message: view(root!, this.views.actors, reader),
       replies: replies.map((reply) => view(reply, this.views.actors, reader)),
       cursor: ref(cursor),
-      // Schedules are kept from M2 on.
-      schedules: [],
+      // The pending schedules that reply in this thread.
+      schedules: this.listSchedules({ root: root!.id }),
     }
   }
 
@@ -630,6 +643,161 @@ export class BoardEngine {
       ])
       return { ok: true as const }
     })
+  }
+
+  // --- Schedules (upstream a2.ts schedule, schedules, cancelSchedule, and schedules.ts) ---
+
+  /** The schedules `visible` lets the caller see, as a query narrows them (upstream schedules.ts `list`). */
+  private listSchedules(query: { all?: boolean; root?: number; channel?: string; by?: string }, visible: (schedule: Schedule) => boolean = () => true): ScheduleView[] {
+    return Object.values(this.scheduleState.byId)
+      .filter(visible)
+      .filter((s) => (query.all ? true : s.next !== null))
+      .filter((s) => (query.root === undefined ? true : s.re === query.root))
+      .filter((s) => (query.channel === undefined ? true : s.channel === query.channel))
+      .filter((s) => (query.by === undefined ? true : s.as.actor.id === query.by || s.as.actor.handle.toLowerCase() === query.by.toLowerCase()))
+      .sort((a, b) => a.id - b.id)
+      .map((s) => scheduleView(s, this.views.actors))
+  }
+
+  private appendSchedules(events: NewEvent[]) {
+    try {
+      return this.appendSide(SCHEDULES_SESSION, events, this.scheduleState, (state, row) => foldSchedules(state, row as never))
+    } catch (error) {
+      this.scheduleState = this.loadState('schedules', emptySchedules)
+      throw error
+    }
+  }
+
+  /** Arms a timer, once for its name, and sets the alarm to the earliest. */
+  private arm(name: string, dueAt: number, payload: Timer['payload'], attempt = 1) {
+    this.storage.sql.exec('insert or ignore into bx_timers (name, due_at, kind, payload, attempt) values (?, ?, ?, ?, ?)', name, dueAt, 'schedule.due', JSON.stringify(payload), attempt)
+    void this.rearm()
+  }
+
+  /** Sets the alarm to the earliest timer, or clears it when there's none. */
+  async rearm() {
+    const [row] = this.storage.sql.exec<{ due: number | null }>('select min(due_at) as due from bx_timers').toArray()
+    if (row?.due === null || row?.due === undefined) await this.storage.deleteAlarm()
+    else await this.storage.setAlarm(Number(row.due))
+  }
+
+  /** The timers due by `now`, taken off the table: the alarm runs each. */
+  takeDue(now: number): Timer[] {
+    const rows = this.storage.sql.exec<{ name: string; due_at: number; kind: string; payload: string; attempt: number }>('select * from bx_timers where due_at <= ? order by due_at', now).toArray()
+    for (const row of rows) this.storage.sql.exec('delete from bx_timers where name = ?', row.name)
+    return rows.map((row) => ({ name: row.name, dueAt: Number(row.due_at), kind: row.kind as Timer['kind'], payload: JSON.parse(row.payload) as Timer['payload'], attempt: Number(row.attempt) }))
+  }
+
+  /** A timer that failed, armed again a little later, up to 10 tries (as A2 retries a consumer). */
+  retry(timer: Timer) {
+    if (timer.attempt >= 10) {
+      console.error(`[bordeaux] gave up on ${timer.name} after ${timer.attempt} tries`)
+      return
+    }
+    this.arm(`${timer.name}#${timer.attempt + 1}`, Date.now() + Math.min(1000 * 2 ** timer.attempt, 3_600_000), timer.payload, timer.attempt + 1)
+  }
+
+  async schedule(caller: Caller, parsed: In<'schedule'>): Promise<Out<'schedule'>> {
+    if (parsed.text.length > MESSAGE_TEXT_MAX) throw textTooLong()
+    const { principal } = caller
+    const re = parsed.re === undefined ? undefined : messageAt(parsed.re)
+    // Checked now, where the caller sees it, and again at every send (upstream authorizePost).
+    let channel = parsed.channel
+    let root: number | null = null
+    if (re !== undefined) {
+      const target = await this.authorizeMessage(principal.access, 'read', re)
+      if (target.deleted) throw notFound(`message not found: #${re}`, 'message_not_found')
+      root = target.re ?? target.id
+      channel = target.channel
+    }
+    if (!channel) throw badRequest('a schedule needs a channel or a message to reply to')
+    authorize(principal.access, 'post', channel)
+    if (Object.keys(parsed.labels ?? {}).length > 0) authorize(principal.access, 'label', channel)
+    const attachments = await this.attachmentsFor(principal, parsed.attachments)
+    const when = timing(parsed, Date.now())
+    return this.exclusive(async () => {
+      const [row] = this.appendSchedules([
+        {
+          type: 'schedule.created',
+          payload: {
+            channel,
+            re: root,
+            text: parsed.text,
+            labels: parsed.labels ?? {},
+            noSync: parsed.noSync ?? false,
+            ...(attachments.length ? { attachments } : {}),
+            ...when,
+            as: { author: caller.author, principal: storedPrincipal(principal), actor: caller.actor },
+            ...(principal.access.readable(channel!) ? {} : { blind: true as const }),
+          },
+        },
+      ])
+      const created = this.scheduleState.byId[row!.index]!
+      if (created.next !== null) this.arm(`first-${created.id}-${created.sent}`, created.next, { id: created.id, n: created.sent, at: created.next })
+      return { schedule: scheduleView(created, this.views.actors) }
+    })
+  }
+
+  async schedules(caller: Caller, query: In<'schedules'>): Promise<Out<'schedules'>> {
+    const { principal, actor } = caller
+    let root: number | undefined
+    if (query.re !== undefined) {
+      const at = messageAt(query.re)
+      root = (await this.authorizeMessage(principal.access, 'read', at)).re ?? at
+    }
+    const visible = (schedule: Schedule) => principal.access.readable(schedule.channel) || createdBy(schedule, caller)
+    const by = query.by === 'me' ? actor.id : query.by
+    const listed = this.listSchedules({ ...query, ...(by !== undefined ? { by } : {}), ...(root !== undefined ? { root } : {}) }, visible)
+    return { schedules: listed.map((schedule) => blindSchedule(schedule, principal.access, actor.id)) }
+  }
+
+  /** Its creator may cancel it while they can post there, and so may `manage` in its channel (upstream schedules.ts `cancel`). */
+  async cancelSchedule(caller: Caller, { id: given }: In<'cancelSchedule'>): Promise<Out<'cancelSchedule'>> {
+    const bare = given.replace(/^s{1,2}/, '')
+    const id = indexOf(bare)
+    const missing = () => notFound(`schedule not found: s${bare}`, 'schedule_not_found')
+    if (id === null || id === 0) throw missing()
+    return this.exclusive(async () => {
+      const schedule = this.scheduleState.byId[id]
+      if (!schedule) throw missing()
+      if (!createdBy(schedule, caller)) authorize(caller.principal.access, 'manage', schedule.channel, missing)
+      const canceled = schedule.next !== null
+      if (canceled) this.appendSchedules([{ type: 'schedule.canceled', payload: { id, by: caller.author, reason: 'canceled' } }])
+      const view = scheduleView(this.scheduleState.byId[id]!, this.views.actors)
+      return { schedule: blindSchedule(view, caller.principal.access, caller.actor.id), canceled }
+    })
+  }
+
+  /**
+   * What a due timer does now (upstream schedules.ts `due`): nothing for one canceled, done, or
+   * stale; a cancel when its thread is gone; or the schedule to send as its creator.
+   */
+  async dueSend({ id, n, at }: Timer['payload']): Promise<{ skip: true } | { schedule: Schedule }> {
+    const schedule = this.scheduleState.byId[id]
+    if (!schedule || schedule.next !== at || schedule.sent !== n) return { skip: true }
+    if (schedule.re !== null) {
+      const root = await this.tables.message(schedule.re)
+      if (!root || root.deleted) {
+        this.endSchedule(id, 'thread_deleted')
+        return { skip: true }
+      }
+    }
+    return { schedule }
+  }
+
+  /** A send that went out: recorded once, and the next one armed. */
+  fired(id: number, n: number, at: number, message: number) {
+    const schedule = this.scheduleState.byId[id]
+    if (!schedule || schedule.sent !== n) return
+    const next = nextSend(schedule, n, at, Date.now())
+    this.appendSchedules([{ type: 'schedule.fired', payload: { id, n, message, next } }])
+    if (next !== null) this.arm(`next-${id}-${n + 1}`, next, { id, n: n + 1, at: next })
+  }
+
+  /** A schedule the board ends itself: its thread is gone, its creator can't post there now, or the middleware dropped it. */
+  endSchedule(id: number, reason: 'thread_deleted' | 'dropped' | 'revoked') {
+    const by = { actor: 'board:schedule', principal: 'board:schedule', profile: null }
+    if (this.scheduleState.byId[id]?.next !== null) this.appendSchedules([{ type: 'schedule.canceled', payload: { id, by, reason } }])
   }
 
   // --- Files (upstream a2.ts upload, uploadStart, uploadFinish, attachment) ---

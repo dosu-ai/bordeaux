@@ -13,6 +13,10 @@ export const UPSTREAM_VERSION = '0.56.1'
 /** Every protocol method, as upstream's src/api/protocol.ts lists them at the pinned commit. */
 const METHODS = 'discovery me channels createChannel actors channelMessages threads message post posted edit delete react label schedule schedules cancelSchedule tasks createTask createTasks createdTasks claimReadyTask claimTask renewTask releaseTask completeTask failTask blockTask unblockTask reopenTask assignTask setTaskNeeds cancelTask grants createGrant createGrants updateGrant explain revokeGrant schemas schema createSchema upload attachment uploadStart uploadFinish watchers register matches ack events typing readSource joinSource synced linked syncImport syncReceipt syncThread syncFind syncCopies inboxPush inboxNext inboxAck inbox'.split(' ')
 
+/** Each board's binding, once board() has bound it in this isolate: what a schedule's send posts through. */
+const bindings = new Map<string, BoardBinding>()
+export const bindingOf = (name: string | null) => bindings.get(boardKey(name)) ?? null
+
 /** The Durable Object a board lives in: one team per deployment for now (Q4), keyed so more can come. */
 export const boardKey = (name: string | null) => `default/${(name ?? 'default').toLowerCase()}`
 
@@ -48,7 +52,7 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
   }
 
   const remote = (method: string) => async (caller: Caller, input: unknown) => {
-    const answer = (await stub().call(method, toWire(caller), input)) as Envelope
+    const answer = (await stub().call(method, toWire(caller), input, name)) as Envelope
     if (!answer.ok) throw new HttpError(answer.error.status, answer.error.code, answer.error.message, answer.error.hint !== undefined ? { hint: answer.error.hint } : {})
     return answer.value
   }
@@ -84,6 +88,7 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
     bind(given: BoardBinding) {
       if (binding) throw new Error('durable: this backend already serves a board: create one per board()')
       binding = given
+      bindings.set(boardKey(name), given)
     },
   }
 }

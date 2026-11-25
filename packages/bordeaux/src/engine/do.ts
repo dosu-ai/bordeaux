@@ -3,7 +3,13 @@
 import { DurableObject } from 'cloudflare:workers'
 import { HttpError } from '@vercel/board'
 import { ZodError } from 'zod'
-import { BoardEngine, isDuplicate, notKeptHere } from './engine.ts'
+import { BoardEngine, isDuplicate, notKeptHere, type Timer } from './engine.ts'
+import { BoardError } from '@vercel/board'
+import { derivedId } from '../upstream/client/ids.ts'
+import { ref } from '../upstream/server/feed.ts'
+import { indexOf } from '../upstream/server/feed.ts'
+import { bindingOf } from '../worker/backend.ts'
+import { boardOf } from '../worker/boards.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
 import type { BordeauxEnv } from '../worker/env.ts'
 
@@ -11,7 +17,7 @@ export type WireError = { status: number; code: string; message: string; hint?: 
 export type Envelope = { ok: true; value: unknown } | { ok: false; error: WireError }
 
 /** The methods this board answers itself; the rest answer 501 until their milestone. */
-const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment'] as const
+const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule'] as const
 type Kept = (typeof KEPT)[number]
 const isKept = (method: string): method is Kept => (KEPT as readonly string[]).includes(method)
 
@@ -56,8 +62,73 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     }
   }
 
-  async call(method: string, wire: WireIdentity, input: unknown): Promise<Envelope> {
+  /** The board this DO is, as the Worker names it (null for the default board): what its alarm sends through. */
+  private named(board: string | null | undefined) {
+    if (board === undefined) return
+    const key = JSON.stringify(board)
+    if (this.ctx.storage.sql.exec("select 1 from bx_state where key = 'board' and data = ?", key).toArray().length === 0)
+      this.ctx.storage.sql.exec("insert into bx_state (key, data) values ('board', ?) on conflict (key) do update set data = excluded.data", key)
+  }
+
+  private boardName(): string | null {
+    const [row] = this.ctx.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'board'").toArray()
+    return row ? (JSON.parse(row.data) as string | null) : null
+  }
+
+  /** Runs every timer that's due: a schedule's send (spec 05). A send that fails is tried again later. */
+  async alarm() {
+    await this.engine.ready
+    for (const timer of this.engine.takeDue(Date.now())) {
+      try {
+        await this.send(timer)
+      } catch (error) {
+        console.error(`[bordeaux] ${timer.name} failed:`, (error as Error).message)
+        this.engine.retry(timer)
+      }
+    }
+    await this.engine.rearm()
+  }
+
+  /**
+   * A schedule's send, as its creator, through board(): its middleware sees it as any post, and the
+   * creator's access is worked out again by board()'s policy now (upstream schedules.ts `due`).
+   */
+  private async send(timer: Timer) {
+    const { id, n, at } = timer.payload
+    // A timer that fires this early just waits again.
+    if (Date.now() < at - 1000) return this.engine.retry({ ...timer, attempt: 0 })
+    const due = await this.engine.dueSend(timer.payload)
+    if ('skip' in due) return
+    const { schedule } = due
+    const name = this.boardName()
+    boardOf(this.env, name)
+    const binding = bindingOf(name)
+    if (!binding) throw new Error('the board has no binding to send through')
+    const access = await binding.accessNow(schedule.as.principal)
+    if (!access) return this.engine.endSchedule(id, 'revoked')
+    const handle = binding.handle({ identity: { ...schedule.as, principal: { ...schedule.as.principal, access } }, origin: { via: { kind: 'schedule', id }, schedule: { id, n } } })
+    // A retry after the post landed gets the same ID, so the board hands back the message it already posted.
+    const input = {
+      id: await derivedId('board-schedule', String(id), String(n)),
+      text: schedule.text,
+      labels: schedule.labels,
+      noSync: schedule.noSync,
+      ...(schedule.attachments.length ? { attachments: schedule.attachments.map((file) => file.id) } : {}),
+    }
     try {
+      const posted = schedule.re === null ? await handle.post(schedule.channel, input) : await handle.reply(ref(schedule.re), input)
+      this.engine.fired(id, n, at, indexOf(posted.id)!)
+    } catch (error) {
+      const refused = error instanceof BoardError || error instanceof HttpError ? error : null
+      if (refused?.code === 'dropped') return this.engine.endSchedule(id, 'dropped')
+      if (refused && (refused.status === 403 || refused.status === 404)) return this.engine.endSchedule(id, 'revoked')
+      throw error
+    }
+  }
+
+  async call(method: string, wire: WireIdentity, input: unknown, board?: string | null): Promise<Envelope> {
+    try {
+      this.named(board)
       if (!isKept(method)) throw notKeptHere(method)
       const caller = fromWire(wire)
       const run = this.engine[method] as (caller: ReturnType<typeof fromWire>, input: unknown) => Promise<unknown>

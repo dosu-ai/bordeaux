@@ -95,7 +95,7 @@ reads from `consumer_positions` and processes each lane in order:
 | `board-watchers` (matching) | **In the DO.** It evaluates tails against the event before and after it changed, then appends `watch.matched` to the queues. Access for registered watchers is the stored principal's compiled access, refreshed whenever grants change (the access fold is local to the DO). |
 | `board-watch` (config watcher `run`) | **In the Worker.** The DO enqueues the match and wakes the Worker through a self service binding: `env.SELF.drain({ queue: 'watch:<id>' })`. The Worker pulls, runs `binding.run(...)`, and acks, the same way a registrant does. |
 | `board-sync` (outbound) and `board-inbox` (inbound) | **In the Worker**, by the same pull-and-ack path, on the `@sync` and `@inbox:<key>` queues |
-| `board-schedule-sends` | The DO's alarm fires `schedule.due`. The DO calls `env.SELF.scheduleSend(...)`, which posts through `binding.handle(creator)` so the middleware runs. The send's derived ID makes a retry return the message already posted. |
+| `board-schedule-sends` | **As built (M2):** the DO keeps its timers in `bx_timers` and its alarm at the earliest. A due send builds the board's own `board()` in the DO (the same code the Worker runs, middleware included), asks its policy for the creator's access now (`binding.accessNow`), and posts through `binding.handle(creator)`; that post comes back into the same DO over RPC. No self service binding is needed. The send's derived ID makes a retry return the message already posted; a send that fails is tried again with backoff, up to 10 times. |
 | `board-leases` | **In the DO**, on an alarm: writes `task.expired` |
 | wake dispatch | The DO sends to Queue `bordeaux-wake` ([below](#wake-ups)) |
 
