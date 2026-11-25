@@ -46,7 +46,7 @@ Status key:
 | CI (GitHub Actions OIDC) | yes | yes | = | 1 |
 | Any OIDC issuer named by a grant | yes | yes; bordeaux is itself one | = | 2 |
 | Grants: `user`, `github`, `oidc`, `all-users`, `everyone` | yes | yes | = | 2 |
-| Grants: `project`, `all-projects`, `app`, `all-apps`, role caps | yes | 400 `unsupported_principal` | – | – |
+| Grants: `project`, `all-projects`, `app`, `all-apps`, role caps | yes | kept and inert, as on `local()`; no role caps | – | 2 |
 | `x-board-can` scopes, profiles | yes | yes | = | 1 |
 | Deployment Protection in front of the board | yes | Cloudflare Access (inspector only), WAF, rate limits | Δ | 3 |
 | Sandboxed agents (`sandboxPolicy`) | Vercel Sandbox network policy | Cloudflare Sandbox/Containers egress policy via `@dosu/bordeaux/app` | Δ | 4 |

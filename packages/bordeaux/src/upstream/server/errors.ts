@@ -5,6 +5,7 @@ import { MESSAGE_TEXT_MAX } from '../contract/schemas.ts'
 
 export { HttpError }
 export const badRequest = (message: string, code = 'invalid_request') => new HttpError(400, code, message)
+export const unauthorized = (message: string) => new HttpError(401, 'unauthorized', message)
 export const forbidden = (message: string) => new HttpError(403, 'forbidden', message)
 export const notFound = (message: string, code = 'not_found') => new HttpError(404, code, message)
 export const textTooLong = () =>

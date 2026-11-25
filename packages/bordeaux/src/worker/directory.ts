@@ -20,6 +20,8 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     ctx.storage.sql.exec('create table if not exists bx_keys (kid text primary key, private_jwk text not null, public_jwk text not null, created_at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_refresh (hash text primary key, data text not null, expires_at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_revoked (jti text primary key, until integer not null)')
+    ctx.storage.sql.exec('create table if not exists bx_owners (principal text primary key, until integer not null)')
+    ctx.storage.sql.exec('create table if not exists bx_tokens (jti text primary key, sub text not null, by text not null, expires_at integer not null, revoked integer not null default 0)')
   }
 
   /** The current signing key, made on first use. */
@@ -68,6 +70,38 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     this.ctx.storage.sql.exec('delete from bx_refresh where hash = ? or expires_at < ?', hash, Date.now())
     if (!row || Number(row.expires_at) < Date.now()) return null
     return JSON.parse(row.data) as Session
+  }
+
+  /** Records whether a person is a board owner, as their last sign-in or renewal found, until it ends. */
+  async setOwner(principal: string, owner: boolean, until: number) {
+    if (owner) this.ctx.storage.sql.exec('insert or replace into bx_owners (principal, until) values (?, ?)', principal, until)
+    else this.ctx.storage.sql.exec('delete from bx_owners where principal = ?', principal)
+  }
+
+  async isOwner(principal: string): Promise<boolean> {
+    return this.ctx.storage.sql.exec('select 1 from bx_owners where principal = ? and until > ?', principal, Date.now()).toArray().length > 0
+  }
+
+  /** Keeps a service token's record, to list and revoke it: never the token itself. */
+  async recordToken(token: { jti: string; sub: string; by: string; expiresAt: number }) {
+    this.ctx.storage.sql.exec('insert into bx_tokens (jti, sub, by, expires_at) values (?, ?, ?, ?)', token.jti, token.sub, token.by, token.expiresAt)
+  }
+
+  /** The service tokens that haven't run out. */
+  async tokens() {
+    return this.ctx.storage.sql
+      .exec<{ jti: string; sub: string; by: string; expires_at: number; revoked: number }>('select * from bx_tokens where expires_at > ? order by expires_at', Date.now())
+      .toArray()
+      .map((row) => ({ jti: row.jti, sub: row.sub, by: row.by, expires_at: new Date(Number(row.expires_at)).toISOString(), revoked: row.revoked === 1 }))
+  }
+
+  /** Revokes a service token by its ID; false for one this board never made. */
+  async revokeToken(jti: string): Promise<boolean> {
+    const [row] = this.ctx.storage.sql.exec<{ expires_at: number }>('select expires_at from bx_tokens where jti = ?', jti).toArray()
+    if (!row) return false
+    this.ctx.storage.sql.exec('update bx_tokens set revoked = 1 where jti = ?', jti)
+    await this.revoke(jti, Number(row.expires_at))
+    return true
   }
 
   /** Revokes a token by its ID until it would have run out anyway. */

@@ -64,6 +64,7 @@ async function issue(env: BordeauxEnv, session: Session): Promise<Response> {
   const dir = directory(env)
   const { token, expiresAt } = await dir.mint({ sub: `user:${session.id}`, login: session.login, ...(session.owner ? { owner: true } : {}) }, ACCESS_TTL)
   const refresh = await dir.startSession(session)
+  await dir.setOwner(personId(session.id), session.owner, session.expiresAt)
   return Response.json({
     access_token: token,
     token_type: 'Bearer',

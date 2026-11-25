@@ -4,23 +4,14 @@ import { HttpError, type Backend, type BoardBinding, type Caller, type Discovery
 import { identityOf, toWire } from '../engine/identity.ts'
 import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
+import { directory } from './auth.ts'
+import { createTrust } from './trust.ts'
 
 /** The upstream version bordeaux speaks the protocol of (spec 00). */
 export const UPSTREAM_VERSION = '0.56.1'
 
 /** Every protocol method, as upstream's src/api/protocol.ts lists them at the pinned commit. */
 const METHODS = 'discovery me channels createChannel actors channelMessages threads message post posted edit delete react label schedule schedules cancelSchedule tasks createTask createTasks createdTasks claimReadyTask claimTask renewTask releaseTask completeTask failTask blockTask unblockTask reopenTask assignTask setTaskNeeds cancelTask grants createGrant createGrants updateGrant explain revokeGrant schemas schema createSchema upload attachment uploadStart uploadFinish watchers register matches ack events typing readSource joinSource synced linked syncImport syncReceipt syncThread syncFind syncCopies inboxPush inboxNext inboxAck inbox'.split(' ')
-
-/**
- * The grants a board starts with, as upstream's do (src/server/trust.ts): g1, every person may do
- * everything; g2 and g3 name projects and apps, which a bordeaux board has none of. Kept grants
- * arrive with the grants milestone (M2).
- */
-const STARTING_GRANTS = [
-  { id: 'g1', principals: [{ kind: 'all-users' as const }], can: { '*': 'all' as const } },
-  { id: 'g2', principals: [{ kind: 'all-projects' as const, environments: ['production', 'preview', 'development'] }], can: { '*': ['read', 'post', 'react', 'label', 'sync'] as const } },
-  { id: 'g3', principals: [{ kind: 'all-apps' as const }], can: { '*': ['read', 'post', 'react', 'label'] as const } },
-]
 
 /** The Durable Object a board lives in: one team per deployment for now (Q4), keyed so more can come. */
 export const boardKey = (name: string | null) => `default/${(name ?? 'default').toLowerCase()}`
@@ -61,14 +52,28 @@ export function durable(env: BordeauxEnv): Backend {
     return answer.value
   }
 
-  const methods = Object.fromEntries(METHODS.map((method) => [method, method === 'discovery' ? discovery : method === 'me' ? me : remote(method)]))
+  const trust = createTrust({
+    board: stub,
+    binding: () => {
+      if (!binding) throw new Error("durable: this backend isn't serving a board yet")
+      return binding
+    },
+    issuer: env.BORDEAUX_URL,
+    // A person whose last sign-in found them an owner of the GitHub org, or in BORDEAUX_OWNERS (decided, Q2a).
+    isOwner: async (principal) => principal.kind === 'person' && principal.id.startsWith('bordeaux:user:') && (await directory(env).isOwner(principal.id)),
+  })
+  const GRANT_METHODS = ['grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant'] as const
+  const local: Record<string, (caller: Caller, input: never) => Promise<unknown>> = { discovery, me }
+  for (const method of GRANT_METHODS) local[method] = (caller, input) => (trust[method] as (identity: unknown, input: unknown) => Promise<unknown>)(identityOf(caller), input)
+
+  const methods = Object.fromEntries(METHODS.map((method) => [method, local[method] ?? remote(method)]))
 
   return {
     ...(methods as unknown as Omit<Backend, 'routes' | 'keeps' | 'bind' | 'trust'>),
     routes: [],
     // The board lives here: board() lets its people in by the grants it keeps.
     keeps: true,
-    trust: { grants: async () => STARTING_GRANTS },
+    trust: { grants: () => trust.stored() },
     bind(given: BoardBinding) {
       if (binding) throw new Error('durable: this backend already serves a board: create one per board()')
       binding = given

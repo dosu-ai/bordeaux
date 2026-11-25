@@ -1,6 +1,6 @@
 import { SELF } from 'cloudflare:test'
 
-export const BASE = 'http://board.test'
+export const BASE = 'https://board.test'
 
 /** A person's token from the dev route, as `bx` gets one from the broker. */
 export async function tokenFor(id: number, login: string): Promise<string> {

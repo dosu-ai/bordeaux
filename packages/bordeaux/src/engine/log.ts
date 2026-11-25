@@ -32,10 +32,18 @@ export function createLogTables(storage: DurableObjectStorage) {
 )`)
 }
 
-/** Checks a board event's payload as upstream's contract does, keeping what it parses to. */
-function checked(event: NewEvent): unknown {
-  const schema = (boardEvents as Record<string, { parse(value: unknown): unknown }>)[event.type]
-  if (!schema) throw new Error(`no board event type ${event.type}`)
+type Schemas = Record<string, { parse(value: unknown): unknown }>
+
+/** Each session's event schemas: the board's are upstream's contract. Others register theirs. */
+const SCHEMAS: Record<string, Schemas> = { [BOARD_SESSION]: boardEvents as Schemas }
+export const registerSession = (session: string, schemas: Schemas) => {
+  SCHEMAS[session] = schemas
+}
+
+/** Checks an event's payload as its session's contract does, keeping what it parses to. */
+function checked(session: string, event: NewEvent): unknown {
+  const schema = SCHEMAS[session]?.[event.type]
+  if (!schema) throw new Error(`no ${session} event type ${event.type}`)
   try {
     return schema.parse(event.payload)
   } catch (error) {
@@ -64,7 +72,7 @@ export class Log {
    */
   append(session: string, events: readonly NewEvent[], alongside?: (rows: BoardEvent[]) => void): BoardEvent[] {
     if (events.length === 0) return []
-    const payloads = events.map(checked)
+    const payloads = events.map((event) => checked(session, event))
     const ids = events.map((event) => event.id ?? crypto.randomUUID())
     if (new Set(ids).size !== ids.length) throw new DuplicateEventError('a batch names one ID twice')
     const rows = this.storage.transactionSync(() => {

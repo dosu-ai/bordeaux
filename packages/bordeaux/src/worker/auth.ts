@@ -2,7 +2,7 @@
 // the DirectoryDO's keys. A token from another issuer isn't this link's to judge: it returns null.
 import { HttpError } from '@vercel/board'
 import type { HostPrincipal } from '@vercel/board/access'
-import { createLocalJWKSet, decodeJwt, errors, jwtVerify, type JWTPayload } from 'jose'
+import { createLocalJWKSet, decodeJwt, errors, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from 'jose'
 import type { BordeauxEnv } from './env.ts'
 
 /** The team's directory: one per deployment for now (Q4). */
@@ -29,7 +29,44 @@ async function verified(env: BordeauxEnv, token: string): Promise<JWTPayload> {
   }
 }
 
-/** Who a bordeaux token is, or null for one this issuer didn't sign. */
+/**
+ * The issuer's keys as upstream's `oidcTokens()` takes them, so a service token is verified with
+ * them directly: a Worker can't fetch its own URL for its JWKS.
+ */
+export const issuerKeys = (env: BordeauxEnv): JWTVerifyGetKey => async (header, token) => {
+  try {
+    return await (await keySet(env, false))(header, token)
+  } catch (error) {
+    if (!(error instanceof errors.JWKSNoMatchingKey)) throw error
+    return (await keySet(env, true))(header, token)
+  }
+}
+
+const SERVICE = /^service:[a-z0-9][a-z0-9-]{0,62}:[a-z0-9][a-z0-9-]{0,62}$/
+
+/**
+ * A response refusing a revoked service token, or null. Checked in front of board() on every
+ * request: board() keeps a token's principal until the token expires, and service tokens last up
+ * to 90 days, so a check inside `authenticate` would stop being asked.
+ */
+export async function revokedToken(env: BordeauxEnv, request: Request): Promise<Response | null> {
+  const credential = /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') ?? '')?.[1]
+  if (!credential) return null
+  let claims: JWTPayload
+  try {
+    claims = decodeJwt(credential)
+  } catch {
+    return null
+  }
+  if (claims.iss !== env.BORDEAUX_URL || !SERVICE.test(claims.sub ?? '') || !claims.jti) return null
+  if (!(await directory(env).revoked(claims.jti))) return null
+  return Response.json({ error: { code: 'token_revoked', message: 'this token was revoked' } }, { status: 401 })
+}
+
+/**
+ * Who a bordeaux person token is, or null for anything else. A service token is upstream's to verify
+ * as an OIDC token of the board's own issuer, which g4 names (spec 03).
+ */
 export async function bordeauxTokens(env: BordeauxEnv, credential: string | null): Promise<HostPrincipal | null> {
   if (!credential) return null
   let iss: string | undefined
@@ -39,6 +76,7 @@ export async function bordeauxTokens(env: BordeauxEnv, credential: string | null
     return null
   }
   if (iss !== env.BORDEAUX_URL) return null
+  if (SERVICE.test(decodeJwt(credential).sub ?? '')) return null
   let payload: JWTPayload
   try {
     payload = await verified(env, credential)

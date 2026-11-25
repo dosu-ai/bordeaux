@@ -239,8 +239,8 @@ bordeaux keeps schedules, tasks, files, schemas, and grants. It therefore never 
 - No check fails.
 - The only skips are the ones `vb serve` also takes:
   - `withHeaders`/`withCan` unavailable;
-  - Vercel-only principals (`project`, `app`, viewer role caps), which answer 400
-    `unsupported_principal`;
+  - Vercel-only checks that need a real app or a viewer role cap, which a self-verifying board
+    has none of;
   - "member after a lock";
   - cross-team.
 - The watchers check "wakes by path only where discovery says so" must **pass**, because

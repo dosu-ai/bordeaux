@@ -142,8 +142,9 @@ prefix wildcard:
 vb grants create --oidc https://board.acme.dev --claim 'sub=service:www:*' --can 'deploys=post'
 ```
 
-`--project` and `--all-projects` answer 400 `unsupported_principal` on bordeaux. They name
-Vercel projects, and conformance skips them on any self-verifying board. Whether to add a
+`--project` and `--all-projects` grants are kept as upstream's local board keeps them (Q6):
+stored as written, and inert, because no Vercel token is made out to a bordeaux board's URL.
+Conformance's grants checks are built around them, so refusing them would skip the group. Whether to add a
 first-class `service` principal kind was considered and rejected
 ([QUESTIONS Q3](../QUESTIONS.md#q3)).
 
@@ -184,15 +185,28 @@ recognizes the credential wins:
 
 1. A **service binding** call returns its host principal from the binding's `props`.
 2. **bordeaux issuer** tokens: person tokens become `bordeaux:user:…`. Service tokens are
-   handed to step 3 as ordinary OIDC.
-3. Upstream **`oidcTokens({ issuers: { [self]: { jwks } } })`** covers GitHub Actions, any
-   `oidc` issuer a grant names, and bordeaux service tokens.
+   handed to step 3 as ordinary OIDC: only `oidcTokens()` can make a principal with OIDC facts,
+   which grants match; whatever else `authenticate` returns, board() takes as a host principal.
+3. Upstream **`oidcTokens({ oidc: { [self]: keys } })`** covers GitHub Actions, any `oidc`
+   issuer a grant names, and bordeaux service tokens. The issuer's keys are passed directly,
+   since a Worker can't fetch its own URL for its JWKS.
 4. Optionally, **Cloudflare Access** browser sessions (cookie or header) for the inspector
    route only. These become `bordeaux:user:<email>` under the same membership rule.
 5. Otherwise, 401 `unauthorized`.
 
 Every verifier MUST reject a credential whose principal would contain `+`, `]`, or
 whitespace. Host principals MUST NOT start with `board:`.
+
+**As built (M2).**
+- **Revocation runs in front of board().** board() keeps a verified token's principal until the
+  token expires, so a check inside `authenticate` stops being asked after a token's first use.
+  The Worker checks every request that carries a bordeaux service token against the
+  DirectoryDO's revoked list before board() sees it.
+- **Service tokens need an `https` board.** board() trusts a grant's issuer only when it's
+  `https` on a public host, so a local `http://127.0.0.1` board can mint service tokens but
+  can't verify them. Person tokens work everywhere.
+- **g4 names the URL the board started with.** A board that moves to a new URL needs a new
+  service grant (`bx grants create --service '*'`… on the new issuer) and new service tokens.
 
 ## Edge protection
 
@@ -224,7 +238,7 @@ Principal kinds on bordeaux:
 | `github{repository, workflow?, branch?, event?}` | accepted |
 | `oidc{issuer, claims}` | accepted; `issuer` may be bordeaux itself |
 | `all-users`, `everyone` | accepted |
-| `project`, `all-projects`, `app`, `all-apps` | 400 `unsupported_principal` (g2 and g3 stay inert) |
+| `project`, `all-projects`, `app`, `all-apps` | kept as written and inert, as on `local()` (g2 and g3 too) |
 
 Private channels follow upstream: `createChannel(path, { private: true })` writes two grants
 and the channel in one batch.

@@ -36,6 +36,10 @@ export const FILES = [
   'server/feed.ts',
   'server/carried.ts',
   'server/actors.ts',
+  // Who may do what: access, grants, and principals, as board() itself judges them.
+  'server/access.ts',
+  'server/grants.ts',
+  'server/auth.ts',
   'client/ids.ts',
 ]
 

@@ -23,7 +23,10 @@ import type { BoardReads } from '../upstream/server/reads.ts'
 import { sqlTables } from '../upstream/store/sql.ts'
 import type { MessageFilter, MessageTables, ThreadPosition } from '../upstream/store/types.ts'
 import { createTables, doDb } from './db.ts'
-import { createLogTables, DuplicateEventError, Log, type NewEvent } from './log.ts'
+import { createLogTables, DuplicateEventError, Log, registerSession, type NewEvent } from './log.ts'
+import { ACCESS_SESSION, accessEvents, foldAccess, startingAccess, type AccessState } from './access.ts'
+
+registerSession(ACCESS_SESSION, accessEvents)
 import { createViewTables, Views } from './views.ts'
 
 type Caller = Identity & { request: boolean; schedule?: { id: number; n: number } }
@@ -144,6 +147,8 @@ export class BoardEngine {
   private views: Views
   readonly tables: MessageTables
   private lock: Promise<unknown> = Promise.resolve()
+  /** The grants, folded from session `access`, kept beside the log in `bx_state`. */
+  private access: AccessState
   /** Resolves once the tables have every event the log has. */
   readonly ready: Promise<void>
 
@@ -154,7 +159,39 @@ export class BoardEngine {
     this.log = new Log(storage)
     this.views = new Views(storage)
     this.tables = sqlTables(doDb(storage))
+    storage.sql.exec('create table if not exists bx_state (key text primary key, data text not null)')
+    this.access = this.loadAccess()
     this.ready = this.catchUp()
+  }
+
+  private loadAccess(): AccessState {
+    const [row] = this.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'access'").toArray()
+    return row ? (JSON.parse(row.data) as AccessState) : startingAccess()
+  }
+
+  /** The grants as they are, and the access session's head, which a grant write is conditioned on. */
+  accessState(): { state: AccessState; index: number } {
+    return { state: this.access, index: this.log.head(ACCESS_SESSION) }
+  }
+
+  /**
+   * Appends grant events only while the access session's head is still `ifIndex`: the Worker judged
+   * them on that state (upstream's `ifLastIndex`). `moved` when another write landed first.
+   */
+  appendAccess(ifIndex: number, events: readonly NewEvent[]): Promise<{ moved: true } | { indexes: number[] }> {
+    return this.exclusive(async () => {
+      if (this.log.head(ACCESS_SESSION) !== ifIndex) return { moved: true as const }
+      try {
+        const rows = this.log.append(ACCESS_SESSION, events, (landed) => {
+          for (const row of landed) foldAccess(this.access, row as never)
+          this.storage.sql.exec("insert into bx_state (key, data) values ('access', ?) on conflict (key) do update set data = excluded.data", JSON.stringify(this.access))
+        })
+        return { indexes: rows.map((row) => row.index) }
+      } catch (error) {
+        this.access = this.loadAccess()
+        throw error
+      }
+    })
   }
 
   /** The tables apply what the log has past their position: after a restart that cut a write short. */

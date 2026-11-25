@@ -94,6 +94,76 @@ async function accessToken(url: string, force = false): Promise<string> {
   return issued.access_token
 }
 
+/** A protocol-adjacent request to the board as you: the admin routes (spec 07). */
+async function asYou(url: string, method: string, path: string, body?: unknown): Promise<Record<string, unknown>> {
+  const response = await fetch(`${url}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${await accessToken(url)}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  })
+  const json = (await response.json().catch(() => ({}))) as Record<string, unknown> & { error?: { message?: string } }
+  if (!response.ok) fail(json.error?.message ?? `${method} ${path}: ${response.status}`)
+  return json
+}
+
+/** A flag's value: `--env production`. */
+const flag = (args: string[], name: string) => {
+  const at = args.indexOf(name)
+  return at === -1 ? undefined : args[at + 1]
+}
+
+/** A duration as days: `90d`, `12h`, or seconds. */
+const seconds = (value: string) => {
+  const found = /^(\d+)([dhm]?)$/.exec(value) ?? fail(`--ttl: a number of days (90d), hours (12h), or minutes (30m), got ${value}`)
+  return Number(found[1]) * ({ d: 86400, h: 3600, m: 60, '': 1 } as Record<string, number>)[found[2]!]!
+}
+
+/** `bx tokens create|list|revoke`: service tokens (spec 03), for someone who manages every channel. */
+async function tokens(url: string, args: string[]) {
+  const [, action, ...rest] = args.slice(args.indexOf('tokens'))
+  if (action === 'create') {
+    const service = flag(rest, '--service') ?? fail('usage: bx tokens create --service <name> [--env <env>] [--ttl 90d]')
+    const ttl = flag(rest, '--ttl')
+    const made = await asYou(url, 'POST', '/admin/tokens', { service, env: flag(rest, '--env') ?? 'production', ...(ttl ? { ttl: seconds(ttl) } : {}) })
+    process.stderr.write(`${made.sub}, until ${made.expires_at} (revoke with: bx tokens revoke ${made.jti})\n`)
+    process.stdout.write(`${made.token}\n`)
+    return
+  }
+  if (action === 'list') {
+    const { tokens: found } = (await asYou(url, 'GET', '/admin/tokens')) as { tokens: { jti: string; sub: string; expires_at: string; revoked: boolean; by: string }[] }
+    for (const token of found) process.stdout.write(`${token.jti}  ${token.sub}  until ${token.expires_at}${token.revoked ? '  revoked' : ''}  by ${token.by}\n`)
+    return
+  }
+  if (action === 'revoke' && rest[0]) {
+    const { revoked } = await asYou(url, 'DELETE', `/admin/tokens/${encodeURIComponent(rest[0])}`)
+    if (!revoked) fail(`no token ${rest[0]} on this board`)
+    return
+  }
+  fail('usage: bx tokens create --service <name> [--env <env>] | list | revoke <id>')
+}
+
+/**
+ * `bx grants create` with bordeaux's own principals, as upstream's flags: `--service www [--env
+ * production]` is an oidc grant on the board's own issuer, and `--github-user ada` is ada's GitHub
+ * user ID, which a bordeaux person's ID is (spec 03).
+ */
+async function grantArgs(url: string, argv: string[]): Promise<string[]> {
+  const args = [...argv]
+  for (let at = args.indexOf('--github-user'); at !== -1; at = args.indexOf('--github-user')) {
+    const login = args[at + 1] ?? fail('--github-user: a GitHub login')
+    const found = await fetch(`https://api.github.com/users/${encodeURIComponent(login)}`, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'bordeaux-bx' } })
+    if (!found.ok) fail(`GitHub has no user ${login}`)
+    args.splice(at, 2, '--user', String(((await found.json()) as { id: number }).id))
+  }
+  const service = flag(args, '--service')
+  if (service !== undefined) {
+    const environment = flag(args, '--env')
+    for (const name of ['--service', '--env']) if (args.includes(name)) args.splice(args.indexOf(name), 2)
+    args.push('--oidc', url, '--claim', `sub=service:${service}:${environment ?? '*'}`)
+  }
+  return args
+}
+
 const HELP = `bx: a bordeaux board, for people and agents
 
 usage: bx <command> [options]
@@ -102,6 +172,10 @@ bordeaux:
   login <url>                         sign in with GitHub
   logout [url]                        forget your sign-in
   token                               print a fresh access token (export BOARD_TOKEN=$(bx token))
+  tokens create --service <name>      a service's token, up to 90 days [--env <env>] [--ttl 30d]
+  tokens list | revoke <id>           the service tokens, and revoking one
+  grants create --service <name>      let a service's tokens in [--env <env>], or
+  grants create --github-user <login> a person by their GitHub login, with --can
 
 board commands (upstream's, unchanged):
 `
@@ -145,6 +219,8 @@ async function main(argv: string[]) {
   if (word === 'list' || argv.includes('--name') || argv.includes('--scope') || argv.includes('--ensure') || process.env.BOARD_NAME)
     fail("named boards come with bordeaux's next milestone: use the board's URL")
 
+  if (word === 'tokens') return tokens(boardUrl(argv) ?? fail('no board: run bx login <url>'), argv)
+
   const app = createApp({ appName: 'bx' })
   if (word === undefined || word === 'help' || argv.includes('--help') || argv.includes('-h')) {
     process.exitCode = await help(app, argv)
@@ -161,7 +237,8 @@ async function main(argv: string[]) {
     }, 60_000)
     timer.unref()
   }
-  process.exitCode = await app.run(argv)
+  const args = word === 'grants' && (argv.includes('--service') || argv.includes('--github-user')) ? await grantArgs(url, argv) : argv
+  process.exitCode = await app.run(args)
 }
 
 await main(process.argv.slice(2))

@@ -33,6 +33,20 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     void ctx.blockConcurrencyWhile(() => this.engine.ready)
   }
 
+  /** The grants and the access session's head, for board()'s policy and the Worker's grant writes. */
+  async accessState() {
+    await this.engine.ready
+    return this.engine.accessState()
+  }
+
+  async appendAccess(ifIndex: number, events: { type: string; payload: unknown }[]): Promise<Envelope> {
+    try {
+      return { ok: true, value: await this.engine.appendAccess(ifIndex, events) }
+    } catch (error) {
+      return { ok: false, error: toWireError(error) }
+    }
+  }
+
   async call(method: string, wire: WireIdentity, input: unknown): Promise<Envelope> {
     try {
       if (!isKept(method)) throw notKeptHere(method)

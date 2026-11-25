@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: './wrangler.jsonc' },
-      miniflare: { bindings: { BORDEAUX_URL: 'http://board.test', BORDEAUX_GITHUB_ORG: 'acme', GITHUB_CLIENT_ID: 'Iv1.test', BORDEAUX_DEV: '1' } },
+      miniflare: { bindings: { BORDEAUX_URL: 'https://board.test', BORDEAUX_GITHUB_ORG: 'acme', GITHUB_CLIENT_ID: 'Iv1.test', BORDEAUX_DEV: '1' } },
     }),
   ],
   test: { include: ['test/**/*.test.ts'] },

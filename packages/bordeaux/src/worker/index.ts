@@ -2,8 +2,10 @@
 // bordeaux's verifier chain, its token broker, and the hooks upstream expects from Vercel.
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { board } from '@vercel/board'
-import { bordeauxTokens, directory } from './auth.ts'
+import { oidcTokens } from '@vercel/board/access'
+import { bordeauxTokens, directory, issuerKeys, revokedToken } from './auth.ts'
 import { durable } from './backend.ts'
+import { admin } from './admin.ts'
 import { broker } from './broker.ts'
 import type { BordeauxEnv } from './env.ts'
 
@@ -18,10 +20,14 @@ let team: ReturnType<typeof board> | null = null
 
 function boardOf(env: BordeauxEnv) {
   if (!env.BORDEAUX_URL) throw new Error('BORDEAUX_URL is required: the board\'s public URL, which every token is for')
+  // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
+  const tokens = oidcTokens({ oidc: { [env.BORDEAUX_URL]: issuerKeys(env) } })
   team ??= board({
     backend: durable(env),
     url: env.BORDEAUX_URL,
-    authenticate: (request) => bordeauxTokens(env, request.credential),
+    // The verifier chain (spec 03): the board's own tokens, then upstream's for GitHub Actions and
+    // any issuer a grant names.
+    authenticate: async (request) => (await bordeauxTokens(env, request.credential)) ?? tokens(request),
   })
   return team
 }
@@ -42,8 +48,14 @@ export default {
   async fetch(request: Request, env: BordeauxEnv, ctx: ExecutionContext): Promise<Response> {
     return requestContext.run(ctx, async () => {
       const { pathname } = new URL(request.url)
+      const revoked = await revokedToken(env, request)
+      if (revoked) return revoked
       if (pathname === '/.well-known/jwks.json') return Response.json(await directory(env).jwks(), { headers: { 'cache-control': 'public, max-age=300' } })
       if (pathname.startsWith('/auth/')) return broker(request, env)
+      if (pathname.startsWith('/admin/')) {
+        const board = boardOf(env)
+        return admin(request, env, (asked) => board.fetch(new Request(new URL('/me', asked.url), { headers: asked.headers })))
+      }
       if (pathname === '/__dev/token' && request.method === 'POST') {
         if (env.BORDEAUX_DEV !== '1') return new Response('not found', { status: 404 })
         return devToken(request, env)
