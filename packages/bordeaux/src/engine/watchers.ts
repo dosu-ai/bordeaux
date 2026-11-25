@@ -10,9 +10,9 @@ import { HttpError, type BoardEventView, type MatchView, type RegistrationView }
 import { compileAccess, type AccessSummary } from '@vercel/board/access'
 import { derivedId } from '../upstream/client/ids.ts'
 import type { BoardEvent } from '../upstream/contract/events.ts'
-import type { ActorsState } from '../upstream/contract/folds.ts'
+import type { ActorsState, Message } from '../upstream/contract/folds.ts'
 import type { Access } from '../upstream/server/access.ts'
-import { compileFilter, eventView, foldEvent, loadBefore } from '../upstream/server/feed.ts'
+import { compileFilter, eventView, foldEvent, loadBefore, view } from '../upstream/server/feed.ts'
 import type { BoardReads } from '../upstream/server/reads.ts'
 import { compileWatcher } from '../upstream/server/watch-spec.ts'
 import { canonicalWatchers, type SyncEntrySpec, type WatcherSpec } from '../upstream/server/watchers-hash.ts'
@@ -25,8 +25,12 @@ export const LEASE_MS = 5 * 60_000
 export const retryDelay = (attempts: number) => Math.min(30_000, 1000 * 2 ** (attempts - 1))
 /** The queue a registrant's sync pulls (upstream `SYNC_QUEUE`). */
 export const SYNC_QUEUE = '@sync'
+/** The queue of platform events a registrant pushed for sync key `key` (upstream `inboxQueue`). */
+export const inboxQueue = (key: string) => `@inbox:${key}`
 /** Bookkeeping events, matched only by a tail that asks for `--all` (upstream watch.ts `RECEIPTS`). */
-const RECEIPTS = new Set(['actor.seen', 'message.synced', 'message.files_synced', 'task.renewed'])
+const RECEIPTS = new Set(['message.synced', 'message.files_synced', 'task.renewed'])
+/** What a registrant's sync gets where it may sync: what it delivers, and a thread's new targets (upstream watch.ts `SYNCED`). */
+const SYNCED = new Set(['message.posted', 'message.edited', 'message.deleted', 'reaction.added', 'reaction.removed', 'labels.changed', 'thread.synced'])
 
 /** A registration, with what its registrant could read when it registered. */
 export type Registration = RegistrationView & { principal: { id: string; kind: string; handle: string }; can: AccessSummary }
@@ -47,7 +51,7 @@ export type QueueState = { queues: Record<string, string[]>; pending: Record<str
 export const emptyQueue = (): QueueState => ({ queues: {}, pending: {} })
 
 type QueueEvent =
-  | { type: 'watch.matched'; id: string; payload: { thread: string; event: unknown; watcher?: string; sync?: true } }
+  | { type: 'watch.matched'; id: string; payload: { thread: string; event: unknown; watcher?: string; sync?: true; inbox?: string } }
   | { type: 'watch.leased'; payload: { matched: string; lease: string; until: number } }
   | { type: 'watch.acked'; payload: { matched: string; lease: string; error?: string; retryAt?: number } }
   | { type: 'watch.expired'; payload: { matched: string; lease: string } }
@@ -69,8 +73,8 @@ function remove(state: QueueState, id: string) {
 export function foldQueue(state: QueueState, event: QueueEvent): QueueState {
   switch (event.type) {
     case 'watch.matched': {
-      const { watcher, sync, thread } = event.payload
-      const queue = watcher ?? (sync ? SYNC_QUEUE : undefined)
+      const { watcher, sync, inbox, thread } = event.payload
+      const queue = watcher ?? (sync ? SYNC_QUEUE : inbox !== undefined ? inboxQueue(inbox) : undefined)
       if (queue === undefined || state.pending[event.id]) return state
       state.pending[event.id] = { id: event.id, queue, thread, event: event.payload.event, attempts: 0, lease: null, retryAt: null }
       ;(state.queues[queueKey(queue, thread)] ??= []).push(event.id)
@@ -124,14 +128,28 @@ function failure(found: Pending, error: string): QueueEvent {
 
 const leaseId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
 
-/** Leases each queue's oldest match that's free, which the registrant may still have (upstream `pull` and `lease`). */
+type Leased = { id: string; queue: string; thread: string; event: unknown; lease: string; attempt: number }
+
+/** Leases each queue's oldest match that's free, which the registrant may still have (upstream `pull`). */
 export function pull(state: QueueState, options: { access: Access; limit: number; now: number }): { events: QueueEvent[]; matches: MatchView[] } {
+  const { events, leased } = lease(state, { ...options, queues: (queue) => !queue.startsWith('@inbox:'), visible: (event, queue) => readable(options.access, event, queue) })
+  return { events, matches: leased.map(({ id, queue, thread, lease, attempt, event }) => ({ id, watcher: queue, thread, lease, attempt, event: event as BoardEventView })) }
+}
+
+/** Leases the platform events the registrant pushed for sync key `key`, while it may still sync somewhere (upstream `pullInbox`). */
+export function pullInbox(state: QueueState, key: string, options: { access: Access; limit: number; now: number }): { events: QueueEvent[]; leased: Leased[] } {
+  const queue = inboxQueue(key)
+  return lease(state, { ...options, queues: (name) => name === queue, visible: () => options.access.anywhere('sync') })
+}
+
+/** Leases what's free in the queues `queues` picks: each one's oldest item, which `visible` says its registrant may still have (upstream `lease`). */
+function lease(state: QueueState, options: { limit: number; now: number; queues: (queue: string) => boolean; visible: (event: unknown, queue: string) => boolean }): { events: QueueEvent[]; leased: Leased[] } {
   const events: QueueEvent[] = []
-  const matches: MatchView[] = []
+  const leased: Leased[] = []
   for (const ids of Object.values(state.queues)) {
-    if (matches.length >= options.limit) break
+    if (leased.length >= options.limit) break
     const head = state.pending[ids[0]!]!
-    if (head.queue.startsWith('@inbox:') || !free(head, options.now)) continue
+    if (!options.queues(head.queue) || !free(head, options.now)) continue
     let attempts = head.attempts
     if (head.lease) {
       events.push({ type: 'watch.expired', payload: { matched: head.id, lease: head.lease.id } })
@@ -141,15 +159,15 @@ export function pull(state: QueueState, options: { access: Access; limit: number
         continue
       }
     }
-    if (!readable(options.access, head.event, head.queue)) {
+    if (!options.visible(head.event, head.queue)) {
       events.push({ type: 'watch.skipped', payload: { matched: head.id, reason: "its registrant can't have it anymore" } })
       continue
     }
     const lease = leaseId()
     events.push({ type: 'watch.leased', payload: { matched: head.id, lease, until: options.now + LEASE_MS } })
-    matches.push({ id: head.id, watcher: head.queue, thread: head.thread, lease, attempt: attempts, event: head.event as BoardEventView })
+    leased.push({ id: head.id, queue: head.queue, thread: head.thread, lease, attempt: attempts, event: head.event })
   }
-  return { events, matches }
+  return { events, leased }
 }
 
 /** How a pulled match went: done, skipped, or an error that waits, then tries again (upstream `ack`). */
@@ -166,10 +184,14 @@ export function ack(state: QueueState, id: string, body: { lease: string; error?
 
 // --- Matching: upstream watch.ts `dispatch`, for registered watchers. ---
 
-/** Each registrant's matches for `event`: the message before or after it must match, as in a tail. */
-export async function matchesFor(event: BoardEvent, registrations: readonly Registration[], reads: BoardReads, actors: ActorsState): Promise<Map<string, QueueEvent[]>> {
+/** Each registrant's matches for `event`: the message before or after it must match, as in a tail; and its sync's (upstream `dispatch`). */
+export async function matchesFor(event: BoardEvent, registrations: readonly Registration[], reads: BoardReads, actors: ActorsState, rootOf: (thread: string) => Promise<Message | undefined>): Promise<Map<string, QueueEvent[]>> {
   const out = new Map<string, QueueEvent[]>()
-  if (event.type === 'thread.synced') return out
+  const add = (owner: string, matched: QueueEvent) => (out.get(owner) ?? out.set(owner, []).get(owner)!).push(matched)
+  if (event.type === 'thread.synced') {
+    await syncMatches(event, registrations, reads, actors, undefined, await rootOf(event.payload.thread), event.payload.thread, add)
+    return out
+  }
   const messages = await loadBefore(reads, event)
   const { id, before, after } = foldEvent(messages, structuredClone(actors), event)
   const message = after ?? before
@@ -194,9 +216,23 @@ export async function matchesFor(event: BoardEvent, registrations: readonly Regi
       const match = compileFilter(compiled.filters, { me: null, actors, messages, access })
       if (!(compiled.criteria ? match(before) || match(after) : id !== null)) continue
       const shown = eventView(event, after, actors, await reads.reader(access, after ? [after] : []))
-      const list = out.get(registration.owner) ?? out.set(registration.owner, []).get(registration.owner)!
-      list.push({ type: 'watch.matched', id: await derivedId('board-watch', `@${registration.owner}/${watcherId}`, event.id), payload: { thread, event: shown, watcher: watcherId } })
+      add(registration.owner, { type: 'watch.matched', id: await derivedId('board-watch', `@${registration.owner}/${watcherId}`, event.id), payload: { thread, event: shown, watcher: watcherId } })
     }
   }
+  await syncMatches(event, registrations, reads, actors, before, message, thread, add)
   return out
+}
+
+/** A registrant's sync, in the channels where it may sync: every change it delivers (upstream `dispatch`, its second half). */
+async function syncMatches(event: BoardEvent, registrations: readonly Registration[], reads: BoardReads, actors: ActorsState, before: Message | undefined, about: Message | undefined, thread: string, add: (owner: string, matched: QueueEvent) => void) {
+  if (!SYNCED.has(event.type) || !about) return
+  for (const registration of registrations) {
+    if ((registration.sync?.length ?? 0) === 0) continue
+    const access = compileAccess(registration.can)
+    if (!access.can('sync', about.channel)) continue
+    const reader = await reads.reader(access, [about, ...(before ? [before] : [])])
+    // A label change re-renders a copy only when the labels change what it shows: sync compares them.
+    const shown = { ...eventView(event, about, actors, reader), ...(event.type === 'labels.changed' && before ? { before: view(before, actors, reader) } : {}) }
+    add(registration.owner, { type: 'watch.matched', id: await derivedId('board-watch', `@${registration.owner}/@sync`, event.id), payload: { thread, event: shown, sync: true } })
+  }
 }

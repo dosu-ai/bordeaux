@@ -17,7 +17,7 @@ export type WireError = { status: number; code: string; message: string; hint?: 
 export type Envelope = { ok: true; value: unknown } | { ok: false; error: WireError }
 
 /** The methods this board answers itself; the rest answer 501 until their milestone. */
-const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule', 'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask', 'watchers', 'register', 'matches', 'ack'] as const
+const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule', 'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask', 'watchers', 'register', 'matches', 'ack', 'synced', 'linked', 'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox', 'typing', 'readSource', 'joinSource'] as const
 type Kept = (typeof KEPT)[number]
 const isKept = (method: string): method is Kept => (KEPT as readonly string[]).includes(method)
 
@@ -34,7 +34,16 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
 
   constructor(ctx: DurableObjectState, env: BordeauxEnv) {
     super(ctx, env)
-    this.engine = new BoardEngine(ctx.storage, { bucket: env.FILES ?? null, prefix: ctx.id.toString() })
+    this.engine = new BoardEngine(ctx.storage, {
+      bucket: env.FILES ?? null,
+      prefix: ctx.id.toString(),
+      // board() for this board, in this isolate: its own sync's entries, links, and typing.
+      binding: () => {
+        const name = this.boardName()
+        boardOf(this.env, name)
+        return bindingOf(name)
+      },
+    })
     // Nothing runs until the tables have what the log has.
     void ctx.blockConcurrencyWhile(() => this.engine.ready)
   }

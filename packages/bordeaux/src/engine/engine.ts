@@ -45,12 +45,66 @@ const blindSchedule = (schedule: ScheduleView, access: Access, ownActor: string)
 import { createViewTables, Views } from './views.ts'
 import { seenFor, type Along, type AlongEach, type WriteContext } from './writes.ts'
 import { createTasks, LEASE_MIN_S, taskLimits } from './tasks.ts'
+import type { BoardBinding } from '@vercel/board'
+import { FULL_ACCESS } from '../upstream/server/access.ts'
+import { viaOf } from '../upstream/server/actors.ts'
+import { authenticates } from '../upstream/server/auth.ts'
+import { importedHandle, shownName, userIdOf } from '../upstream/contract/profiles.ts'
+import { platformAvatar } from '../upstream/contract/schemas.ts'
+import type { ExternalAuthor, Link, Origin } from '../upstream/contract/external.ts'
+import type { Actor, ExternalCopy } from '../upstream/contract/folds.ts'
+import { INBOX_EVENT_ID_MAX } from '../upstream/api/routes.ts'
+import type { SyncEntrySpec } from '../upstream/server/watchers-hash.ts'
+import { pullInbox } from './watchers.ts'
 import { ack as ackMatch, emptyQueue, foldQueue, matchesFor, pull, viewOf, watchersHash, type QueueState, type Registration, type RegistryState } from './watchers.ts'
 import { compileWatcher } from '../upstream/server/watch-spec.ts'
 import { RemoteWatcherId } from '../upstream/contract/schemas.ts'
 import { TASK_BATCH_MAX } from '../upstream/contract/schemas.ts'
 
-type Caller = Identity & { request: boolean; schedule?: { id: number; n: number } }
+type Caller = Identity & { request: boolean; schedule?: { id: number; n: number }; via?: string }
+
+/** How an import writes (upstream writes.ts): as the platform user, from its sync key, checked by the sync that brought it. */
+type ImportOpts = { from?: string | null; trusted?: boolean; asAuthor?: boolean; introduces?: Actor[] }
+/** What a post an import makes carries beside a post's own (upstream writes.ts `PostInput`). */
+type PostExtra = { origin?: Origin | null; from?: string | null; importedBy?: string; links?: Link[]; introduces?: Actor[] }
+
+/** board()'s own sync, as opposed to a sync elsewhere that uses this board (upstream a2.ts `ownSync`). */
+const ownSync = (caller: Caller) => caller.via === 'engine'
+
+/** The `actor.seen` of each platform user an import's text mentions that the board hasn't met (upstream writes.ts `metBy`). */
+function metBy(introduces: readonly Actor[] | undefined, actors: ActorsState, author: string) {
+  const met = new Set([author])
+  return (introduces ?? []).flatMap((actor) => {
+    if (met.has(actor.id) || own(actors.byId, actor.id)) return []
+    met.add(actor.id)
+    const seen = actorSeen(actor, actors)
+    return seen ? [seen] : []
+  })
+}
+
+/** A platform user, writing through sync (upstream a2.ts `externalIdentity`). */
+function externalIdentity(author: ExternalAuthor, through: Identity['principal'] | null, platform: string): Caller {
+  const id = through === null ? author.id : `${through.id}+${author.id}`
+  const host = through?.facts?.issuer === 'host' ? { facts: through.facts } : {}
+  const principal = { id: through?.id ?? author.id, kind: 'external' as const, handle: author.handle, access: FULL_ACCESS, expiresAt: null, ...host }
+  return {
+    request: false,
+    principal,
+    author: { actor: id, principal: principal.id, profile: through === null ? null : author.id },
+    actor: {
+      id,
+      kind: 'external',
+      handle: through === null ? author.handle : importedHandle(viaOf(through).name, author.handle, userIdOf(author.id)),
+      name: author.name,
+      avatar: platformAvatar(author.avatar),
+      ...(through === null ? {} : { via: viaOf(through) }),
+      platform,
+      ...(through !== null && !through.id.startsWith('board:') ? { verified: true as const } : {}),
+    } as Identity['actor'],
+  }
+}
+
+const hexOf = async (text: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))), (b) => b.toString(16).padStart(2, '0')).join('')
 type In<M extends keyof Protocol> = Protocol[M]['input']
 type Out<M extends keyof Protocol> = Protocol[M]['output']
 
@@ -167,13 +221,16 @@ export class BoardEngine {
   /** Resolves once the tables have every event the log has. */
   readonly ready: Promise<void>
   private readonly files: Files
+  /** board()'s binding, built in this isolate: its own sync's entries, links, and typing. */
+  private readonly binding: () => BoardBinding | null
   /** Tasks, as upstream's tasks.ts keeps them (src/engine/tasks.ts). */
   private readonly tasks: ReturnType<typeof createTasks>
 
   constructor(
     private readonly storage: DurableObjectStorage,
-    options: { bucket?: R2Bucket | null; prefix?: string } = {},
+    options: { bucket?: R2Bucket | null; prefix?: string; binding?: () => BoardBinding | null } = {},
   ) {
+    this.binding = options.binding ?? (() => null)
     createLogTables(storage)
     createFileTables(storage)
     this.files = new Files(storage, options.bucket ?? null, options.prefix ?? 'local')
@@ -270,8 +327,9 @@ export class BoardEngine {
       throw error
     }
     for (const row of rows) if (!(await this.tables.applyNext(row))) await this.catchUp()
-    // Registered watchers match it after the write answers.
-    if (Object.keys(this.registry.byOwner).length > 0) void this.match()
+    // Registered watchers match it before the write answers. A run left to finish on its own, after
+    // the request that started it, can stall, and every later call would wait on it.
+    if (Object.keys(this.registry.byOwner).length > 0) await this.match()
     return rows
   }
 
@@ -287,30 +345,36 @@ export class BoardEngine {
 
   /** Matches what the log has past the stored position against every registration, a page at a time (upstream's `board-watch` consumer). */
   match(): Promise<void> {
-    this.matching ??= (async () => {
-      try {
-        for (;;) {
-          const from = this.loadState<number>('watch-position', () => this.log.head())
-          const events = this.log.history({ gte: from + 1, lte: from + 200 })
-          if (events.length === 0) return
-          const registrations = Object.values(this.registry.byOwner)
-          const woken = new Set<string>()
-          for (const event of events) {
-            for (const [owner, matched] of await matchesFor(event, registrations, this.reads, this.views.actors)) {
-              const state = this.queueOf(owner)
-              for (const one of matched) foldQueue(state, one)
-              this.saveQueue(owner, state)
-              woken.add(owner)
-            }
-          }
-          this.storage.sql.exec("insert into bx_state (key, data) values ('watch-position', ?) on conflict (key) do update set data = excluded.data", String(events.at(-1)!.index))
-          for (const owner of woken) if (this.registry.byOwner[owner]?.url) this.arm(`wake-${owner}`, Date.now(), { kind: 'wake', payload: { owner } })
+    if (this.matching) return this.matching
+    // Cleared once it's done, and only then: a run with nothing to do settles before it's even assigned.
+    const run = this.matchAll()
+    this.matching = run
+    const done = () => {
+      if (this.matching === run) this.matching = null
+    }
+    run.then(done, done)
+    return run
+  }
+
+  /** Matches what the log has past the stored position, a page at a time, until it has all of it. */
+  private async matchAll(): Promise<void> {
+    for (;;) {
+      const from = this.loadState<number>('watch-position', () => this.log.head())
+      const events = this.log.history({ gte: from + 1, lte: from + 200 })
+      if (events.length === 0) return
+      const registrations = Object.values(this.registry.byOwner)
+      const woken = new Set<string>()
+      for (const event of events) {
+        for (const [owner, matched] of await matchesFor(event, registrations, this.reads, this.views.actors, async (thread) => (await this.tables.byEventId(thread)) ?? undefined)) {
+          const state = this.queueOf(owner)
+          for (const one of matched) foldQueue(state, one)
+          this.saveQueue(owner, state)
+          woken.add(owner)
         }
-      } finally {
-        this.matching = null
       }
-    })()
-    return this.matching
+      this.storage.sql.exec("insert into bx_state (key, data) values ('watch-position', ?) on conflict (key) do update set data = excluded.data", String(events.at(-1)!.index))
+      for (const owner of woken) if (this.registry.byOwner[owner]?.url) this.arm(`wake-${owner}`, Date.now(), { kind: 'wake', payload: { owner } })
+    }
   }
 
   /**
@@ -534,7 +598,7 @@ export class BoardEngine {
   }
 
   /** A post; with `along`, a new thread's root with what makes it a task, in one append (upstream writes.ts `writePost`). */
-  async post(caller: Caller, parsed: In<'post'>, along?: Along): Promise<Out<'post'>> {
+  async post(caller: Caller, parsed: In<'post'>, along?: Along, extra: PostExtra = {}): Promise<Out<'post'>> {
     const { principal } = caller
     const { access } = principal
     if (parsed.text.length > MESSAGE_TEXT_MAX) throw textTooLong()
@@ -598,8 +662,10 @@ export class BoardEngine {
       const known = knownWith(this.views.actors, caller, seen)
       // What comes with a new thread's root: its ID and thread key are known before it's written.
       const came = along ? (await along()).events({ id: this.log.head() + 1 + (seen ? 1 : 0), thread }) : []
+      const met = metBy(extra.introduces, this.views.actors, caller.actor.id)
       const rows = await this.append([
         ...(seen ? [seen] : []),
+        ...met,
         {
           type: 'message.posted',
           ...(id ? { id } : {}),
@@ -612,9 +678,11 @@ export class BoardEngine {
             labels: parsed.labels ?? {},
             noSync: parsed.noSync ?? false,
             by: caller.author,
-            origin: null,
-            from: null,
+            origin: extra.origin ?? null,
+            from: extra.from ?? null,
             ...(attachments.length ? { attachments } : {}),
+            ...(extra.links?.length ? { links: extra.links } : {}),
+            ...(extra.importedBy !== undefined ? { importedBy: extra.importedBy } : {}),
             ...(caller.schedule ? { schedule: caller.schedule } : {}),
             ...(access.readable(channel) ? {} : { blind: true as const }),
             // How many came with it, so a replay tells its own append from what was written since.
@@ -631,12 +699,19 @@ export class BoardEngine {
     })
   }
 
-  async edit(caller: Caller, { id, text, revision }: In<'edit'>): Promise<Out<'edit'>> {
+  /** A message an import changes, already checked against the sync that brought it. */
+  private async found(id: number): Promise<Message> {
+    const message = await this.tables.message(id)
+    if (!message) throw messageNotFound(id)()
+    return message
+  }
+
+  async edit(caller: Caller, { id, text, revision }: In<'edit'>, opts: ImportOpts = {}): Promise<Out<'edit'>> {
     if (text.length > MESSAGE_TEXT_MAX) throw textTooLong()
     const at = messageAt(id)
     return this.exclusive(async () => {
-      const message = await this.authorizeOwn(caller, at, 'edit')
-      if (!authored(message, caller)) throw forbidden('only the author can edit a message')
+      const message = opts.trusted ? await this.found(at) : await this.authorizeOwn(caller, at, 'edit')
+      if (opts.asAuthor !== false && !authored(message, caller)) throw forbidden('only the author can edit a message')
       if (message.deleted) {
         if (revision !== undefined && revision !== (message.revision ?? message.id)) throw new HttpError(409, 'revision_conflict', `#${message.id} was deleted since revision ${revision}`)
         throw badRequest('message was deleted', 'message_deleted')
@@ -645,7 +720,8 @@ export class BoardEngine {
       const seen = seenFor(caller, this.views.actors)
       await this.append([
         ...(seen ? [seen] : []),
-        { type: 'message.edited', payload: { id: message.id, thread: message.thread, text, by: caller.author, from: null } },
+        ...metBy(opts.introduces, this.views.actors, caller.actor.id),
+        { type: 'message.edited', payload: { id: message.id, thread: message.thread, text, by: caller.author, from: opts.from ?? null } },
         // A root may be a task: an edit by anyone but its owner holds it.
         ...(message.re === null ? heldByEdit(message, caller) : []),
       ])
@@ -653,11 +729,11 @@ export class BoardEngine {
     })
   }
 
-  async delete(caller: Caller, { id, revision }: In<'delete'>): Promise<Out<'delete'>> {
+  async delete(caller: Caller, { id, revision }: In<'delete'>, opts: ImportOpts = {}): Promise<Out<'delete'>> {
     const at = messageAt(id)
     return this.exclusive(async () => {
-      const message = await this.authorizeOwn(caller, at, 'delete')
-      if (!authored(message, caller)) throw forbidden('only the author can delete a message')
+      const message = opts.trusted ? await this.found(at) : await this.authorizeOwn(caller, at, 'delete')
+      if (opts.asAuthor !== false && !authored(message, caller)) throw forbidden('only the author can delete a message')
       // A tombstone changes no more: deleting it again is nothing, unless the caller read it before.
       if (message.deleted) {
         if (revision !== undefined && revision !== (message.revision ?? message.id)) throw new HttpError(409, 'revision_conflict', `#${message.id} was deleted since revision ${revision}`)
@@ -667,30 +743,30 @@ export class BoardEngine {
       await this.append([
         // A root that's a task is canceled first, while it still wears its labels.
         ...(message.re === null ? canceledByDelete(message, caller) : []),
-        { type: 'message.deleted', payload: { id: message.id, thread: message.thread, by: caller.author, from: null } },
+        { type: 'message.deleted', payload: { id: message.id, thread: message.thread, by: caller.author, from: opts.from ?? null } },
       ])
       return { ok: true as const }
     })
   }
 
-  async react(caller: Caller, { id, emoji, remove }: In<'react'>): Promise<Out<'react'>> {
+  async react(caller: Caller, { id, emoji, remove }: In<'react'>, opts: ImportOpts = {}): Promise<Out<'react'>> {
     const at = messageAt(id)
     return this.exclusive(async () => {
-      const message = await this.authorizeMessage(caller.principal.access, 'react', at)
+      const message = opts.trusted ? await this.found(at) : await this.authorizeMessage(caller.principal.access, 'react', at)
       if (message.deleted) throw badRequest('message was deleted', 'message_deleted')
       const seen = seenFor(caller, this.views.actors)
       await this.append([
         ...(seen ? [seen] : []),
-        { type: remove ? 'reaction.removed' : 'reaction.added', payload: { id: message.id, thread: message.thread, emoji, by: caller.author, from: null } },
+        { type: remove ? 'reaction.removed' : 'reaction.added', payload: { id: message.id, thread: message.thread, emoji, by: caller.author, from: opts.from ?? null } },
       ])
       return { ok: true as const }
     })
   }
 
-  async label(caller: Caller, { id, set, unset, if: expected }: In<'label'>): Promise<Out<'label'>> {
+  async label(caller: Caller, { id, set, unset, if: expected }: In<'label'>, opts: ImportOpts = {}): Promise<Out<'label'>> {
     const at = messageAt(id)
     return this.exclusive(async () => {
-      const message = await this.authorizeMessage(caller.principal.access, 'label', at)
+      const message = opts.trusted ? await this.found(at) : await this.authorizeMessage(caller.principal.access, 'label', at)
       if (message.deleted) throw badRequest('message was deleted', 'message_deleted')
       // labelsAre: each label is as the write says, now.
       for (const key of Object.keys(expected ?? {}).sort()) {
@@ -861,6 +937,410 @@ export class BoardEngine {
   endSchedule(id: number, reason: 'thread_deleted' | 'dropped' | 'revoked') {
     const by = { actor: 'board:schedule', principal: 'board:schedule', profile: null }
     if (this.scheduleState.byId[id]?.next !== null) this.appendSchedules([{ type: 'schedule.canceled', payload: { id, by, reason } }])
+  }
+
+  // --- Sync's records (upstream a2.ts synced, linked, syncImport … inbox). A caller with `sync`
+  // in a channel speaks for platform users there. ---
+
+  /** The caller, when it may sync somewhere; `records`: what keeps sync's records, which no narrowed caller does (upstream `needSync`). */
+  private needSync(caller: Caller, what: string, records = false) {
+    if (!caller.principal.access.anywhere('sync')) throw forbidden(`this token can't ${what}: it needs sync`)
+    if (records && caller.principal.scope !== undefined) throw forbidden(`this token is narrowed with x-board-can, so it can't ${what}: that's its project's sync's job`)
+  }
+
+  /** This board's own sync's entries: board()'s, as the config in this isolate has them. */
+  private ownEntries(): readonly SyncEntrySpec[] {
+    return this.binding()?.sync ?? []
+  }
+
+  /** The sync entries a caller imports through: this board's own, or what a sync elsewhere registered (upstream `entriesOf`). */
+  private entriesOf(caller: Caller, principal: string): readonly SyncEntrySpec[] {
+    if (ownSync(caller)) return this.ownEntries()
+    const own = this.ownEntries()
+    return (this.registry.byOwner[principal]?.sync ?? []).filter((entry) => !own.some((mine) => mine.key === entry.key))
+  }
+
+  /** Whether an ID is someone this board signs in that `authenticates` can't tell by its shape (upstream `signedIn`). */
+  private signedIn(id: string): boolean {
+    const owners = this.registry.byOwner
+    const plus = id.indexOf('+')
+    if (owners[id] || (plus > 0 && owners[id.slice(0, plus)])) return true
+    return [id, plus > 0 ? id.slice(0, plus) : null].some((known) => {
+      const actor = known === null ? undefined : own(this.views.actors.byId, known)
+      return actor !== undefined && (actor.kind !== 'external' || actor.host === true)
+    })
+  }
+
+  /** Whether a caller may write as each of `users`, and each one's platform (upstream `speaksFor`). */
+  private speaksFor(caller: Caller, principal: string, users: readonly { id: string }[], from: string | null): string[] {
+    for (const { id } of users) if (authenticates(id) || this.signedIn(id)) throw forbidden(`${id} is someone this board signs in, not a platform user: sync can't write as them`)
+    const entries = this.entriesOf(caller, principal)
+    const keys = from === null ? entries : entries.filter((entry) => entry.key === from)
+    if (from !== null && keys.length === 0) throw forbidden(`this token doesn't sync ${from} here: its board registers its sync entries`)
+    return users.map(({ id }) => {
+      const entry = keys.find(({ key }) => id.startsWith(`${key}:`))
+      if (!entry) throw forbidden(`${id} isn't a user of ${keys.length ? keys.map(({ key }) => key).join(' or ') : 'a sync key this token has'}: their ID starts with its key`)
+      return entry.platform
+    })
+  }
+
+  /** An import's client ID as the board keeps it: a sync elsewhere's, under its own principal (upstream `importId`). */
+  private async importId(caller: Caller, principal: string, id: string) {
+    return ownSync(caller) ? id : `sync:${principal}:${(await hexOf(`board-sync\u001f${id}`)).slice(0, 32)}`
+  }
+
+  /** Refuses a platform origin an import can't have (upstream `claimable`). */
+  private async claimable(origin: Origin, from: string | null, thread: string | null) {
+    if (from === null) throw badRequest('an import with an origin names the sync key it came through: pass `from`')
+    for (const location of [origin.channel, origin.thread, origin.subthread])
+      if (location !== undefined && location !== null && !location.startsWith(`${from}:`)) throw badRequest(`an import's platform locations belong to its sync key: ${location} isn't ${from}'s`)
+    if (origin.subthread != null && !origin.subthread.startsWith(`${origin.thread}:`)) throw badRequest(`an import's subthread is in its thread: ${origin.subthread} isn't in ${origin.thread}`)
+    const owner = await this.tables.threadOf(origin.thread)
+    if (owner !== null && owner !== thread) throw new HttpError(409, 'already_synced', `${origin.thread} is already synced with another thread`)
+    if (owner === null && thread !== null) throw new HttpError(409, 'not_synced', `${origin.thread} isn't synced with this thread`)
+    const exact = origin.subthread ?? origin.thread
+    if ((await this.tables.messageOf(exact, origin.message)) !== null) throw new HttpError(409, 'already_synced', `${origin.message} in ${exact} is already on the board`)
+  }
+
+  /** The sync entry an import says it came through: one its caller syncs, or a 403 (upstream `checkSource`). */
+  private checkSource(caller: Caller, principal: string, source: { key: string } | undefined) {
+    if (source && !this.entriesOf(caller, principal).some((entry) => entry.key === source.key)) throw forbidden(`this token doesn't sync ${source.key} here: its board registers its sync entries`)
+  }
+
+  /** The board message an import changes: a platform message, or the root of a platform thread's (upstream `locate`). */
+  private async locate(origin: { thread: string; message?: string | undefined }): Promise<number | null> {
+    if (origin.message !== undefined) return this.tables.messageOf(origin.thread, origin.message)
+    const thread = await this.tables.threadOf(origin.thread)
+    return thread === null ? null : ((await this.tables.syncOf(thread))?.root ?? null)
+  }
+
+  /** An import's links, as the board keeps them (upstream `linksOf`). */
+  private async linksOf(principal: Identity['principal'], links: readonly (Omit<Link, 'message'> & { message: string | null })[] | undefined): Promise<Link[] | undefined> {
+    if (!links) return undefined
+    return Promise.all(
+      links.map(async ({ message: given, ...link }): Promise<Link> => {
+        const id = given === null ? null : indexOf(given)
+        const found = id === null || id === 0 ? null : await this.tables.message(id)
+        if (!found || found.deleted || !principal.access.readable(found.channel)) return { ...link, message: null } as Link
+        const author = own(this.views.actors.byId, found.by.actor)
+        const snapshot = { author: author ? shownName({ name: author.name, via: viaOfRecord(author) }) : found.by.actor, text: found.text, createdAt: found.createdAt, files: found.attachments.map((file) => ({ name: file.name, url: null })) }
+        return { url: link.url, message: found.id, snapshot, unavailable: null } as Link
+      }),
+    )
+  }
+
+  async syncImport(caller: Caller, body: In<'syncImport'>): Promise<Out<'syncImport'>> {
+    this.needSync(caller, 'import', true)
+    const { principal } = caller
+    const mentioned = body.op === 'post' || body.op === 'edit' ? (body.mentioned ?? []) : []
+    const [platform, ...platforms] = this.speaksFor(caller, principal.id, [body.author, ...mentioned], body.from) as [string, ...string[]]
+    const author = externalIdentity(body.author, ownSync(caller) ? null : principal, platform)
+    const may = (channel: string) => principal.access.can('sync', channel)
+    const keys = ownSync(caller) ? [] : this.entriesOf(caller, principal.id).map(({ key }) => key)
+    // A mention of one of its keys' users is of the platform user as this import names them.
+    const asNamed = (text: string) => {
+      if (keys.length === 0) return text
+      const named = replaceMentions(text, (token) => (token.kind === 'actor' && keys.some((key) => token.actor.startsWith(`${key}:`)) ? `@[${principal.id}+${token.actor}]` : null))
+      return named.length > MESSAGE_TEXT_MAX ? text : named
+    }
+    const introduces = mentioned.map((user, at) => externalIdentity(user, ownSync(caller) ? null : principal, platforms[at]!).actor as Actor)
+    if (body.op === 'post') {
+      if ((body.channel === undefined) === (body.re === undefined)) throw badRequest('an import needs `channel`; a reply needs `re`')
+      let root: Message | null = null
+      let channel = body.channel
+      if (body.re !== undefined) {
+        root = await this.tables.message(messageAt(body.re))
+        if (!root || !principal.access.readable(root.channel)) throw notFound(`message not found: #${body.re}`, 'message_not_found')
+        channel = root.channel
+      }
+      if (!may(channel!)) throw forbidden(`this token can't sync in ${channel}, so it can't import there`)
+      const id = body.id === undefined ? undefined : await this.importId(caller, principal.id, body.id)
+      const attachments = await this.attachmentsFor(principal, body.attachments)
+      const commit = async () => {
+        const parsed = { ...(body.channel !== undefined ? { channel: body.channel } : { re: body.re }), text: asNamed(body.text), labels: body.labels ?? {}, noSync: body.noSync, id, after: body.after, attachments: attachments.map((file) => file.id) } as In<'post'>
+        const { message } = await this.post(author, parsed, undefined, {
+          origin: body.origin ?? null,
+          from: body.from,
+          ...(body.origin && !ownSync(caller) ? { importedBy: principal.id } : {}),
+          ...(body.links ? { links: await this.linksOf(principal, body.links) } : {}),
+          introduces,
+        })
+        return message.id
+      }
+      // A retry of one that landed: it stands.
+      if (id !== undefined && (await this.tables.byEventId(id))) return { message: await commit() }
+      if (body.origin) await this.claimable(body.origin, body.from, root?.thread ?? null)
+      this.checkSource(caller, principal.id, body.source)
+      return { message: await commit() }
+    }
+    if ((body.origin === undefined) === (body.message === undefined)) throw badRequest('a change names its message by `origin` or by `message`, one or the other')
+    const at = body.origin !== undefined ? await this.locate(body.origin) : indexOf(body.message!)
+    const found = at === null || at === 0 ? null : await this.tables.message(at)
+    if (!found || !may(found.channel)) return { message: null }
+    const ref_ = ref(found.id)
+    // A platform's own edit or delete is what the platform did; one named by board ID is the author's, only of their own.
+    const opts: ImportOpts = { trusted: true, from: body.from, asAuthor: body.origin === undefined, introduces }
+    if (body.op === 'edit') {
+      if (!found.deleted && !(opts.asAuthor && found.by.actor !== author.author.actor)) this.checkSource(caller, principal.id, body.source)
+      await this.edit(author, { id: ref_, text: asNamed(body.text), revision: body.revision }, opts)
+    } else if (body.op === 'delete') await this.delete(author, { id: ref_, revision: body.revision }, opts)
+    else if (body.op === 'react') await this.react(author, { id: ref_, emoji: body.emoji, remove: body.remove ?? false }, opts)
+    else if (body.op === 'labels') await this.label(author, { id: ref_, set: body.set, unset: body.unset, if: body.if }, opts)
+    else {
+      const links = (await this.linksOf(principal, body.links)) ?? []
+      await this.exclusive(async () => {
+        if (!found.deleted) await this.append([{ type: 'message.linked', payload: { id: found.id, thread: found.thread, links, by: author.author, from: body.from } }])
+      })
+    }
+    return { message: ref_ }
+  }
+
+  /** Refuses a delivery receipt a caller's sync can't have made (upstream `deliverable`). */
+  private async deliverable(caller: Caller, principal: string, message: Message, target: string, external?: { thread: string; message: string }) {
+    const key = target.slice(0, target.indexOf(':'))
+    if (!this.entriesOf(caller, principal).some((entry) => entry.key === key)) throw forbidden(`this token doesn't sync ${key} here: its board registers its sync entries`)
+    if (!(await this.tables.syncOf(message.thread))?.targets.includes(target)) throw badRequest(`#${message.id}'s thread doesn't sync with ${target}`, 'not_a_target')
+    if (!external) return
+    if (!external.thread.startsWith(`${key}:`)) throw badRequest(`a delivery to ${target} lands under ${key}, not in ${external.thread}`)
+    const owner = await this.tables.threadOf(external.thread)
+    if (owner !== null && owner !== message.thread) throw new HttpError(409, 'already_synced', `${external.thread} is already synced with another thread`)
+    const copy = await this.tables.messageOf(external.thread, external.message)
+    if (copy !== null && copy !== message.id) throw new HttpError(409, 'already_synced', `${external.message} in ${external.thread} is another board message's`)
+  }
+
+  /** Appends a receipt's events once for `key`: a retry lands nothing more (upstream `receipt`). */
+  private async receipt(key: string, events: NewEvent[]) {
+    const ids = await Promise.all(events.map((_, at) => derivedId('board-receipt', key, String(at))))
+    await this.exclusive(async () => {
+      const fresh = events.flatMap((event, at) => (this.log.byId(ids[at]!) ? [] : [{ ...event, id: ids[at]! }]))
+      if (fresh.length > 0) await this.append(fresh)
+    })
+  }
+
+  async syncReceipt(caller: Caller, body: In<'syncReceipt'>): Promise<Out<'syncReceipt'>> {
+    if (caller.principal.scope !== undefined) throw forbidden("this token is narrowed with x-board-can, so it can't record what it synced: that's its project's sync's job")
+    const message = await this.authorizeMessage(caller.principal.access, 'sync', messageAt(body.message))
+    if (body.kind === 'thread') {
+      // writeAttach: a thread's new target, once, and never a platform thread another board thread has.
+      const target = body.target
+      const kind = body.targetKind
+      const id = await derivedId('board', message.thread, 'sync', target)
+      const attached = await this.exclusive(async () => {
+        if ((await this.tables.syncOf(message.thread))?.targets.includes(target)) return false
+        if (kind === 'thread') {
+          const owner = await this.tables.threadOf(target)
+          if (owner !== null && owner !== message.thread) {
+            const synced = await this.tables.syncOf(owner)
+            throw new HttpError(409, 'already_synced', `${target} is already synced with ${synced && caller.principal.access.readable(synced.channel) ? `#${synced.root}` : 'another thread'}`)
+          }
+        }
+        await this.append([{ type: 'thread.synced', id, payload: { thread: message.thread, target, kind, cause: body.cause, by: caller.author } }])
+        return true
+      })
+      return { ok: true, attached } as Out<'syncReceipt'>
+    }
+    await this.deliverable(caller, caller.principal.id, message, body.target, body.kind === 'message' ? body.external : undefined)
+    const about = { id: message.id, thread: message.thread, target: body.target }
+    const by = ownSync(caller) ? {} : { syncedBy: caller.principal.id }
+    if (body.kind === 'message')
+      await this.receipt(`receipt:${message.id}:${body.target}`, [
+        { type: 'message.synced', payload: { ...about, external: body.external, ...by } },
+        ...(body.files !== undefined ? [{ type: 'message.files_synced', payload: { ...about, files: body.files, ...by } }] : []),
+      ])
+    else if (body.kind === 'files') await this.receipt(`files:${message.id}:${body.target}`, [{ type: 'message.files_synced', payload: { ...about, files: body.files, ...by } }])
+    else await this.receipt(`failed:${message.id}:${body.target}`, [{ type: 'message.sync_failed', payload: { ...about, error: body.error } }])
+    return { ok: true } as Out<'syncReceipt'>
+  }
+
+  async syncThread(caller: Caller, { thread }: In<'syncThread'>): Promise<Out<'syncThread'>> {
+    this.needSync(caller, 'look up a sync')
+    const synced = await this.tables.syncOf(thread)
+    if (!synced || !caller.principal.access.can('sync', synced.channel)) throw notFound(`no thread ${thread} on this board`, 'thread_not_found')
+    return { thread, root: ref(synced.root), channel: synced.channel, targets: [...synced.targets], external: { ...synced.external } }
+  }
+
+  async syncFind(caller: Caller, query: In<'syncFind'>): Promise<Out<'syncFind'>> {
+    this.needSync(caller, 'look up a sync')
+    const { access } = caller.principal
+    let thread: string | null = null
+    let message: string | null = null
+    if (query.post !== undefined) {
+      const landed = await this.tables.byEventId(await this.importId(caller, caller.principal.id, query.post))
+      if (landed && access.can('sync', landed.channel)) message = ref(landed.id)
+    }
+    if (query.thread !== undefined) {
+      const key = query.message === undefined ? await this.tables.threadOf(query.thread) : await this.tables.threadOf(query.thread)
+      const synced = key === null ? null : await this.tables.syncOf(key)
+      if (synced && access.can('sync', synced.channel)) thread = key
+      if (query.message !== undefined) {
+        const id = await this.tables.messageOf(query.thread, query.message)
+        const found = id === null ? null : await this.tables.message(id)
+        if (found && access.can('sync', found.channel)) message = ref(found.id)
+      }
+    }
+    return { thread, message }
+  }
+
+  async syncCopies(caller: Caller, query: In<'syncCopies'>): Promise<Out<'syncCopies'>> {
+    this.needSync(caller, 'look up a sync')
+    const { access } = caller.principal
+    const ids = [...new Set(query.message.map(indexOf).filter((id) => id !== null && id > 0))] as number[]
+    const everywhere = access.everywhere('sync')
+    const copies = await this.tables.copiesOf(ids)
+    const messages = everywhere ? null : await this.tables.messagesAt(ids, await this.tables.position())
+    // Only its own sync's copies: a sync changes what it posted, never another's under a key they share.
+    const mine = (copy: ExternalCopy) => (ownSync(caller) ? copy.by === undefined : copy.by === caller.principal.id)
+    const out: Record<string, Record<string, ExternalCopy>> = {}
+    for (const id of ids) {
+      const found = messages?.get(id)
+      if (everywhere || (found && access.can('sync', found.channel)))
+        out[ref(id)] = Object.fromEntries(Object.entries(copies.get(id) ?? {}).filter(([, copy]) => mine(copy)).map(([target, { by: _by, ...copy }]) => [target, copy]))
+    }
+    return { copies: out } as Out<'syncCopies'>
+  }
+
+  async synced(caller: Caller, { id }: In<'synced'>): Promise<Out<'synced'>> {
+    const message = await this.tables.message(messageAt(id))
+    if (!message || !caller.principal.access.readable(message.channel)) throw notFound(`message not found: #${id}`, 'message_not_found')
+    const [thread, copies] = await Promise.all([this.tables.syncOf(message.thread), this.tables.copiesOf([message.id])])
+    const mine = copies.get(message.id) ?? {}
+    const binding = this.binding()
+    const targets = await Promise.all(
+      (thread?.targets ?? []).map(async (target) => {
+        const key = target.slice(0, target.indexOf(':'))
+        const external = (thread && Object.hasOwn(thread.external, target) ? thread.external[target] : undefined) ?? null
+        const copy = (Object.hasOwn(mine, target) ? mine[target] : external !== null && Object.hasOwn(mine, external) ? mine[external] : undefined) ?? null
+        return {
+          target,
+          key,
+          thread: copy?.thread ?? external,
+          message: copy?.message ?? null,
+          url: copy && binding ? await binding.linkOf(key, copy.thread, copy.message) : null,
+          undelivered: Object.hasOwn(message.undelivered, target) ? message.undelivered[target]! : null,
+        }
+      }),
+    )
+    return { targets } as Out<'synced'>
+  }
+
+  async linked(caller: Caller, { url }: In<'linked'>): Promise<Out<'linked'>> {
+    // The platform is never asked: a link nothing here knows, and one the caller can't read, are the same 404.
+    const missing = () => notFound('no message on this board for that link', 'message_not_found')
+    const read = this.binding()?.locate(url) ?? []
+    if (read.length === 0) throw missing()
+    const registered = Object.values(this.registry.byOwner).flatMap((registration) => registration.sync ?? [])
+    const keysOf = (platform: string) => new Set([...this.ownEntries(), ...registered].filter((entry) => entry.platform === platform).map((entry) => entry.key))
+    let found: number | null = null
+    for (const { platform, thread, message } of read) {
+      for (const key of keysOf(platform)) {
+        if (message !== null) found = await this.tables.messageOf(`${key}:${thread}`, message)
+        else {
+          const at = await this.tables.threadOf(`${key}:${thread}`)
+          found = at === null ? null : ((await this.tables.syncOf(at))?.root ?? null)
+        }
+        if (found) break
+      }
+      if (found) break
+    }
+    if (found === null) throw missing()
+    try {
+      return await this.message(caller, { id: ref(found) } as In<'message'>)
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) throw missing()
+      throw error
+    }
+  }
+
+  async inboxPush(caller: Caller, { key, events }: In<'inboxPush'>): Promise<Out<'inboxPush'>> {
+    this.needSync(caller, 'push to an inbox', true)
+    for (const { id } of events) if (id.length > INBOX_EVENT_ID_MAX) throw badRequest(`an inbox event ID is ${INBOX_EVENT_ID_MAX} characters at most, got ${id.length}`)
+    for (const { event } of events)
+      for (const location of [event.channel, event.thread, 'subthread' in event ? event.subthread : null])
+        if (location !== null && !location.startsWith(`${key}:`)) throw badRequest(`an inbox's platform locations belong to its sync key: ${location} isn't ${key}'s`)
+    if (ownSync(caller)) throw notKeptHere("this board's own sync inbox")
+    // A sync elsewhere: its own queue, for it to pull back. A platform's retry lands once.
+    const matched = await Promise.all(events.map(async ({ id, event, raw }) => ({ type: 'watch.matched' as const, id: await derivedId('board-inbox', key, id), payload: { thread: event.thread, inbox: key, event: { sync: key, event, raw } } })))
+    await this.exclusive(async () => {
+      const state = this.queueOf(caller.principal.id)
+      for (const one of matched) foldQueue(state, one)
+      this.saveQueue(caller.principal.id, state)
+    })
+    return { ok: true } as Out<'inboxPush'>
+  }
+
+  async inboxNext(caller: Caller, { key, limit }: In<'inboxNext'>): Promise<Out<'inboxNext'>> {
+    if (ownSync(caller)) return { items: [] } as Out<'inboxNext'>
+    this.needSync(caller, 'pull from an inbox', true)
+    return this.exclusive(async () => {
+      const state = this.queueOf(caller.principal.id)
+      const { events, leased } = pullInbox(state, key, { access: caller.principal.access, limit: limit ?? 10, now: Date.now() })
+      for (const event of events) foldQueue(state, event)
+      if (events.length > 0) this.saveQueue(caller.principal.id, state)
+      return {
+        items: leased.map(({ id, thread, lease, attempt, event }) => {
+          const item = event as { event: unknown; raw: unknown }
+          return { id, key, thread, lease, attempt, event: item.event, raw: item.raw }
+        }),
+      } as Out<'inboxNext'>
+    })
+  }
+
+  async inboxAck(caller: Caller, { id, lease, error }: In<'inboxAck'>): Promise<Out<'inboxAck'>> {
+    this.needSync(caller, 'ack an inbox event', true)
+    return this.exclusive(async () => {
+      const state = this.queueOf(caller.principal.id)
+      let acked: ReturnType<typeof ackMatch>
+      try {
+        acked = ackMatch(state, id, { lease, error }, Date.now())
+      } catch (thrown) {
+        if (thrown instanceof HttpError && thrown.code === 'no_match') throw notFound(`no inbox event ${id} is waiting for this token`, 'no_item')
+        throw thrown
+      }
+      for (const event of acked) foldQueue(state, event)
+      this.saveQueue(caller.principal.id, state)
+      return { ok: true } as Out<'inboxAck'>
+    })
+  }
+
+  /** Raw platform payloads a sync pushed and hasn't finished with (Δ: upstream also lists those finished). */
+  async inbox(caller: Caller, { key, channel, limit }: In<'inbox'>): Promise<Out<'inbox'>> {
+    this.needSync(caller, 'read an inbox', true)
+    const pushers = new Set([caller.principal.id, ...(caller.principal.access.everywhere('sync') ? Object.keys(this.registry.byOwner) : [])])
+    const entries: { id: string; channel: string; createdAt: string; sync: string; event: { channel: string }; raw: unknown }[] = []
+    for (const pusher of pushers)
+      for (const pending of Object.values(this.queueOf(pusher).pending)) {
+        const pushed = pending.event as { sync?: string; event?: { channel: string }; raw?: unknown }
+        if (pending.queue !== `@inbox:${key}` || !pushed.event) continue
+        if (channel !== undefined && pushed.event.channel !== channel) continue
+        entries.push({ id: pending.id, channel: pushed.event.channel, createdAt: new Date().toISOString(), sync: key, event: pushed.event, raw: pushed.raw })
+      }
+    return { events: entries.slice(0, limit ?? 50) } as unknown as Out<'inbox'>
+  }
+
+  async typing(caller: Caller, { id, status }: In<'typing'>): Promise<Out<'typing'>> {
+    const found = await this.tables.message(messageAt(id))
+    if (!found || found.deleted || !caller.principal.access.readable(found.channel)) throw notFound(`message not found: #${id}`, 'message_not_found')
+    if (!caller.principal.access.can('post', found.channel)) throw forbidden(`this token can't post in ${found.channel}`)
+    const binding = this.binding()
+    if (!binding) return { targets: [] } as Out<'typing'>
+    const { message, replies } = await this.message(caller, { id } as In<'message'>)
+    return { targets: await binding.typing([message, ...replies], status) } as Out<'typing'>
+  }
+
+  async readSource(caller: Caller, { key, target, limit, after }: In<'readSource'>): Promise<Out<'readSource'>> {
+    const binding = this.binding()
+    if (!binding || !binding.sync.some((entry) => entry.key === key)) throw notFound(`this board doesn't run sync entry ${key}: read it where its sync runs`, 'not_synced_here')
+    if (!caller.principal.access.everywhere('manage')) throw forbidden("this token can't read a source: it needs manage in every channel")
+    if (caller.principal.scope !== undefined) throw forbidden("this token is narrowed with x-board-can, so it can't read a source")
+    return binding.readSource(key, target, limit ?? 50, after ?? null)
+  }
+
+  async joinSource(caller: Caller, { key, target }: In<'joinSource'>): Promise<Out<'joinSource'>> {
+    const binding = this.binding()
+    if (!binding || !binding.sync.some((entry) => entry.key === key)) throw notFound(`this board doesn't run sync entry ${key}: join it where its sync runs`, 'not_synced_here')
+    if (!caller.principal.access.everywhere('manage')) throw forbidden("this token can't join a source: it needs manage in every channel")
+    if (caller.principal.scope !== undefined) throw forbidden("this token is narrowed with x-board-can, so it can't join a source")
+    return binding.joinSource(key, target)
   }
 
   // --- Tasks (upstream a2.ts's task methods, on src/engine/tasks.ts) ---
