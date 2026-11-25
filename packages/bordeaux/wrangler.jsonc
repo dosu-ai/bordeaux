@@ -1,0 +1,19 @@
+// Local development and tests. A deployment's own config comes from the template (M2).
+{
+  "name": "bordeaux-dev",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "BOARD", "class_name": "BoardDO" },
+      { "name": "DIRECTORY", "class_name": "DirectoryDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO"] }],
+  "vars": {
+    "BORDEAUX_URL": "http://127.0.0.1:8790",
+    "BORDEAUX_GITHUB_ORG": "",
+    "BORDEAUX_DEV": "1"
+  }
+}

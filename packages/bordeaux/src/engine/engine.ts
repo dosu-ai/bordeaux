@@ -1,0 +1,583 @@
+// The board, kept in one Durable Object. A port of upstream's engine (src/server/a2.ts for the
+// protocol methods, src/server/writes.ts for the write rules) at the pinned commit, on the DO's log
+// and upstream's own tables (src/upstream/store/sql.ts), with its views and feed vendored as they are.
+//
+// What's different from upstream: the DO is the log's only writer, so a write looks at the board and
+// appends in one critical section (`exclusive`) instead of a conditional append that retries when
+// the head moves, and the tables apply each write before it answers instead of through a consumer.
+import { HttpError, type Identity, type MessageView, type Protocol } from '@vercel/board'
+import type { Access, Permission } from '@vercel/board/access'
+import { derivedId, isKeyIdOf } from '../upstream/client/ids.ts'
+import { ALONG_MAX, BOARD_SESSION, type BoardEvent } from '../upstream/contract/events.ts'
+import { foldMessages, type ActorsState, type Channel, type Message, type MessagesState } from '../upstream/contract/folds.ts'
+import { extractMentions, isEmail, replaceMentions } from '../upstream/contract/mentions.ts'
+import { own } from '../upstream/contract/own.ts'
+import { platformProfile } from '../upstream/contract/profiles.ts'
+import { ATTACHMENTS_PER_MESSAGE_MAX, EDITED_HOLD, MESSAGE_TEXT_MAX, type Author } from '../upstream/contract/schemas.ts'
+import { actorSeen, ownedActor } from '../upstream/server/actors.ts'
+import { wroteAs } from '../upstream/server/auth.ts'
+import { badRequest, duplicateId, forbidden, notFound, textTooLong } from '../upstream/server/errors.ts'
+import { indexOf, lastFeed, linkedIds, pollFeed, readableFilter, ref, toMessageFilter, verifiedRecord, view, viaOfRecord, type Reader } from '../upstream/server/feed.ts'
+import type { BoardSession } from '../upstream/server/a2.ts'
+import type { BoardReads } from '../upstream/server/reads.ts'
+import { sqlTables } from '../upstream/store/sql.ts'
+import type { MessageFilter, MessageTables, ThreadPosition } from '../upstream/store/types.ts'
+import { createTables, doDb } from './db.ts'
+import { createLogTables, DuplicateEventError, Log, type NewEvent } from './log.ts'
+import { createViewTables, Views } from './views.ts'
+
+type Caller = Identity & { request: boolean; schedule?: { id: number; n: number } }
+type In<M extends keyof Protocol> = Protocol[M]['input']
+type Out<M extends keyof Protocol> = Protocol[M]['output']
+
+const CHANNELS_LIMIT_DEFAULT = 100
+const THREADS_LIMIT_DEFAULT = 50
+
+/** A cursor or message ref in a request, as this board's log index (upstream a2.ts). */
+function cursorAt(value: string): number {
+  const index = indexOf(value)
+  if (index === null) throw badRequest(`${value} isn't a cursor or a message ID on this board`, 'invalid_cursor')
+  return index
+}
+
+/** A `/threads` page's `older`: where its oldest thread stands, its latest message's index then its root's. */
+const olderRef = (position: ThreadPosition) => `${position.at}.${position.id}`
+
+function olderAt(value: string): ThreadPosition {
+  const match = /^(\d{1,15})\.(\d{1,15})$/.exec(value)
+  if (!match) throw badRequest(`${value} isn't a page of threads on this board`, 'invalid_cursor')
+  return { at: Number(match[1]), id: Number(match[2]) }
+}
+
+/** The message a ref names, as its log index, or a 404. */
+function messageAt(value: string): number {
+  const index = indexOf(value)
+  if (index === null || index === 0) throw notFound(`message not found: #${value}`, 'message_not_found')
+  return index
+}
+
+/** A reply's `after`, as the index of a message; one that isn't one is 0, which names no message. */
+const afterAt = (value: string | undefined): number | undefined => (value === undefined ? undefined : (indexOf(value) ?? 0))
+
+/** `idempotentId`'s shape: the IDs the board derives for its own writes, which no request posts with. */
+const DERIVED_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+const PHRASE: Record<Permission, (channel: string) => string> = {
+  read: (channel) => `read ${channel}`,
+  post: (channel) => `post in ${channel}`,
+  react: (channel) => `react in ${channel}`,
+  label: (channel) => `label in ${channel}`,
+  sync: (channel) => `sync in ${channel}`,
+  manage: (channel) => `manage ${channel}`,
+}
+
+/** `permission` in `channel`, or a 403; what the caller can't read answers `hidden` instead (upstream access.ts `authorize`). */
+function authorize(access: Access, permission: Permission, channel: string, hidden?: () => Error) {
+  if (hidden && !access.readable(channel)) throw hidden()
+  if (!access.can(permission, channel)) throw forbidden(`this token can't ${PHRASE[permission](channel)}`)
+}
+
+const messageNotFound = (id: number) => () => notFound(`message not found: #${id}`, 'message_not_found')
+
+/** Whether the board checked who a write is by, as it shows them (upstream writes.ts `verifiedAs`). */
+function verifiedAs({ principal, author, actor }: Identity): boolean {
+  if (principal.kind === 'external') return (actor as { verified?: true }).verified === true
+  if (principal.id.startsWith('board:')) return false
+  const named = ownedActor(principal, author, actor)
+  return named.handle === actor.handle && named.name === actor.name && named.avatar === actor.avatar && named.via?.name === actor.via?.name && named.via?.environment === actor.via?.environment
+}
+
+/** The `actor.seen` a write carries, or null when the board knows its author already (upstream writes.ts). */
+function seenFor(identity: Identity, actors: ActorsState) {
+  const { verified: _verified, ...actor } = identity.actor as Identity['actor'] & { verified?: true }
+  return actorSeen(verifiedAs(identity) ? { ...actor, verified: true } : actor, actors, identity.principal.facts?.issuer === 'host')
+}
+
+/** The actors with a write's author as the board now records them (upstream writes.ts `knownWith`). */
+const knownWith = (actors: ActorsState, identity: Identity, seen: ReturnType<typeof seenFor>): ActorsState =>
+  seen
+    ? { ...actors, byId: { ...actors.byId, [identity.actor.id]: { ...identity.actor, ...(seen.payload.host ? { host: true as const } : {}), ...(seen.payload.verified ? { verified: true as const } : {}) } } }
+    : actors
+
+/** Whether `identity` wrote `message`, to change it as its author (upstream writes.ts `authored`). */
+const authored = (message: Message, identity: Identity) =>
+  message.by.principal === identity.principal.id && (platformProfile(identity.author.profile) === null || message.by.actor === identity.author.actor)
+
+const sameAuthor = (a: Author, b: Author) => a.actor === b.actor && a.principal === b.principal && a.profile === b.profile
+
+/** A message's text for its writer where it can't read: each exact mention but of itself shows as `@…`. */
+const blindText = (text: string, ownActor: string) => replaceMentions(text, (token) => (token.kind === 'actor' && token.actor !== ownActor ? '@…' : null))
+
+/** A post's view for its writer: one that can't read the channel gets back the text it sent. */
+const shownTo = (shown: MessageView, access: Access, sent: string): MessageView => (!access.readable(shown.channel) ? { ...shown, text: sent } : shown)
+
+/** Why a task is held once its root was edited by someone who doesn't own it. */
+const EDITED = 'its text was edited by someone who does not own the task'
+
+/** The hold an edit of a task's root brings, by anyone but its owner (upstream writes.ts `heldByEdit`). */
+function heldByEdit(root: Message | undefined, editor: Identity): NewEvent[] {
+  const task = root?.task
+  const owner = task !== undefined && wroteAs(editor, { principal: task.owner, actor: task.by }) && editor.principal.kind !== 'external'
+  if (!root || root.deleted || !task || owner) return []
+  if (task.state !== 'waiting' && task.state !== 'ready' && task.state !== 'claimed') return []
+  return [{ type: 'task.blocked', payload: { id: root.id, thread: root.thread, kind: EDITED_HOLD, reason: EDITED, by: editor.author } }]
+}
+
+/** The cancel a delete of a task's root brings, unless it completed or was canceled (upstream writes.ts). */
+function canceledByDelete(root: Message | undefined, deleter: Identity): NewEvent[] {
+  const task = root?.task
+  if (!root || !task || task.state === 'completed' || task.state === 'canceled') return []
+  return [{ type: 'task.canceled', payload: { id: root.id, thread: root.thread, reason: 'deleted', by: deleter.author } }]
+}
+
+/** Refuses an edit or a delete at `revision` when the message changed since (upstream writes.ts `atRevision`). */
+function atRevision(message: Message | undefined, id: number, revision: number) {
+  const now = message ? (message.revision ?? message.id) : null
+  if (now !== revision)
+    throw new HttpError(409, 'revision_conflict', message?.deleted ? `#${id} was deleted since revision ${revision}` : `#${id} was edited since revision ${revision}: it's at ${now}`)
+}
+
+export const notKeptHere = (what: string) => new HttpError(501, 'not_implemented', `this bordeaux board doesn't keep ${what} yet`)
+
+export class BoardEngine {
+  readonly log: Log
+  private views: Views
+  readonly tables: MessageTables
+  private lock: Promise<unknown> = Promise.resolve()
+  /** Resolves once the tables have every event the log has. */
+  readonly ready: Promise<void>
+
+  constructor(private readonly storage: DurableObjectStorage) {
+    createLogTables(storage)
+    createViewTables(storage)
+    createTables(storage)
+    this.log = new Log(storage)
+    this.views = new Views(storage)
+    this.tables = sqlTables(doDb(storage))
+    this.ready = this.catchUp()
+  }
+
+  /** The tables apply what the log has past their position: after a restart that cut a write short. */
+  private async catchUp() {
+    for (let position = await this.tables.position(); ; ) {
+      const events = this.log.history({ gte: position + 1, lte: position + 500 })
+      if (events.length === 0) return
+      for (const event of events) await this.tables.apply(event)
+      position = events.at(-1)!.index
+    }
+  }
+
+  /** Runs `write` after every write before it: a look at the board and the append it decides are one step. */
+  private exclusive<T>(write: () => Promise<T>): Promise<T> {
+    const run = this.lock.then(write, write)
+    this.lock = run.catch(() => {})
+    return run
+  }
+
+  /** Appends to the board's session, folding who's who and the channels in the same transaction, then applies the tables. */
+  private async append(events: readonly NewEvent[]): Promise<BoardEvent[]> {
+    let rows: BoardEvent[]
+    try {
+      rows = this.log.append(BOARD_SESSION, events, (landed) => this.views.fold(landed))
+    } catch (error) {
+      // The transaction rolled back: so do the folds it made in memory.
+      this.views = new Views(this.storage)
+      throw error
+    }
+    for (const row of rows) if (!(await this.tables.applyNext(row))) await this.catchUp()
+    return rows
+  }
+
+  /** The reader of views whose links point to `linked`, for a reader that can't read every channel. */
+  private async readerOf(access: Access, linked: readonly number[]): Promise<Reader> {
+    if (access.readsAll) return { access, channelOf: () => undefined }
+    const ids = [...new Set(linked)].filter((id) => id > 0)
+    const found = ids.length === 0 ? new Map<number, Message>() : await this.tables.messagesAt(ids, await this.tables.position())
+    return { access, channelOf: (id) => found.get(id)?.channel }
+  }
+
+  private readonly reads: BoardReads = {
+    messagesAt: (ids, index) => this.tables.messagesAt(ids, index),
+    reader: (access, messages) => this.readerOf(access, [...messages].flatMap((message) => linkedIds(message.links))),
+  }
+
+  /** The feed's view of the log (upstream's A2 session, as src/upstream/server/a2.ts shapes it). */
+  private readonly session: BoardSession = {
+    state: async (reducer) => ({ state: reducer.name === 'board.actors' ? this.views.actors : this.views.channels, index: this.log.head() }),
+    history: async (range) => this.log.history(range),
+    stream: (options) => this.log.stream(options),
+  }
+
+  /** `filter`, narrowed to the channels `access` reads among those the board has, and the index that reflects. */
+  private readable(filter: MessageFilter, access: Access): { filter: MessageFilter; through: number } {
+    if (access.readsAll) return { filter, through: Number.POSITIVE_INFINITY }
+    return { filter: readableFilter(filter, Object.keys(this.views.channels), access), through: this.log.head() }
+  }
+
+  /** Who wrote, was mentioned by actor ID, or reacted in the channels `access` reads (upstream a2.ts `actorsIn`). */
+  private async actorsIn(access: Access): Promise<Set<string>> {
+    const ids = new Set<string>()
+    const { filter } = this.readable({}, access)
+    if (filter.channels?.length === 0) return ids
+    for (let before: number | undefined; ; ) {
+      const { messages } = await this.tables.messages(filter, { limit: 500, ...(before !== undefined ? { before } : {}) })
+      for (const message of messages) {
+        ids.add(message.by.actor)
+        for (const token of extractMentions(message.text)) if (token.kind === 'actor' && !isEmail(token.actor)) ids.add(token.actor)
+        for (const reactors of Object.values(message.reactions)) for (const id of reactors) ids.add(id)
+      }
+      if (messages.length < 500) return ids
+      before = messages[0]!.id
+    }
+  }
+
+  /** A message the caller may act on with `permission`; one it can't read answers 404 (upstream writes.ts). */
+  private async authorizeMessage(access: Access, permission: Permission, id: number): Promise<Message> {
+    const message = await this.tables.message(id)
+    if (!message) throw messageNotFound(id)()
+    authorize(access, permission, message.channel, messageNotFound(id))
+    return message
+  }
+
+  /** Your own message, to edit or delete (upstream writes.ts `authorizeOwn`). */
+  private async authorizeOwn(identity: Identity, id: number, verb: 'edit' | 'delete'): Promise<Message> {
+    const { principal } = identity
+    const message = await this.tables.message(id)
+    if (!message) throw messageNotFound(id)()
+    const readable = principal.access.readable(message.channel)
+    if (!wroteAs(identity, message.by) || (!readable && !message.blind)) {
+      if (!readable) throw messageNotFound(id)()
+      throw forbidden(`only the author can ${verb} a message`)
+    }
+    authorize(principal.access, 'post', message.channel)
+    return message
+  }
+
+  /** A post that landed, as its author may have it back; null for anyone else (upstream writes.ts `landedFor`). */
+  private async landedFor(identity: Identity, landed: Message): Promise<MessageView | null> {
+    if (!sameAuthor(landed.by, identity.author)) return null
+    const { access } = identity.principal
+    if (access.readable(landed.channel)) return view(landed, this.views.actors, await this.reads.reader(access, [landed]))
+    if (!landed.blind) return null
+    const events = this.log.history({ gte: landed.id, lte: landed.id + ALONG_MAX })
+    const along = (events[0] as BoardEvent<'message.posted'>).payload.along ?? 0
+    const folded: MessagesState = { byId: {}, replies: {} }
+    for (const event of events.slice(0, 1 + along)) foldMessages(folded, event)
+    const posted = folded.byId[landed.id]!
+    return { ...view(posted, this.views.actors, await this.reads.reader(access, [posted])), text: blindText(posted.text, identity.actor.id) }
+  }
+
+  /** The post a caller's own ID already landed, as its retry gets it back (upstream writes.ts `replayOf`). */
+  private async replayOf(identity: Identity, id: string | undefined, place: { channel: string; re: number | null; replyTo: number | null }, sent: string): Promise<MessageView | null> {
+    if (id === undefined) return null
+    const landed = await this.tables.byEventId(id)
+    if (!landed) return null
+    if (landed.channel !== place.channel || landed.re !== place.re || landed.replyTo !== place.replyTo) throw duplicateId()
+    const shown = await this.landedFor(identity, landed)
+    if (!shown) throw duplicateId()
+    return shownTo(shown, identity.principal.access, sent)
+  }
+
+  // --- The protocol methods: one per route, as upstream's a2.ts has them. ---
+
+  async channels(caller: Caller, { prefix, after, limit = CHANNELS_LIMIT_DEFAULT }: In<'channels'>): Promise<Out<'channels'>> {
+    const { access } = caller.principal
+    const listed = Object.values(this.views.channels)
+      .filter((channel) => access.readable(channel.path) && (prefix === undefined || channel.path.startsWith(prefix)) && (after === undefined || channel.path > after))
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    const channels = listed.slice(0, limit)
+    return { channels, cursor: ref(this.log.head()), next: listed.length > limit ? channels.at(-1)!.path : null }
+  }
+
+  /** A channel made before anything posts to it, or the one that's there (upstream writes.ts `writeChannel`). */
+  createChannel(caller: Caller, { path }: In<'createChannel'>): Promise<Out<'createChannel'>> {
+    const { access } = caller.principal
+    authorize(access, 'read', path)
+    authorize(access, 'post', path)
+    return this.exclusive(async () => {
+      const found = own(this.views.channels, path)
+      if (found) return { channel: found, created: false }
+      const seen = seenFor(caller, this.views.actors)
+      await this.append([...(seen ? [seen] : []), { type: 'channel.created', payload: { channel: path, by: caller.author } }])
+      return { channel: { path, lastIndex: 0, messages: 0, threads: 0 } satisfies Channel, created: true }
+    })
+  }
+
+  async actors(caller: Caller, { id: only }: In<'actors'>): Promise<Out<'actors'>> {
+    const { principal, actor } = caller
+    const state = this.views.actors
+    let seen: ((id: string) => boolean) | null = null
+    if (!principal.access.readsAll) {
+      const ids = await this.actorsIn(principal.access)
+      ids.add(actor.id)
+      seen = (id) => ids.has(id)
+    }
+    const wanted = only ? new Set(only) : null
+    const actors = (wanted ? [...wanted].flatMap((id) => (Object.hasOwn(state.byId, id) ? [state.byId[id]!] : [])) : Object.values(state.byId))
+      .filter((a) => seen === null || seen(a.id))
+      .sort((a, b) => a.handle.localeCompare(b.handle))
+      .map((found) => {
+        const { host: _host, via: _via, ...a } = found
+        const via = viaOfRecord(found)
+        return { ...a, ...(via ? { via } : {}), ...(verifiedRecord(found) ? { verified: true as const } : {}) }
+      })
+    return { actors, cursor: ref(this.log.head()) }
+  }
+
+  async channelMessages(caller: Caller, query: In<'channelMessages'>): Promise<Out<'channelMessages'>> {
+    const { access } = caller.principal
+    const { filter, through } = this.readable({ channel: { path: query.channel, subtree: false } }, access)
+    const limit = query.limit ?? 50
+    const { messages, position } =
+      filter.channels?.length === 0
+        ? { messages: [] as Message[], position: await this.tables.position() }
+        : await this.tables.messages(filter, { ...(query.after !== undefined ? { after: cursorAt(query.after) } : {}), limit })
+    const reader = await this.reads.reader(access, messages)
+    // A page after a cursor that its limit cut short stops at its last message; any other has all there is.
+    const stopped = query.after !== undefined && messages.length === limit ? messages.at(-1)!.id : position
+    return { messages: messages.map((m) => view(m, this.views.actors, reader)), cursor: ref(Math.min(stopped, through)) }
+  }
+
+  async threads(caller: Caller, query: In<'threads'>): Promise<Out<'threads'>> {
+    const { principal, actor } = caller
+    const actors = this.views.actors
+    const { filter, through } = this.readable(toMessageFilter(query, { me: { id: actor.id, handle: actor.handle }, actors, access: principal.access }), principal.access)
+    const page = {
+      ...(query.after !== undefined ? { after: cursorAt(query.after) } : {}),
+      ...(query.before !== undefined ? { before: olderAt(query.before) } : {}),
+      limit: query.limit ?? THREADS_LIMIT_DEFAULT,
+    }
+    const { threads, position, older } =
+      filter.channels?.length === 0
+        ? { threads: [], position: await this.tables.position(), ...(page.after === undefined ? { older: null } : {}) }
+        : await this.tables.threads(filter, page)
+    const reader = await this.reads.reader(principal.access, threads.flatMap((t) => (t.last ? [t.root, t.last] : [t.root])))
+    return {
+      threads: threads.map((t) => ({ message: view(t.root, actors, reader), replies: t.replies, last: t.last && view(t.last, actors, reader) })),
+      cursor: ref(Math.min(position, through)),
+      ...(older !== undefined ? { older: older && olderRef(older) } : {}),
+    }
+  }
+
+  async message(caller: Caller, { id, after, limit }: In<'message'>): Promise<Out<'message'>> {
+    const { access } = caller.principal
+    const at = messageAt(id)
+    const message = await this.tables.message(at)
+    if (!message || !access.readable(message.channel)) throw notFound(`message not found: #${at}`, 'message_not_found')
+    const cursor = await this.tables.position()
+    const messages = await this.tables.thread(message.re ?? message.id)
+    const [root, ...all] = messages
+    const from = after === undefined ? 0 : messages.findIndex((each) => each.id === messageAt(after))
+    if (from === -1) throw new HttpError(400, 'invalid_request', `after: ${after} isn't a message of this thread`)
+    const rest = all.slice(from)
+    const replies = limit === undefined ? rest : after === undefined ? rest.slice(-limit) : rest.slice(0, limit)
+    const reader = await this.reads.reader(access, messages)
+    return {
+      message: view(root!, this.views.actors, reader),
+      replies: replies.map((reply) => view(reply, this.views.actors, reader)),
+      cursor: ref(cursor),
+      // Schedules are kept from M2 on.
+      schedules: [],
+    }
+  }
+
+  async posted(caller: Caller, { id }: In<'posted'>): Promise<Out<'posted'>> {
+    const landed = await this.tables.byEventId(id)
+    const shown = landed ? await this.landedFor(caller, landed) : null
+    if (!shown) throw notFound(`no post of yours has id ${id}`, 'post_not_found')
+    return { message: shown }
+  }
+
+  async post(caller: Caller, parsed: In<'post'>): Promise<Out<'post'>> {
+    const { principal } = caller
+    const { access } = principal
+    if (parsed.text.length > MESSAGE_TEXT_MAX) throw textTooLong()
+    if ((parsed.attachments?.length ?? 0) > ATTACHMENTS_PER_MESSAGE_MAX) throw badRequest(`attachments: a message carries at most ${ATTACHMENTS_PER_MESSAGE_MAX}`)
+    if (parsed.attachments?.length) throw notKeptHere('files')
+    if (parsed.sync?.length) throw notKeptHere('sync')
+    const re = parsed.re === undefined ? undefined : messageAt(parsed.re)
+    const labeled = Object.keys(parsed.labels ?? {}).length > 0
+
+    // authorizePost: a root lands where it says; a reply in its root's channel, which it must read.
+    let target: Message | undefined
+    let channel: string
+    if (re !== undefined) {
+      target = await this.authorizeMessage(access, 'read', re)
+      channel = target.channel
+    } else {
+      if (!parsed.channel) throw badRequest('a post needs a channel')
+      channel = parsed.channel
+    }
+    authorize(access, 'post', channel)
+    if (labeled) authorize(access, 'label', channel)
+
+    // ownId: an ID that's someone else's to post with.
+    const { id: given } = parsed
+    if (caller.request && given !== undefined) {
+      if (DERIVED_ID.test(given)) throw badRequest("id: UUIDv8s are the board's own, for the writes it makes itself")
+      if (given.startsWith('key:') && !isKeyIdOf(given, principal.id)) throw badRequest(`id: key:… IDs derive from a client's key, and this token's are key:${principal.id}:…`)
+      if (given.startsWith('sync:')) throw badRequest('id: sync:… IDs are what sync imports, under the principal that imports them')
+    }
+
+    // writePost: where it lands, from what the board looked up.
+    const sent = parsed.text
+    const id = given ?? (re === undefined ? crypto.randomUUID() : undefined)
+    const after = afterAt(parsed.after)
+    let root: number | null = null
+    let replyTo: number | null = null
+    let thread: string
+    if (target) {
+      root = target.re ?? target.id
+      replyTo = target.id === root ? null : target.id
+      thread = target.thread
+    } else {
+      if (after !== undefined) throw badRequest('`after` is for replies', 'invalid_after')
+      thread = id!
+    }
+    const place = { channel, re: root, replyTo }
+
+    return this.exclusive(async () => {
+      // A retry of a write that landed: what's on the board stands, whatever its `after` says now.
+      const replayed = await this.replayOf(caller, given, place, sent)
+      if (replayed) return { message: replayed }
+      if (after !== undefined) {
+        const named = await this.tables.message(after)
+        if (named?.thread !== thread) throw badRequest(`after names no message in #${root}'s thread`, 'invalid_after')
+        // nothingAfter: the reply lands only while `after` is still the thread's newest.
+        const { messages: [newer] } = await this.tables.messages({ re: root! }, { after, limit: 1 })
+        if (newer) throw new HttpError(409, 'newer_message', `#${newer.id} came after #${after}`)
+      }
+      const seen = seenFor(caller, this.views.actors)
+      const known = knownWith(this.views.actors, caller, seen)
+      const rows = await this.append([
+        ...(seen ? [seen] : []),
+        {
+          type: 'message.posted',
+          ...(id ? { id } : {}),
+          payload: {
+            channel,
+            text: parsed.text,
+            re: root,
+            replyTo,
+            thread,
+            labels: parsed.labels ?? {},
+            noSync: parsed.noSync ?? false,
+            by: caller.author,
+            origin: null,
+            from: null,
+            ...(caller.schedule ? { schedule: caller.schedule } : {}),
+            ...(access.readable(channel) ? {} : { blind: true as const }),
+          },
+        },
+      ])
+      const posted = rows.find((row) => row.type === 'message.posted')!
+      const folded: MessagesState = { byId: {}, replies: {} }
+      for (const row of rows) foldMessages(folded, row)
+      const message = folded.byId[posted.index]!
+      return { message: shownTo(view(message, known, await this.reads.reader(access, [message])), access, sent) }
+    })
+  }
+
+  async edit(caller: Caller, { id, text, revision }: In<'edit'>): Promise<Out<'edit'>> {
+    if (text.length > MESSAGE_TEXT_MAX) throw textTooLong()
+    const at = messageAt(id)
+    return this.exclusive(async () => {
+      const message = await this.authorizeOwn(caller, at, 'edit')
+      if (!authored(message, caller)) throw forbidden('only the author can edit a message')
+      if (message.deleted) {
+        if (revision !== undefined && revision !== (message.revision ?? message.id)) throw new HttpError(409, 'revision_conflict', `#${message.id} was deleted since revision ${revision}`)
+        throw badRequest('message was deleted', 'message_deleted')
+      }
+      if (revision !== undefined) atRevision(message, message.id, revision)
+      const seen = seenFor(caller, this.views.actors)
+      await this.append([
+        ...(seen ? [seen] : []),
+        { type: 'message.edited', payload: { id: message.id, thread: message.thread, text, by: caller.author, from: null } },
+        // A root may be a task: an edit by anyone but its owner holds it.
+        ...(message.re === null ? heldByEdit(message, caller) : []),
+      ])
+      return { ok: true as const }
+    })
+  }
+
+  async delete(caller: Caller, { id, revision }: In<'delete'>): Promise<Out<'delete'>> {
+    const at = messageAt(id)
+    return this.exclusive(async () => {
+      const message = await this.authorizeOwn(caller, at, 'delete')
+      if (!authored(message, caller)) throw forbidden('only the author can delete a message')
+      // A tombstone changes no more: deleting it again is nothing, unless the caller read it before.
+      if (message.deleted) {
+        if (revision !== undefined && revision !== (message.revision ?? message.id)) throw new HttpError(409, 'revision_conflict', `#${message.id} was deleted since revision ${revision}`)
+        return { ok: true as const }
+      }
+      if (revision !== undefined) atRevision(message, message.id, revision)
+      await this.append([
+        // A root that's a task is canceled first, while it still wears its labels.
+        ...(message.re === null ? canceledByDelete(message, caller) : []),
+        { type: 'message.deleted', payload: { id: message.id, thread: message.thread, by: caller.author, from: null } },
+      ])
+      return { ok: true as const }
+    })
+  }
+
+  async react(caller: Caller, { id, emoji, remove }: In<'react'>): Promise<Out<'react'>> {
+    const at = messageAt(id)
+    return this.exclusive(async () => {
+      const message = await this.authorizeMessage(caller.principal.access, 'react', at)
+      if (message.deleted) throw badRequest('message was deleted', 'message_deleted')
+      const seen = seenFor(caller, this.views.actors)
+      await this.append([
+        ...(seen ? [seen] : []),
+        { type: remove ? 'reaction.removed' : 'reaction.added', payload: { id: message.id, thread: message.thread, emoji, by: caller.author, from: null } },
+      ])
+      return { ok: true as const }
+    })
+  }
+
+  async label(caller: Caller, { id, set, unset, if: expected }: In<'label'>): Promise<Out<'label'>> {
+    const at = messageAt(id)
+    return this.exclusive(async () => {
+      const message = await this.authorizeMessage(caller.principal.access, 'label', at)
+      if (message.deleted) throw badRequest('message was deleted', 'message_deleted')
+      // labelsAre: each label is as the write says, now.
+      for (const key of Object.keys(expected ?? {}).sort()) {
+        const now = own(message.labels, key)
+        const wanted = expected![key]
+        if (now === wanted || (now === undefined && wanted === null)) continue
+        throw new HttpError(409, 'label_conflict', wanted === null ? `${key} is set` : now === undefined ? `${key} isn't set` : `${key} isn't ${wanted}`)
+      }
+      const seen = seenFor(caller, this.views.actors)
+      await this.append([
+        ...(seen ? [seen] : []),
+        { type: 'labels.changed', payload: { id: message.id, thread: message.thread, set: set ?? {}, unset: unset ?? [], by: caller.author } },
+      ])
+      return { ok: true as const }
+    })
+  }
+
+  async events(caller: Caller, query: In<'events'>): Promise<Out<'events'>> {
+    const { principal, actor } = caller
+    const after = query.after !== undefined ? cursorAt(query.after) : undefined
+    const feed = {
+      session: this.session,
+      reads: this.reads,
+      after,
+      filters: query,
+      all: query.all ?? false,
+      me: { id: actor.id, handle: actor.handle },
+      // The feed folds who's who as it goes: its own copy.
+      actors: structuredClone(this.views.actors),
+      access: principal.access,
+    }
+    const waitMs = (query.wait ?? 0) * 1000
+    const signal = AbortSignal.timeout(waitMs + 30_000)
+    const { events, cursor } = query.last !== undefined ? await lastFeed(feed, query.last, signal) : await pollFeed(feed, waitMs, signal)
+    return { events, cursor: ref(cursor) }
+  }
+
+  /** The IDs a write derives for itself, as upstream's do (exported for tasks and schedules in M2). */
+  static derivedId = derivedId
+}
+
+/** What a duplicate ID in a batch answers, as upstream's board does. */
+export const isDuplicate = (error: unknown) => error instanceof DuplicateEventError
