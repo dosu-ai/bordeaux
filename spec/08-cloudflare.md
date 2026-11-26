@@ -214,8 +214,9 @@ now answers those waits and resets the board (see "Deploys").
     leaves its Durable Object's data in place. Another isolate can serve a deleted board for up
     to 5 minutes.
   - Grants are per board, as upstream has them.
-- **Teams.** v1 is single-team per deployment. The DO key prefix `<team>/` leaves room for a
-  hosted multi-tenant mode later ([QUESTIONS Q4](../QUESTIONS.md#q4)).
+- **Teams.** A self-hosted deployment is one team ([QUESTIONS Q4](../QUESTIONS.md#q4)), whose
+  DO keys start `default/`. A hosted deployment serves many teams, one per GitHub org, each
+  under its own key prefix ([09](09-hosted.md)).
 
 ## Limits and capacity (verify all)
 
