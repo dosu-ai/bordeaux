@@ -33,3 +33,7 @@ jobs:
       - run: pnpm --filter @dosu/bordeaux conformance --groups core,paging,search,schedules,tasks,grants,schemas,attachments,watchers,sync
         env:
           WRANGLER_SEND_METRICS: 'false'
+      # The same against a hosted team at its own subdomain (spec 09).
+      - run: pnpm --filter @dosu/bordeaux conformance --hosted --groups core,paging,search,schedules,tasks,grants,schemas,attachments,watchers,sync
+        env:
+          WRANGLER_SEND_METRICS: 'false'

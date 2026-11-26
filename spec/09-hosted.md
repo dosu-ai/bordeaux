@@ -5,7 +5,8 @@ one person, installs one GitHub App, and the board is at `https://<org>.board.do
 team shares one bordeaux Worker in Dosu's Cloudflare account. Self-hosting doesn't change: a
 deployment of the template is still one team, as [QUESTIONS Q4](../QUESTIONS.md#q4) has it.
 
-Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Nothing here is built yet.
+Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Built so far: hosted mode, the
+registry, and personal teams' sign-in.
 
 ## Decisions
 
@@ -89,7 +90,8 @@ to teams. A team's record:
 | `id` | `t_` and 16 random bytes in base32, made at sign-up. Dosu's, not any provider's |
 | `host` | `<org>.board.dosu.ai`, lowercase, fixed at sign-up |
 | `github` | the account's numeric ID, login, and type (`Organization` or `User`), and the App's installation ID on it |
-| `state` | `active`, `suspended` (GitHub suspended the install, or Dosu did), or `uninstalled` with the time |
+| `state` | `active`, `suspended` (GitHub suspended the install, or Dosu did), or `uninstalled` |
+| `state_at` | when it was last suspended or uninstalled |
 | `created_at` | when |
 
 - **Every request looks up its host.** Each isolate keeps what it has looked up for 5
@@ -102,7 +104,8 @@ to teams. A team's record:
 - **Files** stay at `boards/<board DO id>/…` in one R2 bucket: a board's DO ID already differs
   per team.
 - **The registry indexes** each team by host, by GitHub installation ID, and by GitHub
-  account ID.
+  account ID. One team per account: installing the App again on an account whose team was
+  uninstalled restores that team, host and boards included.
 
 ### Later sign-in providers
 
@@ -261,11 +264,17 @@ release, and a team record may override one later for paid plans.
 
 ### Hosted mode
 
-A deployment is hosted when `BORDEAUX_HOSTED_DOMAIN` is set (`board.dosu.ai`), with the
+A deployment is hosted when `BORDEAUX_HOSTED_URL` is set (`https://board.dosu.ai`), with the
 `REGISTRY` binding. Then `BORDEAUX_URL`, `BORDEAUX_GITHUB_ORG`, `GITHUB_INSTALLATION_ID`, and
 `BORDEAUX_OWNERS` must be unset: the Worker refuses to start with them, so a team never falls
 back to the operator's org. A `configure()` that sets `watch` or `sync` is refused the same
 way.
+
+**As built:** the variable is the hub's URL, not its domain, so a laptop's hub can be
+`http://board.localhost:8787` and its teams `http://<login>.board.localhost:8787`. A Worker
+can't refuse to start, so it answers every request 500 `misconfigured`, naming what's set.
+`wrangler.hosted.jsonc` runs hosted mode locally, and on a hosted deployment with
+`BORDEAUX_DEV=1`, `POST <hub>/__dev/team {"login": "acme"}` makes a team with no App behind it.
 
 ### The team, per request
 
@@ -279,6 +288,7 @@ interface Team {
   org: string | undefined // BORDEAUX_GITHUB_ORG, or the record's github login
   installation: string | undefined
   owners: string[]
+  person?: string         // a personal team's one person, by GitHub user ID
 }
 ```
 
@@ -291,6 +301,10 @@ interface Team {
 - **`directory(env)` becomes `directory(env, team)`**, one DirectoryDO per team.
 - **The board's DO** builds its own `board()` for alarms (`runOwn`). It knows its key, so it
   reads its team from the registry by the key's prefix.
+
+  **As built:** the Worker hands the DO its team with every call, as it hands over the board's
+  name, and the DO keeps the last one for its alarms. Its `board()` is built synchronously, so
+  it can't wait on the registry. A self-hosted DO reads env, as before.
 - **Crons fan out.** The daily retention cron puts one Queue message per team on a
   `bordeaux-teams` Queue, so no one invocation walks every team. The 15-minute sync check has
   nothing to do in hosted mode until hosted sync exists.
@@ -345,8 +359,11 @@ team, and the hub's webhook route is namespaced by platform.
   - Each limit answers its error.
   - Self-hosted mode's keys and behavior are unchanged: the existing suite runs as it is.
 - **Conformance** runs against a hosted team as well as a self-hosted board, every group.
-  Locally a team is at `http://<org>.localhost:8787` (verify that Node resolves `*.localhost`
-  to loopback; otherwise the conformance run sets the `Host` header).
+  Locally a team is at `http://<org>.board.localhost:<port>`
+  (`pnpm --filter @dosu/bordeaux conformance --hosted`), which Node resolves to loopback.
+
+  **As built:** the hosted tests run on their own vitest config (`vitest.hosted.config.ts`),
+  since the pool's `outboundService` doesn't reach a Worker in vitest's `projects`.
 - **Live,** on `board.dosu.ai`: sign-up, sign-in by device and by browser, and a post, for
   `dosu-ai`, a second test org, and a personal account.
 

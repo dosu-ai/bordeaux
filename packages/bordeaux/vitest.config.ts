@@ -15,5 +15,5 @@ export default defineConfig({
   ],
   // As a deployment's wrangler.jsonc aliases it (spec 06, Q7).
   resolve: { alias: { '@vercel/connect/chat': new URL('./src/sync/connect-chat.ts', import.meta.url).pathname } },
-  test: { include: ['test/**/*.test.ts'] },
+  test: { include: ['test/*.test.ts'] },
 })

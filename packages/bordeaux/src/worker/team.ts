@@ -1,7 +1,10 @@
 // The team a request is for (spec 09, "The team, per request"). A self-hosted deployment is one
-// team, read from its env; every route asks for the team first and reads the board's URL, org,
-// and installation from it, never from env.
+// team, read from its env. A hosted one serves many, each found by the request's host in the
+// registry. Every route asks for the team first and reads the board's URL, org, and installation
+// from it, never from env.
 import type { BordeauxEnv } from './env.ts'
+import { registry, type TeamRecord } from './registry.ts'
+import { configOf } from './config.ts'
 
 export interface Team {
   /** The prefix of every Durable Object key the team's boards use: `default` self-hosted. */
@@ -14,10 +17,13 @@ export interface Team {
   installation: string | undefined
   /** More owners than the org's, by GitHub login, lowercase. */
   owners: string[]
+  /** A personal team's one person, by GitHub user ID: they sign in in place of the org's members. */
+  person?: string
 }
 
 /** The one team a self-hosted deployment is (Q4). */
 export function envTeam(env: BordeauxEnv): Team {
+  if (env.BORDEAUX_HOSTED_URL) throw new Error('a hosted deployment has no team of its own: each request names one by its host')
   if (!env.BORDEAUX_URL) throw new Error("BORDEAUX_URL is required: the board's public URL, which every token is for")
   return {
     id: 'default',
@@ -28,7 +34,52 @@ export function envTeam(env: BordeauxEnv): Team {
   }
 }
 
-/** The team a request is for. */
-export async function teamOf(_request: Request, env: BordeauxEnv): Promise<Team> {
-  return envTeam(env)
+/** A hosted team's record, as every route reads it. */
+export function teamOfRecord(record: TeamRecord, hub: URL): Team {
+  return {
+    id: record.id,
+    url: `${hub.protocol}//${record.host}`,
+    org: record.github.login,
+    installation: String(record.github.installation),
+    owners: [],
+    ...(record.github.type === 'User' ? { person: String(record.github.id) } : {}),
+  }
+}
+
+/** The hub's URL on a hosted deployment, or null for a self-hosted one. */
+export function hubOf(env: BordeauxEnv): URL | null {
+  if (!env.BORDEAUX_HOSTED_URL) return null
+  const hub = new URL(env.BORDEAUX_HOSTED_URL)
+  // What would make a team fall back to the operator's own org, or run the operator's code on every team.
+  const set = (['BORDEAUX_URL', 'BORDEAUX_GITHUB_ORG', 'GITHUB_INSTALLATION_ID', 'BORDEAUX_OWNERS'] as const).filter((name) => env[name])
+  if (set.length > 0) throw new Error(`a hosted deployment can't set ${set.join(', ')}: each team's come from the registry`)
+  const config = configOf(env)
+  if (config.watch || config.sync) throw new Error("a hosted deployment's configure() can't set watch or sync: they're a self-hosted deployment's own code")
+  return hub
+}
+
+/** Hosted teams this isolate has looked up, by host, for 5 minutes: how long a suspension takes to reach it. */
+const found = new Map<string, { record: TeamRecord; until: number }>()
+const FOUND_MS = 5 * 60_000
+
+/** Drops what this isolate knows of a host, after its team changed here. */
+export const forgetHost = (host: string) => found.delete(host.toLowerCase())
+
+const refuse = (status: number, code: string, message: string) => Response.json({ error: { code, message } }, { status })
+
+/** A hosted team's record, or what to answer instead: no team at that host, or one that can't be used. */
+export async function teamAt(env: BordeauxEnv, hub: URL, host: string): Promise<Team | Response> {
+  const key = host.toLowerCase()
+  let record = (found.get(key)?.until ?? 0) > Date.now() ? found.get(key)!.record : null
+  if (!record) {
+    record = await registry(env).byHost(key)
+    if (!record) return refuse(404, 'no_team', `no team is at ${key}: a GitHub org or person makes one at ${hub.origin}`)
+    found.set(key, { record, until: Date.now() + FOUND_MS })
+  }
+  if (record.state === 'suspended') return refuse(403, 'team_suspended', 'this team is suspended')
+  if (record.state === 'uninstalled') {
+    const until = new Date((record.state_at ?? 0) + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10)
+    return refuse(403, 'team_uninstalled', `this team's GitHub App was uninstalled: install it on ${record.github.login} again by ${until} to keep its boards`)
+  }
+  return teamOfRecord(record, hub)
 }

@@ -4,6 +4,7 @@
 //
 //   node scripts/conformance.mjs                      # core, paging, search
 //   node scripts/conformance.mjs --groups core,paging,search,grants
+//   node scripts/conformance.mjs --hosted             # against a hosted team (spec 09)
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
@@ -14,6 +15,7 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const at = process.argv.indexOf('--groups')
 const required = (at === -1 ? 'core,paging,search' : process.argv[at + 1]).split(',')
+const hosted = process.argv.includes('--hosted')
 
 const freePort = () =>
   new Promise((done) => {
@@ -24,10 +26,13 @@ const freePort = () =>
   })
 
 const port = await freePort()
-const url = `http://127.0.0.1:${port}`
+// Hosted, the Worker is the hub, and the board is a team's at its own subdomain of it.
+const hub = `http://board.localhost:${port}`
+let url = hosted ? hub : `http://127.0.0.1:${port}`
+const config = hosted ? ['-c', 'wrangler.hosted.jsonc', '--var', `BORDEAUX_HOSTED_URL:${hub}`] : ['--var', `BORDEAUX_URL:${url}`]
 // A board of its own each run: what another run left (its grants, its URL in g4) never carries over.
 const state = mkdtempSync(join(tmpdir(), 'bordeaux-conformance-'))
-const dev = spawn('npx', ['wrangler', 'dev', '--port', String(port), '--ip', '127.0.0.1', '--persist-to', state, '--var', `BORDEAUX_URL:${url}`, '--var', 'BORDEAUX_DEV:1'], {
+const dev = spawn('npx', ['wrangler', 'dev', '--port', String(port), '--ip', '127.0.0.1', '--persist-to', state, ...config, '--var', 'BORDEAUX_DEV:1'], {
   cwd: root,
   env: { ...process.env, WRANGLER_SEND_METRICS: 'false' },
   stdio: ['ignore', 'ignore', 'inherit'],
@@ -45,6 +50,12 @@ try {
     } catch {}
     if (tries > 60) throw new Error(`the board didn't start at ${url}`)
     await new Promise((r) => setTimeout(r, 1000))
+  }
+  if (hosted) {
+    const made = await fetch(`${hub}/__dev/team`, { method: 'POST', body: JSON.stringify({ login: 'conformance' }) })
+    if (!made.ok) throw new Error(`the hub made no team: ${made.status} ${await made.text()}`)
+    url = (await made.json()).url
+    console.log(`hosted team at ${url}`)
   }
   const { access_token: token } = await (await fetch(`${url}/__dev/token`, { method: 'POST', body: JSON.stringify({ id: 583231, login: 'conformance' }) })).json()
 

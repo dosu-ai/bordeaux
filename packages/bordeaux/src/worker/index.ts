@@ -7,7 +7,8 @@ import { boardNamed, boardOf, boardUrl, BOARD_NAME, exists } from './boards.ts'
 import { putUpload, UPLOADS } from './uploads.ts'
 import { broker } from './broker.ts'
 import type { BordeauxEnv } from './env.ts'
-import { envTeam, teamOf, type Team } from './team.ts'
+import { envTeam, hubOf, teamAt, type Team } from './team.ts'
+import { hub } from './hub.ts'
 
 import { inspect } from './inspect.ts'
 import { collectAll, GC_CRON, scheduledCheck } from './health.ts'
@@ -15,6 +16,7 @@ export { BoardDO } from '../engine/do.ts'
 export { TailDO } from '../engine/tail.ts'
 export { configure, type BordeauxConfig } from './config.ts'
 export { DirectoryDO } from './directory.ts'
+export { RegistryDO } from './registry.ts'
 
 // Upstream's waitUntil looks up Vercel's request context: it gets the Worker's own (spec 08).
 const requestContext = new AsyncLocalStorage<{ waitUntil(promise: Promise<unknown>): void }>()
@@ -79,11 +81,26 @@ async function route(request: Request, env: BordeauxEnv, team: Team): Promise<Re
 
 export default {
   async fetch(request: Request, env: BordeauxEnv, ctx: ExecutionContext): Promise<Response> {
-    return requestContext.run(ctx, async () => route(request, env, await teamOf(request, env)))
+    return requestContext.run(ctx, async () => {
+      let at: URL | null
+      try {
+        at = hubOf(env)
+      } catch (error) {
+        return Response.json({ error: { code: 'misconfigured', message: (error as Error).message } }, { status: 500 })
+      }
+      if (!at) return route(request, env, envTeam(env))
+      // Hosted (spec 09): the hub at its own host, and each team at its own.
+      const { host } = new URL(request.url)
+      if (host === at.host) return hub(request, env, at)
+      const team = await teamAt(env, at, host)
+      return team instanceof Response ? team : route(request, env, team)
+    })
   },
 
   /** A cron (`triggers.crons` in wrangler.jsonc): retention daily at GC_CRON, else a sync check. */
   async scheduled(controller: ScheduledController, env: BordeauxEnv): Promise<void> {
+    // A hosted deployment's teams have no crons yet.
+    if (env.BORDEAUX_HOSTED_URL) return
     if (controller.cron === GC_CRON) await collectAll(env, envTeam(env))
     else await scheduledCheck(env)
   },
