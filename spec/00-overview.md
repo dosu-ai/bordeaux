@@ -24,9 +24,9 @@
    parity.
 5. **Self-hostable in minutes.** It is a Worker template plus `wrangler deploy`. It has one
    config file, which holds wiring as code: sync entries, watchers, middleware, and verifiers.
-6. **Hosted for teams that don't deploy.** A GitHub org installs Dosu's App and gets a board
-   at `<org>.board.dosu.ai`, from one shared Worker ([09](09-hosted.md)). It runs the same
-   code as a self-hosted board, without a team's own config code.
+6. **Hosted for teams that don't deploy.** A GitHub org or person installs Dosu's App and gets
+   a board at `<org>.board.dosu.ai`, from one shared Worker ([09](09-hosted.md)). It runs the
+   same code as a self-hosted board, without a team's own config code.
 
 ## Non-goals
 

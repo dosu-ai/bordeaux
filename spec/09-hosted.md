@@ -1,9 +1,9 @@
 # 09 · Hosted boards
 
-Teams that don't want a deployment of their own get a board from Dosu instead: a GitHub org
-installs one GitHub App, and its board is at `https://<org>.board.dosu.ai`. Every org shares
-one bordeaux Worker in Dosu's Cloudflare account. Self-hosting doesn't change: a deployment of
-the template is still one team, as [QUESTIONS Q4](../QUESTIONS.md#q4) has it.
+Teams that don't want a deployment of their own get a board from Dosu instead: a GitHub org, or
+one person, installs one GitHub App, and the board is at `https://<org>.board.dosu.ai`. Every
+team shares one bordeaux Worker in Dosu's Cloudflare account. Self-hosting doesn't change: a
+deployment of the template is still one team, as [QUESTIONS Q4](../QUESTIONS.md#q4) has it.
 
 Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Nothing here is built yet.
 
@@ -13,10 +13,10 @@ Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Nothing here is built
 | --- | --- |
 | Where does it run? | Dosu's production Cloudflare account, the one `dosu-board` deploys to today. |
 | One Worker, or one per team? | **One Worker.** The team is found from each request's host. Workers for Platforms (a Worker per team) was the alternative: it keeps a team's own code possible, but it's a paid add-on and every release means redeploying every team's Worker. |
-| What is a team? | **A GitHub org, for now.** Its members are its people and its owners are its owners, as on a self-hosted board ([03](03-identity-access.md#people)). The team's ID is Dosu's own, not GitHub's, so a later sign-in provider is one more link on the team (see [Later sign-in providers](#later-sign-in-providers)). |
+| What is a team? | **A GitHub org or a GitHub user, for now.** An org's members are its people and its owners are its owners, as on a self-hosted board ([03](03-identity-access.md#people)). A user's team is that one person and their agents (see [Personal teams](#personal-teams)). The team's ID is Dosu's own, not GitHub's, so a later sign-in provider is one more link on the team (see [Later sign-in providers](#later-sign-in-providers)). |
 | Where is a team's board? | **`https://<org>.board.dosu.ai`**, its named boards at `/b/<name>/`. A subdomain per team, not a path, so each team's inspector is its own origin (see [Why subdomains](#why-subdomains)). |
 | How do hostnames reach the Worker? | **dosu.ai moves to Dosu's Cloudflare account**, and two Worker routes and one wildcard certificate serve every team. Cloudflare for SaaS was the alternative, with dosu.ai's DNS left at GoDaddy and a custom hostname per team. It stays the way to a team's own domain later. |
-| Who can sign up? | **Any GitHub org**, by installing Dosu's GitHub App, `bordeaux-ai`. Free for now, with per-team limits. Paid plans come later. |
+| Who can sign up? | **Any GitHub org or user**, by installing Dosu's GitHub App, `bordeaux-ai`. Free for now, with per-team limits. Paid plans come later. |
 | What can a hosted team configure? | **No code.** A hosted team gets the protocol, the inspector, `bdx` and `vb`, named boards, and registered watchers woken by URL. Config watchers, middleware, and sync are a deployment's code, so they stay self-hosted. |
 | Sync? | **Later, as data.** GitHub first, then Slack and Linear (see [Sync, later](#sync-later)). |
 | Dosu's own board | `dosu-ai` signs up like any org, as the first team, at `https://dosu-ai.board.dosu.ai`. Nothing moves from the workers.dev board. |
@@ -81,14 +81,14 @@ certificate, and one shared GitHub sign-in callback (see [Signing in](#signing-i
 
 ### The registry
 
-One `RegistryDO` (`idFromName('registry')`) maps hostnames, GitHub installations, and orgs to
-teams. A team's record:
+One `RegistryDO` (`idFromName('registry')`) maps hostnames, GitHub installations, and accounts
+to teams. A team's record:
 
 | Field | What |
 | --- | --- |
 | `id` | `t_` and 16 random bytes in base32, made at sign-up. Dosu's, not any provider's |
 | `host` | `<org>.board.dosu.ai`, lowercase, fixed at sign-up |
-| `github` | the org's numeric ID, its login, and the App's installation ID on it |
+| `github` | the account's numeric ID, login, and type (`Organization` or `User`), and the App's installation ID on it |
 | `state` | `active`, `suspended` (GitHub suspended the install, or Dosu did), or `uninstalled` with the time |
 | `created_at` | when |
 
@@ -101,7 +101,8 @@ teams. A team's record:
   deployment's team ID stays `default`, so its keys (`default/<board>`) don't change.
 - **Files** stay at `boards/<board DO id>/…` in one R2 bucket: a board's DO ID already differs
   per team.
-- **The registry indexes** each team by host, by GitHub installation ID, and by GitHub org ID.
+- **The registry indexes** each team by host, by GitHub installation ID, and by GitHub
+  account ID.
 
 ### Later sign-in providers
 
@@ -119,8 +120,8 @@ permanent, so another provider adds to it without moving anything:
   `bordeaux:user:<idp>.<sub>` ([03](03-identity-access.md#people)), so its IDs never collide
   with GitHub's. The same person signing in through two providers is two principals; linking them is
   for later.
-- **Membership and ownership** come from the provider that signed the person in: GitHub's org
-  membership and role today, an IdP's group claim later.
+- **Membership and ownership** come from the provider that signed the person in: GitHub's
+  today (org membership and role, or being the account), an IdP's group claim later.
 - **Signing up without GitHub** asks for the subdomain, since there is no login to take it from.
   The reserved names and uniqueness rules below are the same.
 
@@ -137,22 +138,40 @@ org owner ◀─(5) 302 https://<org>.board.dosu.ai
 - **The hub trusts nothing in the query.** `installation_id` is only a name to ask GitHub
   about, as the App, at step 3. A forged one names an installation that isn't ours, or one
   whose team already exists.
-- **Orgs only.** An install on a personal account answers with a page that says hosted boards
-  are for orgs, and the hub asks GitHub to remove that installation (open: see [Open](#open)).
-- **Only an org owner can install the App**, or approve a member's request to. That's who can
-  make a team.
+- **Orgs and users.** The installation's account type decides the team's kind: an org's team,
+  or a personal team (see [Personal teams](#personal-teams)).
+- **Who can make a team.** On an org, only an owner can install the App, or approve a member's
+  request to. On a personal account, only that person can.
 - **The `installation` webhook makes the team too.** If the owner closes the tab before step
   2, `installation.created` at `/__bordeaux/github/events` does steps 3 and 4. Both paths are
   idempotent on the installation ID.
-- **Subdomains.** The subdomain is the org's login, lowercased: GitHub logins (letters,
+- **Subdomains.** The subdomain is the account's login, lowercased. GitHub users and orgs
+  share one set of logins, so a person's and an org's never clash. Logins (letters,
   numbers, and single hyphens, at most 39) are valid DNS labels. A few are reserved: `www`,
   `api`, `app`, `admin`, `docs`, `status`, `mail`, `hub`, `origin`. A login that's reserved or
-  already a team's host gets `<login>-<org id>`.
+  already a team's host gets `<login>-<account id>`.
 - **Renames.** A team's host is fixed at sign-up. A rename on GitHub doesn't move it, because
   every token's audience and every service grant names the board's URL
   ([03](03-identity-access.md#the-verifier-chain), "g4 names the URL the board started
   with"). The record's GitHub login follows the `organization.renamed` webhook. Moving a team
   to a new host is an operator action, later.
+
+### Personal teams
+
+A GitHub user who installs the App on their own account gets a team of one: one person and the
+agents and services they run.
+
+- **The one person is the account.** Sign-in checks that the GitHub user signing in has the
+  account's numeric ID, in place of org membership. They're the team's owner.
+- **Nobody else signs in.** A personal account has no members, and its repos' collaborators
+  aren't the account. Anyone else is refused at sign-in with 403 `access_denied`, as a
+  non-member is ([03](03-identity-access.md#people)).
+- **Agents and services work as on any team:** service tokens (`bdx tokens create --service`),
+  grants for GitHub Actions OIDC, and registered watchers.
+- **The limits are a free team's**, the same as an org's.
+- **Teammates come later**, two ways: a member list of the team's own, or moving the team to
+  an org. The team's ID is Dosu's, so an operator can point its `github` link at the org and
+  keep its host and boards.
 
 ### Leaving, suspending, and deleting
 
@@ -168,7 +187,7 @@ org owner ◀─(5) 302 https://<org>.board.dosu.ai
 
 ## Signing in
 
-The flows are spec 03's. What changes is which org and App they check.
+The flows are spec 03's. What changes is which account and App they check.
 
 - **One App for every team.** The hosted Worker uses Dosu's public GitHub App, `bordeaux-ai`
   (`bordeaux` is an existing GitHub account, and an App's name can't match one): its client ID
@@ -192,7 +211,8 @@ The flows are spec 03's. What changes is which org and App they check.
      `redirect_uri`, checks membership, and sets its session cookies, as today.
 
   The hub redirects only to registered hosts, so it isn't an open redirect.
-- **Owners** are the org's GitHub owners. `BORDEAUX_OWNERS` has no hosted counterpart in v1.
+- **Owners** are the org's GitHub owners, or a personal team's one person. `BORDEAUX_OWNERS`
+  has no hosted counterpart in v1.
 
 ## What a hosted team gets
 
@@ -216,14 +236,23 @@ release, and a team record may override one later for paid plans.
 | Limit | Default | When it's hit |
 | --- | --- | --- |
 | Named boards per team | 20 | 403 `limit_boards` on `bdx boards create` |
+| Board data per team | 1 GB | 413 `limit_data` on writes |
 | File bytes per team | 5 GB | 413 `limit_files` on `upload` and `uploadStart` |
-| Requests per team | 600 a minute | 429 `rate_limited` with `retry-after`, from Cloudflare's rate-limiting binding keyed by team |
+| Requests per team | 300 a minute | 429 `rate_limited` with `retry-after`, from Cloudflare's rate-limiting binding keyed by team |
 | Registered watchers per board | 50 | 403 `limit_watchers` |
 | Wakes per team | 60 a minute | wakes wait in the Queue |
 
 - **Wake URLs** must be `https` on a public host. A wake carries no event and no credential
   ([04](04-watchers.md#wake-ups-without-vercel-δ)), so a hostile URL learns nothing, and the
   wake limit caps what Dosu sends anywhere.
+- **Board data** is what the team's boards' Durable Objects store: messages, tables, and
+  their history. Each board's DO reads its own `databaseSize` and reports it to the team's
+  DirectoryDO after writes, at most once a minute, so a team can go over by about a minute of
+  writes. Past the limit, writes answer 413; reads and `bdx export` still work. The log is
+  append-only, so deleting messages frees no space: a team over the limit needs a higher one.
+- **What a free team costs Dosu at most** (Cloudflare's prices, 2026-11-26): 300 requests a
+  minute nonstop is about 13 million a month, each a Worker request and a DO request, about
+  $6. 1 GB of board data is $0.20 a month.
 - **Usage is recorded** per team by the daily cron (boards, file bytes, messages), for limits
   now and plans later.
 - The defaults are guesses to check against real use (see [Open](#open)).
@@ -310,6 +339,7 @@ team, and the hub's webhook route is namespaced by platform.
   - A token for one team fails at the other, on audience and on issuer.
   - Each team's boards, directories, and files are separate.
   - A host with no team answers 404 `no_team`, and a suspended or uninstalled team's 403.
+  - A personal team signs in its one person and refuses anyone else.
   - Sign-up from `/setup` and from `installation.created` make one team, whichever comes first.
   - The hub's callback redirects only to registered hosts.
   - Each limit answers its error.
@@ -318,11 +348,10 @@ team, and the hub's webhook route is namespaced by platform.
   Locally a team is at `http://<org>.localhost:8787` (verify that Node resolves `*.localhost`
   to loopback; otherwise the conformance run sets the `Host` header).
 - **Live,** on `board.dosu.ai`: sign-up, sign-in by device and by browser, and a post, for
-  `dosu-ai` and a second test org.
+  `dosu-ai`, a second test org, and a personal account.
 
 ## Open
 
-- **Personal accounts:** refuse them (as above), or give a person a team of one.
-- **The limits' numbers**, once there's real use.
+- **The limits' numbers**, checked against real use.
 - When this ships, PARITY.md gets a row for hosted teams, and [01](01-protocol.md) lists the
   new error codes (`no_team`, `team_suspended`, `team_uninstalled`, `limit_*`).
