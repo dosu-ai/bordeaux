@@ -354,8 +354,12 @@ interface Team {
 after 30 days), at `/__bordeaux/teams/<team id>`. The hub signs operators in as a team of its
 own, ID `hub`, with the device flow at `<hub>/auth/*`: `bdx login https://board.dosu.ai`. An
 owner is an admin of `BORDEAUX_OPERATOR_ORG` at sign-in. The hub's team has no installation, so
-a renewal after 12 hours asks the operator to sign in again. Dosu's suspension and GitHub's are
-one state, so GitHub's `unsuspend` also restores a team Dosu suspended. The daily usage record
+a renewal after 12 hours asks the operator to sign in again. Dosu's suspension is a hold apart
+from GitHub's state (`held_at`): neither GitHub's `unsuspend` nor installing the App again
+lifts it, only `POST /restore`. Deleting a team marks it `deleting` first, so installing the
+App meanwhile doesn't restore a team half gone, and it deletes the boards the team deleted
+too, whose Durable Objects kept what they had. Each destroyed object resets itself, so nothing
+it held in memory writes again. The daily usage record
 is boards, board data, and file bytes, not messages: counting them would wake every board.
 
 ## Sync, later

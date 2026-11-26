@@ -93,7 +93,8 @@ export async function teamAt(env: BordeauxEnv, hub: URL, host: string, request?:
     found.set(key, { record, until: Date.now() + (record ? FOUND_MS : MISSING_MS) })
   }
   if (!record) return refuse(404, 'no_team', `no team is at ${key}: a GitHub org or person makes one at ${hub.origin}`)
-  if (record.state === 'suspended') return refuse(403, 'team_suspended', 'this team is suspended')
+  if (record.held_at || record.state === 'suspended') return refuse(403, 'team_suspended', 'this team is suspended')
+  if (record.state === 'deleting') return refuse(403, 'team_uninstalled', "this team's boards are being deleted")
   if (record.state === 'uninstalled') {
     const until = new Date((record.state_at ?? 0) + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10)
     return refuse(403, 'team_uninstalled', `this team's GitHub App was uninstalled: install it on ${record.github.login} again by ${until} to keep its boards`)

@@ -7,7 +7,8 @@ import type { Limits } from './limits.ts'
 /** A GitHub account a team is linked to, and the App's installation on it. */
 export type GitHubLink = { id: number; login: string; type: 'Organization' | 'User'; installation: number }
 
-export type TeamState = 'active' | 'suspended' | 'uninstalled'
+/** As GitHub has the installation, or `deleting` once the daily cron or an operator is deleting the team. */
+export type TeamState = 'active' | 'suspended' | 'uninstalled' | 'deleting'
 
 export type TeamRecord = {
   /** `t_` and 16 random bytes in base32: the prefix of every DO key the team's boards use. */
@@ -18,6 +19,8 @@ export type TeamRecord = {
   state: TeamState
   /** When the team was last suspended or uninstalled. */
   state_at: number | null
+  /** When Dosu suspended the team, apart from GitHub's state: only Dosu lifts it. */
+  held_at?: number | null
   /** When GitHub says the installation last changed, as of the last event applied: an older one that arrives late is ignored. */
   event_at?: number
   created_at: number
@@ -101,6 +104,8 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
     const same = this.one('installation', github.installation)
     if (same) return { team: same, created: false }
     const known = this.one('account', github.id)
+    // A team being deleted stays so: once it's gone, installing again makes a new one.
+    if (known?.state === 'deleting') return { team: known, created: false }
     if (known) return { team: this.save({ ...known, github, state: 'active', state_at: null }), created: false }
     const login = github.login.toLowerCase()
     const taken = (host: string) => this.ctx.storage.sql.exec('select 1 from bx_teams where host = ?', host).toArray().length > 0
@@ -128,17 +133,30 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
   /** Marks the team on an installation suspended, uninstalled, or active again; null for none. */
   async setState(installation: number, state: TeamState, eventAt?: number): Promise<TeamRecord | null> {
     const found = this.one('installation', installation)
-    if (!found || (eventAt !== undefined && (found.event_at ?? 0) > eventAt)) return found
+    if (!found || found.state === 'deleting' || (eventAt !== undefined && (found.event_at ?? 0) > eventAt)) return found
     const at = eventAt !== undefined ? { event_at: eventAt } : {}
     if (found.state === state) return eventAt !== undefined ? this.save({ ...found, ...at }) : found
     return this.save({ ...found, ...at, state, state_at: state === 'active' ? null : Date.now() })
   }
 
-  /** The same, for a team named by its ID: Dosu's own suspensions and restores. */
-  async setStateOf(id: string, state: TeamState): Promise<TeamRecord | null> {
+  /**
+   * Dosu's suspension of a team, or its end. It's apart from GitHub's state, so neither the
+   * installation's unsuspend nor installing the App again lifts it.
+   */
+  async hold(id: string, held: boolean): Promise<TeamRecord | null> {
     const found = this.one('id', id)
-    if (!found || found.state === state) return found
-    return this.save({ ...found, state, state_at: state === 'active' ? null : Date.now() })
+    return found && this.save({ ...found, held_at: held ? (found.held_at ?? Date.now()) : null })
+  }
+
+  /**
+   * Marks a team `deleting`, if it may be: uninstalled before `before`, or any team when an
+   * operator deletes it (`before` is Infinity). Null when it may not, or is gone.
+   */
+  async claimDeletion(id: string, before: number): Promise<TeamRecord | null> {
+    const found = this.one('id', id)
+    if (!found) return null
+    const due = before === Infinity || found.state === 'deleting' || (found.state === 'uninstalled' && (found.state_at ?? 0) < before)
+    return due ? this.save({ ...found, state: 'deleting' }) : null
   }
 
   /** Every team, oldest first. */

@@ -13,6 +13,7 @@ import { boardOf } from '../worker/boards.ts'
 import { envTeam, type Team } from '../worker/team.ts'
 import { bytes } from '../worker/limits.ts'
 import { registry } from '../worker/registry.ts'
+import { DESTROYED } from '../worker/directory.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
 import type { Collected, DeadLetter, Failure, Health } from './engine.ts'
 import type { Redaction } from './redact.ts'
@@ -156,7 +157,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     if (!team || team.id === 'default') return true
     if (this.active.until > Date.now()) return this.active.ok
     const record = await registry(this.env).byId(team.id)
-    this.active = { until: Date.now() + 5 * 60_000, ok: record?.state === 'active' }
+    this.active = { until: Date.now() + 5 * 60_000, ok: record?.state === 'active' && !record.held_at }
     return this.active.ok
   }
 
@@ -288,20 +289,21 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     })
   }
 
-  /** Deletes the board: its files in R2, its alarm, and all it stores (spec 09, a hosted team's deletion). */
-  async destroy(): Promise<{ files: number }> {
-    let files = 0
+  /**
+   * Deletes the board: its files in R2, its alarm, and all it stores (spec 09, a hosted team's
+   * deletion). It resets itself last, so nothing it held in memory writes again.
+   */
+  async destroy() {
     const prefix = `boards/${this.ctx.id.toString()}/`
     for (let cursor: string | undefined; this.env.FILES; ) {
       const page = await this.env.FILES.list({ prefix, ...(cursor ? { cursor } : {}) })
       if (page.objects.length > 0) await this.env.FILES.delete(page.objects.map((found) => found.key))
-      files += page.objects.length
       if (!page.truncated) break
       cursor = page.cursor
     }
     await this.ctx.storage.deleteAlarm()
     await this.ctx.storage.deleteAll()
-    return { files }
+    this.ctx.abort(DESTROYED)
   }
 
   /** Runs retention now (`bdx gc`, and the Worker's daily cron). */

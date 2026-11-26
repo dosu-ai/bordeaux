@@ -47,7 +47,7 @@ describe('operator routes', () => {
     const listed = (await (await ask(await operator(42, true), 'GET', '/__bordeaux/teams')).json()) as { teams: { id: string }[] }
     const found = listed.teams.find((one) => one.id === record.id)
     expect(found).toMatchObject({ url: 'https://op-list.board.test', state: 'active', usage: null })
-    expect(Object.keys(found!).sort()).toEqual(['created_at', 'github', 'id', 'limits', 'state', 'state_at', 'url', 'usage'])
+    expect(Object.keys(found!).sort()).toEqual(['created_at', 'github', 'held_at', 'id', 'limits', 'state', 'state_at', 'url', 'usage'])
   })
 
   it("suspend and restore a team, and set its limits", async () => {
@@ -58,6 +58,18 @@ describe('operator routes', () => {
     expect((await ask(token, 'POST', `/__bordeaux/teams/${record.id}/restore`)).status).toBe(200)
     expect((await SELF.fetch(`${url}/channels`)).status).toBe(401)
     expect(await (await ask(token, 'PATCH', `/__bordeaux/teams/${record.id}/limits`, { boards: 40 })).json()).toMatchObject({ team: { limits: { boards: 40 } } })
+  })
+
+  it("keep a team suspended through GitHub's unsuspend and a reinstall: only restore lifts it", async () => {
+    const { record, url } = await team('op-held')
+    const token = await operator(44, true)
+    await ask(token, 'POST', `/__bordeaux/teams/${record.id}/suspend`)
+    await registry(env).setState(record.github.installation, 'suspended')
+    await registry(env).setState(record.github.installation, 'active')
+    await registry(env).register({ ...record.github, installation: record.github.installation + 1 }, 'board.test')
+    expect(await (await SELF.fetch(`${url}/channels`)).json()).toMatchObject({ error: { code: 'team_suspended' } })
+    await ask(token, 'POST', `/__bordeaux/teams/${record.id}/restore`)
+    expect((await SELF.fetch(`${url}/channels`)).status).toBe(401)
   })
 })
 
@@ -78,11 +90,19 @@ describe("the daily cron, hosted", () => {
     expect((await registry(env).byId(record.id))!.usage).toMatchObject({ boards: 2 })
   })
 
-  it('deletes a team 30 days after it was uninstalled: its boards, files, directory, and record', async () => {
+  it('deletes a team 30 days after it was uninstalled: its boards, deleted ones too, files, directory, and record', async () => {
     const kept = await team('cron-kept')
     const gone = await team('cron-gone')
     const token = ((await (await SELF.fetch(`${gone.url}/__dev/token`, { method: 'POST', body: JSON.stringify({ id: 1, login: 'ada' }) })).json()) as { access_token: string }).access_token
-    await SELF.fetch(`${gone.url}/messages`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'general', text: 'soon gone' }) })
+    const send = (path: string, method: string, body?: unknown, bearer = token) => SELF.fetch(`${gone.url}${path}`, { method, headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) })
+    await send('/messages', 'POST', { channel: 'general', text: 'soon gone' })
+    // A named board, written to and then deleted: its DO keeps what it had until the team goes.
+    await directory(env, { ...HUB_TEAM, id: gone.record.id, url: gone.url }).setOwner(personId(1), true, Date.now() + 3_600_000)
+    await send('/admin/boards', 'POST', { name: 'ops' })
+    const forOps = ((await (await SELF.fetch(`${gone.url}/__dev/token`, { method: 'POST', body: JSON.stringify({ id: 1, login: 'ada', audience: `${gone.url}/b/ops` }) })).json()) as { access_token: string }).access_token
+    expect((await send('/b/ops/messages', 'POST', { channel: 'general', text: 'on a deleted board' }, forOps)).status).toBe(201)
+    expect((await send('/admin/boards/ops', 'DELETE')).status).toBe(200)
+    const ops = env.BOARD.get(env.BOARD.idFromName(boardKey(gone.record.id, 'ops')))
     const board = env.BOARD.get(env.BOARD.idFromName(boardKey(gone.record.id, null)))
     const file = `boards/${board.id.toString()}/attachments/a1`
     await env.FILES!.put(file, 'bytes')
@@ -99,8 +119,19 @@ describe("the daily cron, hosted", () => {
     expect(await registry(env).byId(kept.record.id)).not.toBeNull()
     expect(await registry(env).byId(gone.record.id)).toBeNull()
     expect(await env.FILES!.head(file)).toBeNull()
-    expect(await runInDurableObject(board, async (_, state) => state.storage.sql.exec("select name from sqlite_master where name = 'bx_log'").toArray())).toEqual([])
+    // Each object reset as it was destroyed: what answers now starts from nothing.
+    const count = (stub: DurableObjectStub, table: string) => runInDurableObject(stub, async (_, state) => state.storage.sql.exec<{ n: number }>(`select count(*) as n from ${table}`).one().n)
+    expect(await count(board, 'bx_log')).toBe(0)
+    expect(await count(ops, 'bx_log')).toBe(0)
     const dir = env.DIRECTORY.get(env.DIRECTORY.idFromName(gone.record.id))
-    expect(await runInDurableObject(dir, async (_, state) => state.storage.sql.exec("select name from sqlite_master where name = 'bx_boards'").toArray())).toEqual([])
+    expect(await count(dir, 'bx_boards')).toBe(0)
+  })
+
+  it("doesn't restore a team it's deleting when the App is installed again meanwhile", async () => {
+    const { record } = await team('cron-race')
+    await registry(env).setState(record.github.installation, 'uninstalled')
+    expect(await registry(env).claimDeletion(record.id, Infinity)).toMatchObject({ state: 'deleting' })
+    const again = await registry(env).register({ ...record.github, installation: record.github.installation + 1 }, 'board.test')
+    expect(again).toMatchObject({ created: false, team: { state: 'deleting' } })
   })
 })

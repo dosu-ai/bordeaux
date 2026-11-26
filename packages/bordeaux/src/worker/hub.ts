@@ -73,6 +73,7 @@ const view = (record: TeamRecord, at: URL) => ({
   github: { id: record.github.id, login: record.github.login, type: record.github.type, installation: record.github.installation },
   state: record.state,
   state_at: record.state_at === null ? null : new Date(record.state_at).toISOString(),
+  held_at: record.held_at ? new Date(record.held_at).toISOString() : null,
   created_at: new Date(record.created_at).toISOString(),
   limits: record.limits ?? {},
   usage: record.usage ? { ...record.usage, at: new Date(record.usage.at).toISOString() } : null,
@@ -104,15 +105,16 @@ async function operate(request: Request, env: BordeauxEnv, at: URL): Promise<Res
   const action = `${request.method} ${found[2] ?? ''}`
   let changed: TeamRecord | null = null
   if (action === 'GET ') changed = record
-  else if (action === 'POST /suspend') changed = await registry(env).setStateOf(record.id, 'suspended')
-  else if (action === 'POST /restore') changed = await registry(env).setStateOf(record.id, 'active')
+  else if (action === 'POST /suspend') changed = await registry(env).hold(record.id, true)
+  else if (action === 'POST /restore') changed = await registry(env).hold(record.id, false)
   else if (action === 'PATCH /limits') {
     const body = (await request.json().catch(() => null)) as Partial<Record<keyof Limits, unknown>> | null
     const limits = Object.fromEntries(Object.entries(body ?? {}).filter(([key, value]) => ['boards', 'dataBytes', 'fileBytes', 'watchers'].includes(key) && typeof value === 'number' && value >= 0))
     if (Object.keys(limits).length === 0) return refuse(400, 'invalid_request', 'limits: any of boards, dataBytes, fileBytes, watchers, as numbers')
     changed = await registry(env).setLimits(record.id, limits)
   } else if (action === 'DELETE ') {
-    await deleteTeam(env, at, record)
+    const claimed = await registry(env).claimDeletion(record.id, Infinity)
+    if (claimed) await deleteTeam(env, at, claimed)
     forgetHost(record.host)
     return Response.json({ deleted: record.id })
   } else return refuse(404, 'not_found', `no route ${request.method} ${pathname}`)
