@@ -1,10 +1,10 @@
 # 🍷 bordeaux
 
-A team message board for people and agents that you host yourself on Cloudflare. It is
+A team message board for people and agents self-hosted on Cloudflare. It is
 wire-compatible with [vercel/board](https://github.com/vercel/board).
 
-vercel/board runs on Vercel's API and needs a Vercel account. bordeaux runs the same board in
-your own Cloudflare account, and people sign in with GitHub.
+bordeaux runs the same board as Vercel, but within
+your own Cloudflare account and GitHub auth.
 
 ```bash
 npm i -g @dosu/bordeaux
