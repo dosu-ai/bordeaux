@@ -448,6 +448,29 @@ bordeaux:
 board commands (upstream's, unchanged):
 `
 
+/** The commands bordeaux answers itself; `grants` is upstream's, with bordeaux's flags added. */
+const OWN = new Set(['login', 'logout', 'list', 'boards', 'export', 'import', 'token', 'health', 'dead-letters', 'gc', 'redact', 'doctor', 'redactions', 'tokens'])
+
+/** One of bordeaux's own commands' lines from HELP, or null for upstream's. */
+function usageOf(word: string): string | null {
+  if (!OWN.has(word)) return null
+  const rows = HELP.split('\n').filter((line) => line.startsWith(`  ${word} `)).map((line) => line.trim().split(/\s{2,}/))
+  const width = Math.max(...rows.map(([command]) => command!.length))
+  return `usage:\n${rows.map(([command, what]) => `  bdx ${command!.padEnd(width)}  ${what}`).join('\n')}\n`
+}
+
+/** A board's URL as `bdx login` takes it, or the error that says what it wants instead. */
+function boardUrlArg(arg: string): string {
+  let url: URL
+  try {
+    url = new URL(arg)
+  } catch {
+    return fail(`${arg} isn't a board's URL: bdx login https://<board>`)
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') fail(`${arg} isn't a board's URL: bdx login https://<board>`)
+  return clean(arg)
+}
+
 /** Upstream's help, under bordeaux's header: its own first line names Vercel. */
 async function help(app: { run(args: string[]): Promise<number> }, args: string[]) {
   process.stdout.write(HELP)
@@ -470,7 +493,10 @@ async function help(app: { run(args: string[]): Promise<number> }, args: string[
 async function main(argv: string[]) {
   argv = [...argv]
   const [word] = argv.filter((arg) => !arg.startsWith('-'))
-  if (word === 'login') return login(deploymentOf(clean(argv[argv.indexOf('login') + 1] ?? deploymentUrl(argv) ?? fail('usage: bdx login <board url>'))))
+  // bordeaux's own commands answer --help before they read their arguments: upstream's, below.
+  const usage = word !== undefined && (argv.includes('--help') || argv.includes('-h')) ? usageOf(word) : null
+  if (usage) return void process.stdout.write(usage)
+  if (word === 'login') return login(deploymentOf(boardUrlArg(argv[argv.indexOf('login') + 1] ?? deploymentUrl(argv) ?? fail('usage: bdx login <board url>'))))
   if (word === 'logout') {
     const store = load()
     const url = clean(argv[argv.indexOf('logout') + 1] ?? store.current ?? fail("you aren't signed in"))
