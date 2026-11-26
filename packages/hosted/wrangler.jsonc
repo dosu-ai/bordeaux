@@ -35,12 +35,16 @@
   "triggers": { "crons": ["0 4 * * *"] },
   "queues": {
     "producers": [{ "binding": "TEAMS_QUEUE", "queue": "bordeaux-teams" }],
-    "consumers": [{ "queue": "bordeaux-teams", "max_batch_size": 10, "max_retries": 5 }]
+    // A team whose job fails five times lands in bordeaux-teams-dead, where an operator sees it.
+    "consumers": [{ "queue": "bordeaux-teams", "max_batch_size": 10, "max_retries": 5, "dead_letter_queue": "bordeaux-teams-dead" }]
   },
-  // Each team's requests and wakes a minute (spec 09, "Limits"), keyed by team ID.
+  // Each team's requests and wakes a minute, keyed by team ID, and registry lookups a minute per
+  // client IP (spec 09, "Limits"). Workers in one account that use the same namespace ID share
+  // its counters: these three are bordeaux-hosted's alone (docs/hosted.md, step 3).
   "ratelimits": [
     { "name": "REQUEST_LIMITER", "namespace_id": "9001", "simple": { "limit": 300, "period": 60 } },
-    { "name": "WAKE_LIMITER", "namespace_id": "9002", "simple": { "limit": 60, "period": 60 } }
+    { "name": "WAKE_LIMITER", "namespace_id": "9002", "simple": { "limit": 60, "period": 60 } },
+    { "name": "LOOKUP_LIMITER", "namespace_id": "9003", "simple": { "limit": 60, "period": 60 } }
   ],
   // This version's ID and upload time: a board's Durable Object reloads when a newer one calls it,
   // so a deploy reaches a board a client keeps busy (spec 08, "Deploys").

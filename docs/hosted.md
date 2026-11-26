@@ -26,8 +26,10 @@ In the `dosu-ai` org, open **Settings → Developer settings → GitHub Apps →
 | Subscribe to events | **Organization**, for renames |
 | Where can this GitHub App be installed? | **Any account** |
 
-GitHub sends `installation` and `installation_target` events to every App, so they need no
-box. After creating the App, note its **App ID** and **Client ID**, generate a **client
+GitHub sends `installation` events to every App, so they need no box. GitHub's docs don't say
+whether `installation_target`, which carries a person's rename, needs one: if the App's event
+list shows **Installation target**, tick it, and note what you found in spec 09. An org's rename
+comes as `organization`. After creating the App, note its **App ID** and **Client ID**, generate a **client
 secret**, and generate a **private key** (`.pem`). Put the two IDs in
 `packages/hosted/wrangler.jsonc` (`GITHUB_APP_ID`, `GITHUB_CLIENT_ID`): they aren't secret.
 
@@ -78,6 +80,14 @@ npx wrangler r2 bucket create bordeaux-hosted-files
 ```bash
 npx wrangler queues create bordeaux-teams
 ```
+
+```bash
+npx wrangler queues create bordeaux-teams-dead
+```
+
+The rate limiters' namespace IDs (9001 to 9003 in `wrangler.jsonc`) must be no other Worker's
+in the account, or they share counters: check the account's Workers for `ratelimits` first, and
+pick others if any is taken.
 
 ```bash
 npx wrangler secret put GITHUB_PRIVATE_KEY < bordeaux-ai.private-key.pem
@@ -148,7 +158,8 @@ curl -s -H "authorization: Bearer $(bdx token --url https://board.dosu.ai)" http
 
 They show usage, never what's on a board. The daily cron (04:00 UTC) puts each team on the
 `bordeaux-teams` Queue: retention, its usage, and deleting a team 30 days after its App was
-uninstalled.
+uninstalled. A team whose job fails five times lands in `bordeaux-teams-dead`, and the next
+day's cron tries it again.
 
 ## Locally
 
