@@ -171,8 +171,10 @@ org owner ◀─(5) 302 https://<org>.board.dosu.ai
 
 **As built:** the App's slug is the `GITHUB_APP_SLUG` var (`bordeaux-ai` if unset), and the
 hub checks events with the App's `GITHUB_WEBHOOK_SECRET`. A person's rename arrives as
-`installation_target.renamed`, which the record follows too. `/setup?setup_action=request` (a
-member asked an owner to install the App) says an owner has to approve it. `/setup` for an
+`installation_target.renamed`, which the record follows too. GitHub's form for a new App lists
+**Installation target** as an event to subscribe to (2026-11-26), so `bordeaux-ai` subscribes
+to it. `/setup?setup_action=request` (a member asked an owner to install the App) says an owner
+has to approve it. `/setup` for an
 installation that already has a team sends the person to it without asking GitHub; if GitHub
 doesn't answer, it asks the person to load it again. GitHub may deliver an installation's
 events out of order, so the record keeps the newest `installation.updated_at` it applied and

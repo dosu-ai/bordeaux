@@ -23,22 +23,23 @@ In the `dosu-ai` org, open **Settings → Developer settings → GitHub Apps →
 | Webhook URL | `https://board.dosu.ai/__bordeaux/github/events` |
 | Webhook secret | a long random string, kept for step 3 |
 | Organization permissions → **Members** | **Read-only** |
-| Subscribe to events | **Organization**, for renames |
+| Subscribe to events | **Installation target** and **Organization**, for renames |
 | Where can this GitHub App be installed? | **Any account** |
 
-GitHub sends `installation` events to every App, so they need no box. GitHub's docs don't say
-whether `installation_target`, which carries a person's rename, needs one: if the App's event
-list shows **Installation target**, tick it, and note what you found in spec 09. An org's rename
-comes as `organization`. After creating the App, note its **App ID** and **Client ID**, generate a **client
-secret**, and generate a **private key** (`.pem`). Put the two IDs in
-`packages/hosted/wrangler.jsonc` (`GITHUB_APP_ID`, `GITHUB_CLIENT_ID`): they aren't secret.
+GitHub sends `installation` events to every App, so they need no box. A person's rename comes
+as `installation_target`, an org's as `organization`. After creating the App, note its **App
+ID** and **Client ID**, generate a **client secret**, and generate a **private key** (`.pem`).
+Put the two IDs in `packages/hosted/wrangler.jsonc` (`GITHUB_APP_ID`, `GITHUB_CLIENT_ID`): they
+aren't secret.
 
 ## 2. dosu.ai on Cloudflare
 
 dosu.ai stays registered at GoDaddy. Its DNS moves to Dosu's Cloudflare account.
 
 1. In Cloudflare, **Add a domain**: `dosu.ai`, on Dosu's account. Check the records it
-   imports: today there are only the apex and `www`.
+   imports: the apex, `www`, and two GoDaddy adds to every domain it hosts, `_domainconnect`
+   and `pay`. Keep those two as **DNS only**: proxied, `pay.dosu.ai` stops working. Delete
+   the apex's A records, which point at GoDaddy's forwarding.
 2. Make the records, all proxied:
 
    | Type | Name | Content |
@@ -51,11 +52,13 @@ dosu.ai stays registered at GoDaddy. Its DNS moves to Dosu's Cloudflare account.
    `100::` is an address with nothing behind it: a redirect rule or the Worker answers.
 3. **Rules → Redirect Rules**: hostname is `dosu.ai` or `www.dosu.ai` → 301 to
    `https://dosu.dev/`, as GoDaddy forwards them today.
-4. **SSL/TLS → Edge Certificates → Order Advanced Certificate**: hostnames `dosu.ai`,
-   `board.dosu.ai`, and `*.board.dosu.ai`, TXT validation. Universal SSL's `*.dosu.ai` doesn't
-   reach `acme.board.dosu.ai`. Advanced Certificate Manager is $10 a month.
-5. At GoDaddy, set dosu.ai's nameservers to the two Cloudflare names, and wait for the zone to
-   be active.
+4. At GoDaddy, set dosu.ai's nameservers to the two Cloudflare names, and wait for the zone to
+   be active. Until it is, Cloudflare answers with `100::` and nothing redirects: do this step
+   when a short gap doesn't matter.
+5. Once the zone is active, **SSL/TLS → Edge Certificates → Activate Advanced Certificate
+   Manager** ($10 a month), then **Order an advanced certificate**: Google Trust Services, the
+   form's `dosu.ai` and `*.dosu.ai`, plus `*.board.dosu.ai`, TXT validation, 3 months.
+   Universal SSL's `*.dosu.ai` doesn't reach `acme.board.dosu.ai`.
 
 Then check:
 
@@ -101,7 +104,9 @@ npx wrangler secret put GITHUB_CLIENT_SECRET
 npx wrangler secret put GITHUB_WEBHOOK_SECRET
 ```
 
-Each `secret put` prompts for its value. Delete the `.pem` once it's in.
+Each `secret put` prompts for its value. Before the first deploy, the first one asks to create
+the `bordeaux-hosted` Worker: say yes, and the deploy replaces its empty placeholder. Delete the
+`.pem` once it's in.
 
 ## 4. Deploy
 

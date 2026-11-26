@@ -53,10 +53,10 @@
   "alias": { "@vercel/connect/chat": "@dosu/bordeaux/connect-chat" },
   "vars": {
     "BORDEAUX_HOSTED_URL": "https://board.dosu.ai",
-    // The bordeaux-ai App's IDs, which aren't secret: set once it's registered (docs/hosted.md).
+    // The bordeaux-ai App's IDs, which aren't secret (docs/hosted.md).
     "GITHUB_APP_SLUG": "bordeaux-ai",
-    "GITHUB_APP_ID": "",
-    "GITHUB_CLIENT_ID": "",
+    "GITHUB_APP_ID": "5941167",
+    "GITHUB_CLIENT_ID": "Iv23lif0uwX8SeJS8tGh",
     // Whose owners operate teams at board.dosu.ai/__bordeaux/teams.
     "BORDEAUX_OPERATOR_ORG": "dosu-ai",
     // A free team's limits (spec 09); a team's record may override each.
