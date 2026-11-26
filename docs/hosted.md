@@ -163,6 +163,82 @@ daily job, a board's timer, a sign-up GitHub didn't answer), so Workers Issues s
 A team whose daily job fails five times lands in `bordeaux-teams-dead`; each failure is an
 issue first.
 
+## 7. GitHub sync: the sync App
+
+A team syncs its repos with its board through a second public App, `bordeaux-ai-sync`, which
+asks for write access to issues and pull requests. `bordeaux-ai` keeps asking only to read
+members, so signing up stays a small ask, and a team grants repo access only when it turns sync
+on (spec 09, "Sync, later").
+
+In the `dosu-ai` org, open **Settings → Developer settings → GitHub Apps → New GitHub App**.
+
+| Field | Value |
+| --- | --- |
+| GitHub App name | `bordeaux-ai-sync` (if GitHub has the name already, pick another: it's the slug below) |
+| Homepage URL | `https://board.dosu.ai` |
+| Description | links to `/terms` and `/privacy`, as `bordeaux-ai`'s does |
+| Callback URL | empty: nobody signs in with this App |
+| Request user authorization (OAuth) during installation | **unchecked** |
+| Setup URL | `https://board.dosu.ai/sync/setup`, with **Redirect on update** checked |
+| Enable Device Flow | unchecked |
+| Webhook → Active | checked |
+| Webhook URL | `https://board.dosu.ai/__bordeaux/github/events`, the same as `bordeaux-ai`'s |
+| Webhook secret | a new long random string, not `bordeaux-ai`'s |
+| Repository permissions → **Issues** | **Read and write** |
+| Repository permissions → **Pull requests** | **Read and write** |
+| Repository permissions → **Actions** | **Read-only**, for CI results on PRs |
+| Repository permissions → **Metadata** | Read-only (GitHub sets it) |
+| Subscribe to events | **Issues**, **Issue comment**, **Pull request**, **Pull request review**, **Pull request review comment**, **Workflow run** |
+| Where can this GitHub App be installed? | **Any account** |
+
+Both Apps send to one URL. The hub tells their events apart by the App ID GitHub sends with
+each, and checks each against its own App's secret. After creating it, note its **App ID** and
+generate a **private key** (`.pem`). It needs no client secret.
+
+In `packages/hosted/wrangler.jsonc`'s `vars`, add the two names, which aren't secret:
+
+```jsonc
+"GITHUB_SYNC_APP_SLUG": "bordeaux-ai-sync",
+"GITHUB_SYNC_APP_ID": "<its App ID>",
+```
+
+From `packages/hosted`, put its secrets:
+
+```bash
+npx wrangler secret put GITHUB_SYNC_PRIVATE_KEY < bordeaux-ai-sync.private-key.pem
+```
+
+```bash
+npx wrangler secret put GITHUB_SYNC_WEBHOOK_SECRET
+```
+
+Delete the `.pem` once it's in, and deploy (step 4). Until all three are set, hosted sync is
+off: `bdx sync add` answers that the board syncs nothing yet. With none set, the Worker says
+nothing, so deploying before this step raises no alert; with some set, it logs which are
+missing.
+
+Then check, on `dosu-ai`'s board, with a test repo (`dosu-ai/bordeaux-sync-test`):
+
+1. Install the sync App on `dosu-ai`, with **Only select repositories** and the test repo.
+   GitHub sends you to `https://dosu-ai.board.dosu.ai/`.
+2. As an owner of `dosu-ai`:
+
+   ```bash
+   bdx sync add github dosu-ai/bordeaux-sync-test prs --mirror
+   ```
+
+   ```bash
+   bdx sync list
+   ```
+
+3. Open an issue in the test repo. Within a few seconds it's a thread in channel `prs`
+   (`Issue #1: …`).
+4. Reply to that thread on the board. The reply appears on the issue, posted by
+   `bordeaux-ai-sync[bot]` with your name first.
+5. Comment on the issue. The comment comes back into the board thread.
+
+Record the date and what passed in spec 09's Testing section.
+
 ## Terms and privacy
 
 The hub serves Dosu's terms at `/terms` and privacy policy at `/privacy`, from

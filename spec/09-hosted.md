@@ -7,8 +7,10 @@ deployment of the template is still one team, as [QUESTIONS Q4](../QUESTIONS.md#
 
 Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Built so far: hosted mode, the
 registry, personal teams' sign-in, signing up, the hub's sign-in callback, the limits,
-operating teams, and the hosted Worker (`packages/hosted`, set up by
-[docs/hosted.md](../docs/hosted.md)). Not yet: the GitHub App, dosu.ai's DNS, and going live.
+operating teams, the hosted Worker (`packages/hosted`, set up by
+[docs/hosted.md](../docs/hosted.md)), and GitHub sync as data (see [Sync, later](#sync-later)).
+Live since 2026-11-26 (see [Testing](#testing)). Not yet: the sync App registered, and Slack
+and Linear sync.
 
 ## Decisions
 
@@ -20,7 +22,7 @@ operating teams, and the hosted Worker (`packages/hosted`, set up by
 | Where is a team's board? | **`https://<org>.board.dosu.ai`**, its named boards at `/b/<name>/`. A subdomain per team, not a path, so each team's inspector is its own origin (see [Why subdomains](#why-subdomains)). |
 | How do hostnames reach the Worker? | **dosu.ai moves to Dosu's Cloudflare account**, and two Worker routes and one wildcard certificate serve every team. Cloudflare for SaaS was the alternative, with dosu.ai's DNS left at GoDaddy and a custom hostname per team. It stays the way to a team's own domain later. |
 | Who can sign up? | **Any GitHub org or user**, by installing Dosu's GitHub App, `bordeaux-ai`. Free for now, with per-team limits. Paid plans come later. |
-| What can a hosted team configure? | **No code.** A hosted team gets the protocol, the inspector, `bdx` and `vb`, named boards, and registered watchers woken by URL. Config watchers, middleware, and sync are a deployment's code, so they stay self-hosted. |
+| What can a hosted team configure? | **No code.** A hosted team gets the protocol, the inspector, `bdx` and `vb`, named boards, registered watchers woken by URL, and sync as data. Config watchers, middleware, and custom sync functions are a deployment's code, so they stay self-hosted. |
 | Sync? | **Later, as data.** GitHub first, then Slack and Linear (see [Sync, later](#sync-later)). |
 | Dosu's own board | `dosu-ai` signs up like any org, as the first team, at `https://dosu-ai.board.dosu.ai`. Nothing moves from the workers.dev board. |
 
@@ -251,7 +253,7 @@ The flows are spec 03's. What changes is which account and App they check.
 | Registered watchers, woken by URL | yes | The team's app runs anywhere and pulls its matches ([04](04-watchers.md)). |
 | Wake by service binding | no | Only a caller verified through a service binding may register one ([04](04-watchers.md#wake-ups-without-vercel-δ)), and a binding names one of Dosu's own Workers. |
 | Config watchers, middleware | no | A deployment's code in `configure()`. The hosted Worker's `configure()` is Dosu's: its middleware runs on every team's boards, and it sets no `watch` or `sync`. |
-| Sync | later | [Sync, later](#sync-later) |
+| Sync | GitHub, as rows (`bdx sync add`); Slack and Linear later | [Sync, later](#sync-later) |
 
 ## Limits
 
@@ -304,7 +306,8 @@ A deployment is hosted when `BORDEAUX_HOSTED_URL` is set (`https://board.dosu.ai
 `REGISTRY` binding. Then `BORDEAUX_URL`, `BORDEAUX_GITHUB_ORG`, `GITHUB_INSTALLATION_ID`, and
 `BORDEAUX_OWNERS` must be unset: the Worker refuses to start with them, so a team never falls
 back to the operator's org. A `configure()` that sets `watch` or `sync` is refused the same
-way.
+way. (`teamSync`, which builds each team's sync from its rows, is allowed: see
+[Sync, later](#sync-later).)
 
 **As built:** the variable is the hub's URL, not its domain, so a laptop's hub can be
 `http://board.localhost:8787` and its teams `http://<login>.board.localhost:8787`. A Worker
@@ -343,7 +346,8 @@ interface Team {
   it can't wait on the registry. A self-hosted DO reads env, as before.
 - **Crons fan out.** The daily retention cron puts one Queue message per team on a
   `bordeaux-teams` Queue, so no one invocation walks every team. The 15-minute sync check has
-  nothing to do in hosted mode until hosted sync exists.
+  nothing to do in hosted mode: GitHub sync, the only hosted sync so far, needs no sign-in to
+  start its webhooks.
 
 ### Operating it
 
@@ -370,7 +374,7 @@ is boards, board data, and file bytes, not messages: counting them would wake ev
 hub's `/terms` and `/privacy` (`src/legal.ts`), adding to Dosu's own at `dosu.dev/legal`. The
 hub's front page says installing agrees to both when `BORDEAUX_TERMS_URL` and
 `BORDEAUX_PRIVACY_URL` are set. Workers Logs keep 7 days of requests and errors, and Workers
-Issues alerts on each new error ([docs/hosted.md](../docs/hosted.md), step 6).
+Issues alerts on each new error ([docs/hosted.md](../docs/hosted.md), step 7).
 
 ## Sync, later
 
@@ -401,6 +405,72 @@ and a direction (`mirror` or `into`). Custom sync functions stay self-hosted.
 v1 leaves room for this without building any of it: team records and DirectoryDOs are per
 team, and the hub's webhook route is namespaced by platform.
 
+**As built (GitHub):**
+
+- **The rows.** A team's DirectoryDO keeps `bx_sync`, one row per provider and external ID:
+  `{ provider, external, channel, direction, by, created_at }`. `GET /admin/sync` lists them
+  for anyone the default board lets in. `POST` and `DELETE` change them, for the team's owners
+  only, as their last sign-in found them: a service token can't, even one that manages every
+  channel. `bdx sync add github
+  acme/www prs [--mirror]`, `bdx sync rm github acme/www`, and `bdx sync list` call them.
+  `sync` is also upstream's `vb sync <id> [target]`, so `bdx` takes `add`, `rm`, and `list` and
+  hands anything else to upstream's. A self-hosted board's sync is its code: there,
+  `/admin/sync` answers 404.
+- **A GitHub row's repo is on the team's own account** (`<login>/<repo>`): the sync App's
+  installation can't reach another account's repos. A row maps every PR and issue of the repo
+  (upstream's `repos()`), `into` the channel by default, or `mirror` to send board replies back.
+  Upstream matches a repo as GitHub writes it, case included, so the owner must be the login
+  exactly; the repo's own case isn't checked yet. The channel is one upstream can name
+  (lowercase segments of letters, numbers, `_`, and `-`, joined by `/`), or every import would
+  fail.
+- **Which providers a team may use is the hosted Worker's `configure()`**:
+  `configure((env) => ({ teamSync: { github: githubTeamSync(env) } }))`. Hosted mode still
+  refuses `watch` and `sync`, which would run Dosu's code on every team's board; `teamSync`
+  only builds the built-in providers from each team's rows. A provider whose secrets aren't set
+  is null, and `/admin/sync` refuses rows for it. With none of its settings set it's off
+  quietly, since every isolate would log it; with some set and not others, it logs which are
+  missing. A self-hosted deployment ignores `teamSync`.
+- **The team carries its rows.** `boardOf` is synchronous, and a board's DO builds its own
+  `board()` for its alarms from the team the Worker hands it, so the rows travel with the team:
+  `teamAt` reads them from the DirectoryDO with the record and keeps both for the same 5
+  minutes, and every call to a board's DO carries them. `boardOf` builds `board()` again when a
+  team's rows or its sync installation differ from those it was built with. Changing a row
+  drops this isolate's kept host, so it takes effect here at once and on other isolates within
+  5 minutes. When `teamSync` names no provider, nothing extra is read. The rows carry when they
+  last changed (`version`, from the DirectoryDO) and the links theirs (`sync_at`, on the record),
+  and a board's DO keeps the newer of each, so an isolate that kept the team longer can't hand it
+  back older rows or links.
+- **The sync App** is `bordeaux-ai-sync` (`GITHUB_SYNC_APP_SLUG`), with `GITHUB_SYNC_APP_ID`,
+  and the secrets `GITHUB_SYNC_PRIVATE_KEY` and `GITHUB_SYNC_WEBHOOK_SECRET`. Its setup URL is
+  `<hub>/sync/setup`: the hub asks GitHub, as the sync App, whose installation it is, and links
+  it to that account's team. Its `installation.created` event does the same, so either comes
+  first. `deleted` and `suspend` unlink it; `unsuspend` links it again. An account with no team
+  gets no link: it installs `bordeaux-ai` first. The registry keeps the link on the team's
+  record (`sync.github`) and indexes it by installation.
+- **Webhooks.** Both Apps send to `/__bordeaux/github/events`. The hub tells them apart by
+  `X-GitHub-Hook-Installation-Target-ID`, the App's ID, and checks each App's signature with
+  that App's own secret. A sync event's installation finds the team, and the hub hands the event,
+  as GitHub sent it, to that team's default board at `/webhooks/github`, where upstream's provider
+  checks the signature again and puts it in the board's inbox. The hub reads the team's record
+  and rows fresh for each sync event, not as its isolate kept them, so the first events after an
+  install or a new row aren't lost: one more DirectoryDO read per event. An event for an
+  installation with no team, or a team that's suspended or uninstalled, is dropped with 200
+  `{ "team": null }`, and one for a team that maps none of its repos yet with 200
+  `{ "team": "<id>", "synced": false }`, so GitHub doesn't list it as a failed delivery.
+- **A team's own host answers 404 on `/webhooks/*`.** Platforms reach a hosted board only
+  through the hub, which picked the team by installation.
+- **Tokens.** The provider is Chat SDK's GitHub adapter with the sync App's ID and key and the
+  team's installation ID, so the Worker mints each team's installation tokens and keeps none.
+- **Not yet:** `bdx health`'s sync check and `bdx redact --everywhere` read `configure()`'s
+  sync, not a team's rows; `bdx sync add` doesn't check that the App can see the repo.
+
+**Slack and Linear, later,** need what GitHub doesn't: an OAuth install flow on the hub
+(`<hub>/slack/oauth/callback`) that seals each team's bot token with AES-GCM under a Worker
+secret into its DirectoryDO, a registry index by Slack `team_id` or Linear organization ID,
+`teamSync.slack` and `teamSync.linear` builders that unseal the token, and the hub's
+`/__bordeaux/slack/events` answering Slack's `url_verification` itself. Slack's history limits
+for commercially distributed apps outside its Marketplace come first (see above).
+
 ## Testing
 
 - **vitest in workerd**, in hosted mode with two teams in one Worker, GitHub and Cloudflare's
@@ -419,6 +489,16 @@ team, and the hub's webhook route is namespaced by platform.
 
   **As built:** the hosted tests run on their own vitest config (`vitest.hosted.config.ts`),
   since the pool's `outboundService` doesn't reach a Worker in vitest's `projects`.
+- **Hosted sync, in vitest:** two teams in one Worker, each with its rows and its own sync App
+  installation, GitHub's API answered by `outboundService`. A webhook for one team's
+  installation lands only on that team's board, and only by its own rows; a board reply goes
+  back with that installation's token; members can read rows but not change them; an event
+  that isn't the sync App's, or is sent straight to a team's host, is refused; an uninstalled
+  sync App's or a suspended team's events are dropped; a link made on another isolate counts for
+  the next event; an event for a team with no rows answers 200. Which of two views of a team's
+  sync a board's DO keeps is tested on its own, not through the DO: in one test isolate the board
+  takes an event before a stale view could reach it. Not checked live: the sync App isn't
+  registered yet ([docs/hosted.md](../docs/hosted.md), step 7).
 - **Live,** on `board.dosu.ai`: sign-up, sign-in by device and by browser, and a post, for
   `dosu-ai`, a second test org, and a personal account.
 
