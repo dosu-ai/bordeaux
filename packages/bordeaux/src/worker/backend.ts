@@ -7,7 +7,7 @@ import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
 import { directory } from './auth.ts'
 import { createTrust } from './trust.ts'
-import type { Team } from './team.ts'
+import { boardUrl, type Team } from './team.ts'
 
 /** The upstream version bordeaux speaks the protocol of (spec 00). */
 export const UPSTREAM_VERSION = '0.56.1'
@@ -24,7 +24,7 @@ export const boardKey = (team: string, name: string | null) => `${team}/${(name 
 
 export function durable(env: BordeauxEnv, team: Team, name: string | null = null): Backend {
   let binding: BoardBinding | null = null
-  const url = name === null ? team.url : `${team.url}/b/${name.toLowerCase()}`
+  const url = boardUrl(team, name)
   // A board's DO resets when a newer version calls it: what was queued there is sent again.
   const board = retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(team.id, name))))
   const stub = () => board

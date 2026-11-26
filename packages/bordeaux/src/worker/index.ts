@@ -84,6 +84,8 @@ export default {
 
   /** A cron (`triggers.crons` in wrangler.jsonc): retention daily at GC_CRON, else a sync check. */
   async scheduled(controller: ScheduledController, env: BordeauxEnv): Promise<void> {
+    // A deployment with no URL serves no board, and has none to collect: say so, once a run.
+    if (!env.BORDEAUX_URL) return console.error("[bordeaux] the cron has no board to run on: set BORDEAUX_URL, the board's public URL")
     if (controller.cron === GC_CRON) await collectAll(env, envTeam(env))
     else await scheduledCheck(env)
   },

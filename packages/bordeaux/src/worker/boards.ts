@@ -7,13 +7,12 @@ import { bordeauxTokens, directory, issuerKeys } from './auth.ts'
 import { durable } from './backend.ts'
 import type { BordeauxEnv } from './env.ts'
 import { configOf } from './config.ts'
-import type { Team } from './team.ts'
+import { boardUrl, type Team } from './team.ts'
+
+export { boardUrl }
 
 /** A board's name: 1 to 64 letters, numbers, and `._-`, matched whatever its case (as upstream's). */
 export const BOARD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
-
-/** A named board's URL, or the default board's for null. */
-export const boardUrl = (team: Team, name: string | null) => (name === null ? team.url : `${team.url}/b/${name.toLowerCase()}`)
 
 /** The board a URL of the team's names: null for the default, a name, or undefined for none. */
 export function boardNamed(team: Team, url: string): string | null | undefined {

@@ -16,6 +16,9 @@ export interface Team {
   owners: string[]
 }
 
+/** The team's board named `name`, or its default board for null: its URL, every token's audience. */
+export const boardUrl = (team: Team, name: string | null) => (name === null ? team.url : `${team.url}/b/${name.toLowerCase()}`)
+
 /** The one team a self-hosted deployment is (Q4). */
 export function envTeam(env: BordeauxEnv): Team {
   if (!env.BORDEAUX_URL) throw new Error("BORDEAUX_URL is required: the board's public URL, which every token is for")
