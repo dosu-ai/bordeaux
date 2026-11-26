@@ -12,6 +12,7 @@ import { bindingOf } from '../worker/backend.ts'
 import { boardOf } from '../worker/boards.ts'
 import { envTeam, type Team } from '../worker/team.ts'
 import { bytes } from '../worker/limits.ts'
+import { registry } from '../worker/registry.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
 import type { Collected, DeadLetter, Failure, Health } from './engine.ts'
 import type { Redaction } from './redact.ts'
@@ -70,6 +71,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       // board() for this board, in this isolate: its own sync's entries, links, and typing.
       binding: () => {
         const { team, name } = this.boardRef()
+        if (!team) return null
         boardOf(this.env, team, name)
         return bindingOf(team.id, name)
       },
@@ -131,10 +133,28 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
   }
 
   /** This DO's board and team: a DO no Worker has named a team to is the deployment's own team's. */
-  private boardRef(): { team: Team; name: string | null } {
+  private boardRef(): { team: Team | null; name: string | null } {
     const rows = this.ctx.storage.sql.exec<{ key: string; data: string }>("select key, data from bx_state where key in ('board', 'team')").toArray()
     const found = Object.fromEntries(rows.map((row) => [row.key, JSON.parse(row.data) as unknown]))
-    return { team: (found.team as Team | undefined) ?? envTeam(this.env), name: (found.board as string | null | undefined) ?? null }
+    // A hosted board no Worker has called yet has no team to act for.
+    const team = (found.team as Team | undefined) ?? (this.env.BORDEAUX_HOSTED_URL ? null : envTeam(this.env))
+    return { team, name: (found.board as string | null | undefined) ?? null }
+  }
+
+  /** Whether the team is active, as the registry said in the last 5 minutes: self-hosted, always. */
+  private active = { until: 0, ok: true }
+
+  /**
+   * Whether this board may send anything out now: a suspended or uninstalled hosted team's
+   * schedules and wakes wait (spec 09), as its requests are refused at the Worker.
+   */
+  private async teamActive(): Promise<boolean> {
+    const { team } = this.boardRef()
+    if (!team || team.id === 'default') return true
+    if (this.active.until > Date.now()) return this.active.ok
+    const record = await registry(this.env).byId(team.id)
+    this.active = { until: Date.now() + 5 * 60_000, ok: record?.state === 'active' }
+    return this.active.ok
   }
 
   /** Runs every timer that's due: a schedule's send (spec 05). A send that fails is tried again later. */
@@ -146,6 +166,11 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     await this.engine.ready
     for (const timer of this.engine.takeDue(Date.now())) {
       try {
+        // A task's lease running out sends nothing; what would wait until the team is back.
+        if (timer.kind !== 'lease.due' && !(await this.teamActive())) {
+          this.engine.later(timer, Date.now() + 5 * 60_000)
+          continue
+        }
         if (timer.kind === 'lease.due') await this.engine.leaseDue(timer.payload, timer.name)
         else if (timer.kind === 'wake') await this.wake(timer)
         else if (timer.kind === 'run') await this.runOwn()
@@ -165,6 +190,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
    */
   private async runOwn() {
     const { team, name } = this.boardRef()
+    if (!team) return
     boardOf(this.env, team, name)
     const binding = bindingOf(team.id, name)
     if (!binding) return
@@ -310,7 +336,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     if (!target) return
     // A hosted team's wakes past its limit wait: one wake covers every match until it goes.
     const { team } = this.boardRef()
-    if (team.limits && this.env.WAKE_LIMITER && !(await this.env.WAKE_LIMITER.limit({ key: team.id })).success) return this.engine.later(timer, Date.now() + 10_000)
+    if (team?.limits && this.env.WAKE_LIMITER && !(await this.env.WAKE_LIMITER.limit({ key: team.id })).success) return this.engine.later(timer, Date.now() + 10_000)
     const response = await fetch(new URL('wake', target.url.endsWith('/') ? target.url : `${target.url}/`), { method: 'POST', headers: { 'x-board-watchers': target.hash } })
     if (!response.ok && response.status !== 202) throw new Error(`${target.url} answered ${response.status} to a wake`)
   }
@@ -327,6 +353,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     if ('skip' in due) return
     const { schedule } = due
     const { team, name } = this.boardRef()
+    if (!team) throw new Error('the board has no team to send as')
     boardOf(this.env, team, name)
     const binding = bindingOf(team.id, name)
     if (!binding) throw new Error('the board has no binding to send through')
@@ -381,7 +408,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       this.named(board, team)
       if (!isKept(method)) throw notKeptHere(method)
       const caller = fromWire(wire)
-      const { limits } = team ?? this.boardRef().team
+      const limits = (team ?? this.boardRef().team)?.limits
       if (limits) this.withinLimits(limits, method, caller.principal.id, input)
       // `tasks` is the task list's method; the engine names it apart from its task store.
       const run = (method === 'tasks' ? this.engine.tasksList : this.engine[method]) as (caller: ReturnType<typeof fromWire>, input: unknown) => Promise<unknown>
@@ -415,6 +442,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     if (Date.now() - this.usage.at < REPORT_MS) return
     this.usage.at = Date.now()
     const { team, name } = this.boardRef()
+    if (!team) return
     try {
       const totals = await this.env.DIRECTORY.get(this.env.DIRECTORY.idFromName(team.id)).usage(name ?? '', this.ctx.storage.sql.databaseSize, this.engine.fileBytes())
       this.usage = { at: this.usage.at, ...totals }

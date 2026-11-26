@@ -44,7 +44,7 @@ async function appJwt(app: { id: string; key: string }): Promise<string> {
 }
 
 /** The account an installation of the App is on, as GitHub says, asked as the App; null for one that isn't the App's. */
-export async function installationOf(env: BordeauxEnv, installation: string, send: Fetch = fetch): Promise<{ id: number; login: string; type: 'Organization' | 'User' } | null> {
+export async function installationOf(env: BordeauxEnv, installation: string, send: Fetch = fetch): Promise<{ id: number; login: string; type: string } | null> {
   if (!env.GITHUB_APP_ID || !env.GITHUB_PRIVATE_KEY) throw new Error('the hub has no GitHub App to ask: set GITHUB_APP_ID and the GITHUB_PRIVATE_KEY secret')
   const response = await send(`https://api.github.com/app/installations/${encodeURIComponent(installation)}`, {
     headers: { authorization: `Bearer ${await appJwt({ id: env.GITHUB_APP_ID, key: env.GITHUB_PRIVATE_KEY })}`, accept: 'application/vnd.github+json', 'user-agent': 'bordeaux' },
@@ -52,7 +52,7 @@ export async function installationOf(env: BordeauxEnv, installation: string, sen
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`GitHub didn't say whose installation ${installation} is: ${response.status}`)
   const { account } = (await response.json()) as { account: { id: number; login: string; type: string } }
-  return { id: account.id, login: account.login, type: account.type === 'User' ? 'User' : 'Organization' }
+  return { id: account.id, login: account.login, type: account.type }
 }
 
 /** Installation tokens, by installation, each cached for up to 55 minutes (GitHub's last an hour). */

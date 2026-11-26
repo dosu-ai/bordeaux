@@ -145,7 +145,10 @@ async function login(request: Request, env: BordeauxEnv, board: InspectedBoard):
 /** GitHub's redirect back: the code becomes a GitHub token, used once to check membership, then the board's tokens. */
 async function callback(request: Request, env: BordeauxEnv, team: Team): Promise<Response> {
   const url = new URL(request.url)
-  const [state, name] = (cookies(request)[STATE_COOKIE] ?? '').split('.')
+  // The state is hex, so the first dot ends it: a board's name may have dots of its own.
+  const kept = cookies(request)[STATE_COOKIE] ?? ''
+  const dot = kept.indexOf('.')
+  const [state, name] = dot === -1 ? [kept, ''] : [kept.slice(0, dot), kept.slice(dot + 1)]
   const back = returnOf(env, team, state ?? '')
   if (!state || back.state !== url.searchParams.get('state')) return text(400, 'that sign-in has expired or came from somewhere else: open the inspector again')
   const code = url.searchParams.get('code')
