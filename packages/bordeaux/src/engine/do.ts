@@ -10,7 +10,7 @@ import { ref } from '../upstream/server/feed.ts'
 import { indexOf } from '../upstream/server/feed.ts'
 import { bindingOf } from '../worker/backend.ts'
 import { boardOf } from '../worker/boards.ts'
-import { envTeam, type Team } from '../worker/team.ts'
+import { envTeam, newerSync, type Team } from '../worker/team.ts'
 import { bytes } from '../worker/limits.ts'
 import { registry } from '../worker/registry.ts'
 import { DESTROYED } from '../worker/directory.ts'
@@ -128,6 +128,11 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
    * read fresh, so it isn't kept.
    */
   private named(board: string | null | undefined, team: Team | undefined) {
+    if (team && team.id !== 'default' && (team.sync || this.boardRef().team?.sync)) {
+      // An isolate that kept the team longer may hand over older rows or links: the newer of each stays.
+      const sync = newerSync(team.sync, this.boardRef().team?.sync)
+      team = { ...team, ...(sync ? { sync } : {}) }
+    }
     for (const [key, value] of [['board', board], ['team', team?.id === 'default' ? undefined : team]] as const) {
       if (value === undefined) continue
       const data = JSON.stringify(value)

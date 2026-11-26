@@ -4,7 +4,8 @@
 // from it, never from env.
 import type { BordeauxEnv } from './env.ts'
 import { registry, type TeamRecord } from './registry.ts'
-import { configOf } from './config.ts'
+import { configOf, teamSyncOf } from './config.ts'
+import { directory } from './auth.ts'
 import type { SyncRow } from './directory.ts'
 import { limitsOf, type Limits } from './limits.ts'
 import { Lru } from './lru.ts'
@@ -29,7 +30,22 @@ export interface Team {
    * platform by provider (the sync App's installation on its account, for `github`). Carried
    * with the team, since board() is built synchronously, here and in the board's DO.
    */
-  sync?: { rows: SyncRow[]; links: Record<string, string> }
+  sync?: TeamSyncState
+}
+
+/**
+ * A hosted team's sync as one request found it: its rows and when they last changed
+ * (`version`), and its links and when they last changed (`linked_at`). Isolates keep a team for 5
+ * minutes, so a board's DO may hear of older rows after newer ones: it keeps the newer of each.
+ */
+export type TeamSyncState = { rows: SyncRow[]; version: number; links: Record<string, string>; linked_at: number }
+
+/** The newer of two views of a team's sync, rows and links each: what a board's DO keeps. */
+export function newerSync(given: TeamSyncState | undefined, kept: TeamSyncState | undefined): TeamSyncState | undefined {
+  if (!given || !kept) return given ?? kept
+  const rows = given.version >= kept.version ? given : kept
+  const links = given.linked_at >= kept.linked_at ? given : kept
+  return { rows: rows.rows, version: rows.version, links: links.links, linked_at: links.linked_at }
 }
 
 /** The team's board named `name`, or its default board for null: its URL, every token's audience. */
@@ -77,7 +93,8 @@ export function hubOf(env: BordeauxEnv): URL | null {
  * reach it, and a host with no team for 30 seconds, so the same unknown host doesn't ask the
  * registry on every request.
  */
-const found = new Lru<string, { record: TeamRecord | null; until: number }>(2000)
+type Rows = { rows: SyncRow[]; version: number }
+const found = new Lru<string, { record: TeamRecord | null; rows: Rows | undefined; until: number }>(2000)
 const FOUND_MS = 5 * 60_000
 const MISSING_MS = 30_000
 
@@ -91,23 +108,49 @@ export async function teamAt(env: BordeauxEnv, hub: URL, host: string, request?:
   const key = host.toLowerCase()
   const kept = found.get(key)
   let record = kept && kept.until > Date.now() ? kept.record : undefined
+  let rows = kept?.rows
   if (record === undefined) {
     // Every lookup the isolate hasn't kept asks the one registry: a client making up hosts is held
     // to a few a minute, so it can't keep the registry from everyone else.
     const ip = request?.headers.get('cf-connecting-ip')
     if (ip && env.LOOKUP_LIMITER && !(await env.LOOKUP_LIMITER.limit({ key: ip })).success) return refuse(429, 'rate_limited', 'too many hosts looked up from here this minute: wait and try again')
     record = await registry(env).byHost(key)
-    found.set(key, { record, until: Date.now() + (record ? FOUND_MS : MISSING_MS) })
+    rows = record ? await rowsOf(env, record) : undefined
+    found.set(key, { record, rows, until: Date.now() + (record ? FOUND_MS : MISSING_MS) })
   }
   if (!record) return refuse(404, 'no_team', `no team is at ${key}: a GitHub org or person makes one at ${hub.origin}`)
+  return usable(env, hub, record, rows)
+}
+
+/** A team's sync rows, kept with its record, when the Worker has any provider to build from them. */
+const rowsOf = async (env: BordeauxEnv, record: TeamRecord): Promise<Rows | undefined> =>
+  Object.keys(teamSyncOf(env)).length > 0 ? directory(env, { id: record.id } as Team).syncState() : undefined
+
+/**
+ * A hosted team from a record just read from the registry, with its rows read now too: for the
+ * hub, which found the team by a platform's event, so a link or a row made on another isolate
+ * counts at once. This isolate keeps what it read.
+ */
+export async function freshTeam(env: BordeauxEnv, hub: URL, record: TeamRecord): Promise<Team | Response> {
+  const rows = await rowsOf(env, record)
+  found.set(record.host, { record, rows, until: Date.now() + FOUND_MS })
+  return usable(env, hub, record, rows)
+}
+
+/** A hosted team as its requests see it, or why it can't be used: suspended, uninstalled, or being deleted. */
+function usable(env: BordeauxEnv, hub: URL, record: TeamRecord, rows: Rows | undefined): Team | Response {
   if (record.held_at || record.state === 'suspended') return refuse(403, 'team_suspended', 'this team is suspended')
   if (record.state === 'deleting') return refuse(403, 'team_uninstalled', "this team's boards are being deleted")
   if (record.state === 'uninstalled') {
     const until = new Date((record.state_at ?? 0) + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10)
     return refuse(403, 'team_uninstalled', `this team's GitHub App was uninstalled: install it on ${record.github.login} again by ${until} to keep its boards`)
   }
-  return hostedTeam(env, hub, record)
+  return hostedTeam(env, hub, record, rows)
 }
 
-/** A hosted team as its requests see it: its record, and its limits. */
-export const hostedTeam = (env: BordeauxEnv, hub: URL, record: TeamRecord): Team => ({ ...teamOfRecord(record, hub), limits: limitsOf(env, record.limits) })
+/** A hosted team as its requests see it: its record, its limits, and its sync, when it was read or it has links. */
+export const hostedTeam = (env: BordeauxEnv, hub: URL, record: TeamRecord, rows?: Rows): Team => {
+  const links = Object.fromEntries(Object.entries(record.sync ?? {}).map(([provider, link]) => [provider, String(link)]))
+  const sync = rows || Object.keys(links).length > 0 ? { sync: { rows: rows?.rows ?? [], version: rows?.version ?? 0, links, linked_at: record.sync_at ?? 0 } } : {}
+  return { ...teamOfRecord(record, hub), limits: limitsOf(env, record.limits), ...sync }
+}

@@ -6,7 +6,7 @@ import { oidcTokens } from '@vercel/board/access'
 import { bordeauxTokens, directory, issuerKeys } from './auth.ts'
 import { durable } from './backend.ts'
 import type { BordeauxEnv } from './env.ts'
-import { configOf } from './config.ts'
+import { configOf, teamSyncOf, type SyncProvider } from './config.ts'
 import { Lru } from './lru.ts'
 import { boardUrl, type Team } from './team.ts'
 
@@ -24,25 +24,44 @@ export function boardNamed(team: Team, url: string): string | null | undefined {
   return found && BOARD_NAME.test(found[1]!) ? found[1]!.toLowerCase() : undefined
 }
 
-/** board() per team and board, for the boards this isolate served most recently. */
-const handles = new Lru<string, { board: ReturnType<typeof board>; team: Team }>(500)
+/** board() per team and board, for the boards this isolate served most recently, and the sync it was built with. */
+const handles = new Lru<string, { board: ReturnType<typeof board>; team: Team; synced: string }>(500)
+
+/**
+ * A hosted team's providers, built from its rows by the Worker's `teamSync` (spec 09): each
+ * provider the team has rows for and is linked to.
+ */
+function teamProviders(env: BordeauxEnv, team: Team): Record<string, SyncProvider> {
+  if (!team.sync) return {}
+  const built: Record<string, SyncProvider> = {}
+  for (const [key, given] of Object.entries(teamSyncOf(env))) {
+    const rows = team.sync.rows.filter((row) => row.provider === key)
+    const provider = rows.length > 0 ? given.build(rows, team.sync.links[key]) : null
+    if (provider) built[key] = provider
+  }
+  return built
+}
 
 /**
  * board() for the team's board named `name`, or its default board for null: one per isolate. The
  * handle keeps the team as the latest request found it, which its backend sends the board's DO.
+ * A hosted team's default board is built again when its sync rows or links change.
  */
 export function boardOf(env: BordeauxEnv, team: Team, name: string | null) {
   const key = name?.toLowerCase() ?? ''
+  const synced = name === null && team.sync ? JSON.stringify(team.sync) : ''
   const kept = handles.get(`${team.id}/${key}`)
-  if (kept) {
+  if (kept && kept.synced === synced) {
     kept.team = team
     return kept.board
   }
   // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
   const tokens = oidcTokens({ oidc: { [team.url]: issuerKeys(env, team) } })
   const config = configOf(env)
-  const sync = config.sync && Object.fromEntries(Object.entries(config.sync).filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
-  const entry = { team } as { board: ReturnType<typeof board>; team: Team }
+  // A deployment's own sync, or a hosted team's, built from its rows: never both (hosted refuses `sync`).
+  const own = config.sync && Object.fromEntries(Object.entries(config.sync).filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
+  const sync = name === null && team.sync ? teamProviders(env, team) : own
+  const entry = { team, synced } as { board: ReturnType<typeof board>; team: Team; synced: string }
   entry.board = board({
     backend: durable(env, () => entry.team, name),
     ...(config.middleware ? { middleware: config.middleware } : {}),

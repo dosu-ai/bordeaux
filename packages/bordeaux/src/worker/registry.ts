@@ -28,6 +28,10 @@ export type TeamRecord = {
   limits?: Partial<Limits>
   /** What the daily cron last found it uses. */
   usage?: Usage
+  /** Its links to platforms it syncs with, by provider: the sync App's installation on its account, for `github` (spec 09). */
+  sync?: Record<string, number>
+  /** When its links last changed, so a board told of older links keeps the newer ones. */
+  sync_at?: number
 }
 
 export type Usage = { boards: number; data: number; files: number; at: number }
@@ -64,6 +68,8 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
   constructor(ctx: DurableObjectState, env: BordeauxEnv) {
     super(ctx, env)
     ctx.storage.sql.exec('create table if not exists bx_teams (id text primary key, host text not null unique, account integer not null unique, installation integer not null unique, data text not null)')
+    // Each team's links to platforms it syncs with, by the ID a platform's events name it by.
+    ctx.storage.sql.exec('create table if not exists bx_sync_links (provider text not null, external text not null, id text not null, primary key (provider, external))')
   }
 
   private one(where: string, value: string | number): TeamRecord | null {
@@ -159,6 +165,34 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
     return due ? this.save({ ...found, state: 'deleting' }) : null
   }
 
+  /** The team a platform's events for `external` are for (the sync App's installation, for `github`). */
+  async byLink(provider: string, external: string): Promise<TeamRecord | null> {
+    const [row] = this.ctx.storage.sql.exec<{ id: string }>('select id from bx_sync_links where provider = ? and external = ?', provider, external).toArray()
+    return row ? this.one('id', row.id) : null
+  }
+
+  /**
+   * Links the team on GitHub account `account` to a platform's `external` ID, in place of any link
+   * it had for `provider`: null when the account has no team, or one being deleted.
+   */
+  async link(provider: string, external: number, account: number): Promise<TeamRecord | null> {
+    const found = this.one('account', account)
+    if (!found || found.state === 'deleting') return null
+    const before = found.sync?.[provider]
+    if (before !== undefined) this.ctx.storage.sql.exec('delete from bx_sync_links where provider = ? and external = ?', provider, String(before))
+    this.ctx.storage.sql.exec('insert or replace into bx_sync_links (provider, external, id) values (?, ?, ?)', provider, String(external), found.id)
+    return this.save({ ...found, sync: { ...found.sync, [provider]: external }, sync_at: Math.max(Date.now(), (found.sync_at ?? 0) + 1) })
+  }
+
+  /** Forgets a platform's `external` ID: the team it was linked to, or null for none. */
+  async unlink(provider: string, external: number): Promise<TeamRecord | null> {
+    const [row] = this.ctx.storage.sql.exec<{ id: string }>('delete from bx_sync_links where provider = ? and external = ? returning id', provider, String(external)).toArray()
+    const found = row ? this.one('id', row.id) : null
+    if (!found || found.sync?.[provider] !== external) return found
+    const { [provider]: _gone, ...rest } = found.sync
+    return this.save({ ...found, sync: rest, sync_at: Math.max(Date.now(), (found.sync_at ?? 0) + 1) })
+  }
+
   /** Every team, oldest first. */
   async list(): Promise<TeamRecord[]> {
     return this.ctx.storage.sql.exec<{ data: string }>('select data from bx_teams').toArray().map((row) => JSON.parse(row.data) as TeamRecord).sort((a, b) => a.created_at - b.created_at)
@@ -171,6 +205,7 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
 
   /** Forgets a team, whose boards are deleted. */
   async remove(id: string): Promise<boolean> {
+    this.ctx.storage.sql.exec('delete from bx_sync_links where id = ?', id)
     return this.ctx.storage.sql.exec('delete from bx_teams where id = ? returning 1 as gone', id).toArray().length > 0
   }
 }

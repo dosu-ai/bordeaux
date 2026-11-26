@@ -6,11 +6,12 @@ import { bordeauxTokens, directory } from './auth.ts'
 import { broker } from './broker.ts'
 import { devSignIn } from './dev.ts'
 import type { BordeauxEnv } from './env.ts'
-import { installationOf } from './github-app.ts'
+import { installationOf, signInApp, syncApp } from './github-app.ts'
+import { boardOf } from './boards.ts'
 import type { Limits } from './limits.ts'
 import { deleteTeam } from './operate.ts'
 import { registry, type GitHubLink, type TeamRecord } from './registry.ts'
-import { forgetHost, teamOfRecord, type Team } from './team.ts'
+import { forgetHost, freshTeam, teamOfRecord, type Team } from './team.ts'
 import { CALLBACK } from './inspect.ts'
 
 type Fetch = typeof fetch
@@ -114,7 +115,12 @@ export async function hub(request: Request, env: BordeauxEnv, at: URL, send: Fet
   if ((request.method === 'GET' || request.method === 'HEAD') && pathname === '/llms.txt') return llms(env, at)
   if (pathname === '/setup' && request.method === 'GET') return setup(url, env, at, send)
   if (pathname === CALLBACK && request.method === 'GET') return callback(url, env, at)
-  if (pathname === '/__bordeaux/github/events' && request.method === 'POST') return events(request, env, at)
+  if (pathname === '/__bordeaux/github/events' && request.method === 'POST') {
+    // Both Apps send here: GitHub names the App an event is for by its ID.
+    const app = request.headers.get('x-github-hook-installation-target-id')
+    return env.GITHUB_SYNC_APP_ID && app === env.GITHUB_SYNC_APP_ID ? syncEvents(request, env, at) : events(request, env, at)
+  }
+  if (pathname === '/sync/setup' && request.method === 'GET') return syncSetup(url, env, at, send)
   // The hub's own sign-in, for Dosu's operators.
   const operators = operatorTeam(env, at)
   if (pathname.startsWith('/auth/')) return operators ? broker(request, env, operators, send) : refuse(404, 'not_found', 'this hub has no operators to sign in: set BORDEAUX_OPERATOR_ORG')
@@ -210,7 +216,7 @@ async function setup(url: URL, env: BordeauxEnv, at: URL, send: Fetch): Promise<
   try {
     const known = await registry(env).byInstallation(Number(installation))
     if (known) return Response.redirect(`${teamOfRecord(known, at).url}/`, 302)
-    const account = await installationOf(env, installation, send)
+    const account = await installationOf(signInApp(env), installation, send)
     if (!account) return page('🍷 not ours', `<h1>🍷 not ours</h1><p>That isn't an installation of this App. <a href="${escape(installUrl(env))}">Install it</a> on your org or account.</p>`, 404)
     const type = accountType(account.type)
     if (!type) return page('🍷 not supported', `<h1>🍷 not supported</h1><p>A board is for a GitHub org or a person, not an ${escape(account.type)} account. Install the App on an org or your own account instead.</p>`, 400)
@@ -283,4 +289,63 @@ async function events(request: Request, env: BordeauxEnv, at: URL): Promise<Resp
   if (event.action === 'renamed' && renamed) changed = await registry(env).rename(renamed.id, renamed.login)
   if (changed) forgetHost(changed.host)
   return Response.json({ ok: true, team: changed?.id ?? null })
+}
+
+/**
+ * Where GitHub sends someone who installed the sync App (spec 09, "Sync, later"): the hub asks
+ * GitHub, as the sync App, whose installation it is, and links it to that account's team.
+ */
+async function syncSetup(url: URL, env: BordeauxEnv, at: URL, send: Fetch): Promise<Response> {
+  if (url.searchParams.get('setup_action') === 'request') return page('🍷 asked', `<h1>🍷 asked</h1><p>An owner of the org has to approve installing the sync App. Once they do, the board syncs.</p>`)
+  const installation = url.searchParams.get('installation_id') ?? ''
+  if (!/^\d{1,20}$/.test(installation)) return page('🍷 no installation', `<h1>🍷 no installation</h1><p>GitHub didn't say which installation this is.</p>`, 400)
+  try {
+    const known = await registry(env).byLink('github', installation)
+    if (known) return Response.redirect(`${teamOfRecord(known, at).url}/`, 302)
+    const account = await installationOf(syncApp(env), installation, send)
+    if (!account) return page('🍷 not ours', `<h1>🍷 not ours</h1><p>That isn't an installation of the sync App.</p>`, 404)
+    const team = await registry(env).link('github', Number(installation), account.id)
+    if (!team) return page('🍷 no board yet', `<h1>🍷 no board yet</h1><p>${escape(account.login)} has no board to sync. <a href="${escape(installUrl(env))}">Install the board's App</a> first, then sync.</p>`, 404)
+    forgetHost(team.host)
+    return Response.redirect(`${teamOfRecord(team, at).url}/`, 302)
+  } catch (error) {
+    console.error('[bordeaux] sync setup failed:', (error as Error)?.message ?? error)
+    return page('🍷 almost', `<h1>🍷 almost</h1><p>GitHub didn't answer just now. <a href="${escape(url.pathname + url.search)}">Try again</a> in a moment.</p>`, 503)
+  }
+}
+
+/**
+ * The sync App's events. Its own installations link to, or unlink from, the team on their
+ * account. Anything else is handed, as GitHub sent it, to the default board of the team the
+ * event's installation is linked to, whose provider checks the signature again.
+ */
+async function syncEvents(request: Request, env: BordeauxEnv, at: URL): Promise<Response> {
+  if (!env.GITHUB_SYNC_WEBHOOK_SECRET) return refuse(501, 'no_webhooks', "the hub has no webhook secret to check the sync App's events by: set GITHUB_SYNC_WEBHOOK_SECRET")
+  const body = await signed(request, env.GITHUB_SYNC_WEBHOOK_SECRET)
+  if (body === null) return refuse(401, 'invalid_signature', "that event isn't signed with the sync App's webhook secret")
+  let event: InstallationEvent
+  try {
+    event = JSON.parse(body) as InstallationEvent
+  } catch {
+    return refuse(400, 'invalid_request', "that event's body isn't JSON: set the App's webhook content type to application/json")
+  }
+  const installation = event.installation?.id
+  if (installation === undefined) return Response.json({ ok: true, team: null })
+  if (request.headers.get('x-github-event') === 'installation') {
+    const account = event.installation?.account
+    let changed: TeamRecord | null = null
+    if ((event.action === 'created' || event.action === 'unsuspend') && account) changed = await registry(env).link('github', installation, account.id)
+    else if (event.action === 'deleted' || event.action === 'suspend') changed = await registry(env).unlink('github', installation)
+    if (changed) forgetHost(changed.host)
+    return Response.json({ ok: true, team: changed?.id ?? null })
+  }
+  const record = await registry(env).byLink('github', String(installation))
+  // As the registry and the team's directory say now, not as this isolate kept them: the first
+  // events after an install or a new row may follow it within the 5 minutes a team is kept. A
+  // suspended or uninstalled team's board takes nothing in, as its requests are refused.
+  const team = record && (await freshTeam(env, at, record))
+  if (!team || team instanceof Response) return Response.json({ ok: true, team: null })
+  // A team that maps none of its repos yet has no provider to take the event: it's dropped, not failed.
+  if (!team.sync?.rows.some((row) => row.provider === 'github')) return Response.json({ ok: true, team: team.id, synced: false })
+  return boardOf(env, team, null).fetch(new Request(`${team.url}/webhooks/github`, { method: 'POST', headers: request.headers, body }))
 }

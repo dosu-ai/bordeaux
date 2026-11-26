@@ -43,11 +43,15 @@ async function appJwt(app: { id: string; key: string }): Promise<string> {
   return new SignJWT({}).setProtectedHeader({ alg: 'RS256' }).setIssuer(app.id).setIssuedAt(now - 60).setExpirationTime(now + 540).sign(await importPKCS8(toPkcs8(app.key), 'RS256'))
 }
 
+/** The sign-in App, or (hosted) the sync App, as the hub asks GitHub about its installations. */
+export const signInApp = (env: BordeauxEnv) => ({ id: env.GITHUB_APP_ID, key: env.GITHUB_PRIVATE_KEY, names: 'GITHUB_APP_ID and the GITHUB_PRIVATE_KEY secret' })
+export const syncApp = (env: BordeauxEnv) => ({ id: env.GITHUB_SYNC_APP_ID, key: env.GITHUB_SYNC_PRIVATE_KEY, names: 'GITHUB_SYNC_APP_ID and the GITHUB_SYNC_PRIVATE_KEY secret' })
+
 /** The account an installation of the App is on, as GitHub says, asked as the App; null for one that isn't the App's. */
-export async function installationOf(env: BordeauxEnv, installation: string, send: Fetch = fetch): Promise<{ id: number; login: string; type: string } | null> {
-  if (!env.GITHUB_APP_ID || !env.GITHUB_PRIVATE_KEY) throw new Error('the hub has no GitHub App to ask: set GITHUB_APP_ID and the GITHUB_PRIVATE_KEY secret')
+export async function installationOf(app: { id?: string; key?: string; names: string }, installation: string, send: Fetch = fetch): Promise<{ id: number; login: string; type: string } | null> {
+  if (!app.id || !app.key) throw new Error(`the hub has no GitHub App to ask: set ${app.names}`)
   const response = await send(`https://api.github.com/app/installations/${encodeURIComponent(installation)}`, {
-    headers: { authorization: `Bearer ${await appJwt({ id: env.GITHUB_APP_ID, key: env.GITHUB_PRIVATE_KEY })}`, accept: 'application/vnd.github+json', 'user-agent': 'bordeaux' },
+    headers: { authorization: `Bearer ${await appJwt({ id: app.id, key: app.key })}`, accept: 'application/vnd.github+json', 'user-agent': 'bordeaux' },
   })
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`GitHub didn't say whose installation ${installation} is: ${response.status}`)

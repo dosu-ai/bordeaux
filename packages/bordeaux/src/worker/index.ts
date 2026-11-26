@@ -27,6 +27,8 @@ Reflect.set(globalThis, Symbol.for('@vercel/request-context'), { get: () => requ
 /** One request to one of the team's boards, or to its routes beside them. */
 async function route(request: Request, env: BordeauxEnv, team: Team): Promise<Response> {
   const { pathname } = new URL(request.url)
+  // A hosted team's platforms reach its board only through the hub, which found the team by the event.
+  if (env.BORDEAUX_HOSTED_URL && pathname.startsWith('/webhooks/')) return Response.json({ error: { code: 'not_found', message: "a hosted board's webhooks come through the hub" } }, { status: 404 })
   const revoked = await revokedToken(env, team, request)
   if (revoked) return revoked
   if (pathname === '/.well-known/jwks.json') return Response.json(await directory(env, team).jwks(), { headers: { 'cache-control': 'public, max-age=300' } })

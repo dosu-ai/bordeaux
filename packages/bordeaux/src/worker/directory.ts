@@ -36,6 +36,19 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     ctx.storage.sql.exec('create table if not exists bx_usage (board text primary key, data integer not null, files integer not null, at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_tokens (jti text primary key, sub text not null, by text not null, expires_at integer not null, revoked integer not null default 0)')
     ctx.storage.sql.exec('create table if not exists bx_sync (provider text not null, external text not null, channel text not null, direction text not null, by text not null, created_at integer not null, primary key (provider, external))')
+    // When the rows last changed, so a board told of older rows keeps the newer ones (spec 09).
+    ctx.storage.sql.exec('create table if not exists bx_sync_version (id integer primary key, version integer not null)')
+  }
+
+  /** Marks the rows changed: a version later than any before it. */
+  private syncChanged() {
+    this.ctx.storage.sql.exec('insert into bx_sync_version (id, version) values (0, ?) on conflict (id) do update set version = max(version + 1, excluded.version)', Date.now())
+  }
+
+  /** The team's sync rows, and when they last changed (0 for never). */
+  async syncState(): Promise<{ rows: SyncRow[]; version: number }> {
+    const [row] = this.ctx.storage.sql.exec<{ version: number }>('select version from bx_sync_version where id = 0').toArray()
+    return { rows: await this.syncRows(), version: Number(row?.version ?? 0) }
   }
 
   /** The current signing key, made on first use. */
@@ -165,12 +178,15 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
       row.by,
       Date.now(),
     )
+    this.syncChanged()
     return !known
   }
 
   /** Stops syncing a platform's external ID; false for one that wasn't. */
   async removeSync(provider: string, external: string): Promise<boolean> {
-    return this.ctx.storage.sql.exec('delete from bx_sync where provider = ? and external = ? returning 1 as gone', provider, external).toArray().length > 0
+    const gone = this.ctx.storage.sql.exec('delete from bx_sync where provider = ? and external = ? returning 1 as gone', provider, external).toArray().length > 0
+    if (gone) this.syncChanged()
+    return gone
   }
 
   /** Keeps a service token's record, to list and revoke it: never the token itself. */
