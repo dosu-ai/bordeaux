@@ -22,8 +22,11 @@ const VARS = { boards: 'BORDEAUX_LIMIT_BOARDS', dataBytes: 'BORDEAUX_LIMIT_DATA_
 export function limitsOf(env: BordeauxEnv, overrides: Partial<Limits> = {}): Limits {
   const limits = { ...DEFAULTS }
   for (const [key, name] of Object.entries(VARS) as [keyof Limits, (typeof VARS)[keyof Limits]][]) {
-    const value = Number(overrides[key] ?? env[name])
-    if (Number.isFinite(value) && value >= 0) limits[key] = value
+    // An empty var is an unset one, not a limit of 0.
+    const given = overrides[key] ?? env[name]
+    if (given === undefined || given === '') continue
+    const value = Number(given)
+    if (Number.isSafeInteger(value) && value >= 0) limits[key] = value
   }
   return limits
 }

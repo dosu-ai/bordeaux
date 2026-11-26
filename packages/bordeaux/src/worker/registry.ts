@@ -18,6 +18,8 @@ export type TeamRecord = {
   state: TeamState
   /** When the team was last suspended or uninstalled. */
   state_at: number | null
+  /** When GitHub says the installation last changed, as of the last event applied: an older one that arrives late is ignored. */
+  event_at?: number
   created_at: number
   /** Limits of its own, over the Worker's (spec 09, "Limits"). */
   limits?: Partial<Limits>
@@ -102,8 +104,10 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
     if (known) return { team: this.save({ ...known, github, state: 'active', state_at: null }), created: false }
     const login = github.login.toLowerCase()
     const taken = (host: string) => this.ctx.storage.sql.exec('select 1 from bx_teams where host = ?', host).toArray().length > 0
-    let host = `${login}.${hub}`
-    if (RESERVED.includes(login) || taken(host)) host = `${login}-${github.id}.${hub}`
+    // The login, unless it's reserved or a team's already: then the account's ID, then the installation's too.
+    const hosts = [`${login}.${hub}`, `${login}-${github.id}.${hub}`, `${login}-${github.id}-${github.installation}.${hub}`]
+    const host = hosts.find((one, n) => !(n === 0 && RESERVED.includes(login)) && !taken(one))
+    if (!host) throw new Error(`no host is free for ${github.login}: ${hosts.join(', ')} are taken`)
     const team = this.save({ id: newTeamId(), host, github, state: 'active', state_at: null, created_at: Date.now() })
     return { team, created: true }
   }
@@ -122,16 +126,17 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
   }
 
   /** Marks the team on an installation suspended, uninstalled, or active again; null for none. */
-  async setState(installation: number, state: TeamState): Promise<TeamRecord | null> {
-    return this.changeState(this.one('installation', installation), state)
+  async setState(installation: number, state: TeamState, eventAt?: number): Promise<TeamRecord | null> {
+    const found = this.one('installation', installation)
+    if (!found || (eventAt !== undefined && (found.event_at ?? 0) > eventAt)) return found
+    const at = eventAt !== undefined ? { event_at: eventAt } : {}
+    if (found.state === state) return eventAt !== undefined ? this.save({ ...found, ...at }) : found
+    return this.save({ ...found, ...at, state, state_at: state === 'active' ? null : Date.now() })
   }
 
   /** The same, for a team named by its ID: Dosu's own suspensions and restores. */
   async setStateOf(id: string, state: TeamState): Promise<TeamRecord | null> {
-    return this.changeState(this.one('id', id), state)
-  }
-
-  private changeState(found: TeamRecord | null, state: TeamState) {
+    const found = this.one('id', id)
     if (!found || found.state === state) return found
     return this.save({ ...found, state, state_at: state === 'active' ? null : Date.now() })
   }

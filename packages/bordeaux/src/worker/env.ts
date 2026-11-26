@@ -26,6 +26,8 @@ export interface BordeauxEnv {
   TEAMS_QUEUE?: Queue<{ team: string }>
   /** Hosted: the GitHub org whose owners may use the operator routes (`dosu-ai`). */
   BORDEAUX_OPERATOR_ORG?: string
+  /** Hosted: registry lookups per client IP (`ratelimits` in wrangler.jsonc), for hosts this isolate hasn't kept. */
+  LOOKUP_LIMITER?: RateLimit
   /** Hosted: each team's requests, keyed by team ID (`ratelimits` in wrangler.jsonc); over it, 429. */
   REQUEST_LIMITER?: RateLimit
   /** Hosted: each team's wakes, keyed by team ID; over it, a wake waits. */

@@ -7,13 +7,13 @@ import { bordeauxTokens, directory, issuerKeys } from './auth.ts'
 import { durable } from './backend.ts'
 import type { BordeauxEnv } from './env.ts'
 import { configOf } from './config.ts'
-import type { Team } from './team.ts'
+import { Lru } from './lru.ts'
+import { boardUrl, type Team } from './team.ts'
+
+export { boardUrl }
 
 /** A board's name: 1 to 64 letters, numbers, and `._-`, matched whatever its case (as upstream's). */
 export const BOARD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
-
-/** A named board's URL, or the default board's for null. */
-export const boardUrl = (team: Team, name: string | null) => (name === null ? team.url : `${team.url}/b/${name.toLowerCase()}`)
 
 /** The board a URL of the team's names: null for the default, a name, or undefined for none. */
 export function boardNamed(team: Team, url: string): string | null | undefined {
@@ -24,35 +24,42 @@ export function boardNamed(team: Team, url: string): string | null | undefined {
   return found && BOARD_NAME.test(found[1]!) ? found[1]!.toLowerCase() : undefined
 }
 
-const handles = new Map<string, ReturnType<typeof board>>()
+/** board() per team and board, for the boards this isolate served most recently. */
+const handles = new Lru<string, { board: ReturnType<typeof board>; team: Team }>(500)
 
-/** board() for the team's board named `name`, or its default board for null: one per isolate. */
+/**
+ * board() for the team's board named `name`, or its default board for null: one per isolate. The
+ * handle keeps the team as the latest request found it, which its backend sends the board's DO.
+ */
 export function boardOf(env: BordeauxEnv, team: Team, name: string | null) {
   const key = name?.toLowerCase() ?? ''
-  let found = handles.get(`${team.id}/${key}`)
-  if (!found) {
-    // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
-    const tokens = oidcTokens({ oidc: { [team.url]: issuerKeys(env, team) } })
-    const config = configOf(env)
-    const sync = config.sync && Object.fromEntries(Object.entries(config.sync).filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
-    found = board({
-      backend: durable(env, team, name),
-      ...(config.middleware ? { middleware: config.middleware } : {}),
-      // A deployment's own watchers and sync are its default board's.
-      ...(name === null && config.watch ? { watch: config.watch } : {}),
-      ...(name === null && sync && Object.keys(sync).length > 0 ? { sync } : {}),
-      url: boardUrl(team, name),
-      ...(name !== null ? { basePath: `/b/${key}` } : {}),
-      // The verifier chain (spec 03): the board's own tokens, then upstream's.
-      authenticate: async (request) => (await bordeauxTokens(env, team, request.credential, request.audience)) ?? tokens(request),
-    })
-    handles.set(`${team.id}/${key}`, found)
+  const kept = handles.get(`${team.id}/${key}`)
+  if (kept) {
+    kept.team = team
+    return kept.board
   }
-  return found
+  // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
+  const tokens = oidcTokens({ oidc: { [team.url]: issuerKeys(env, team) } })
+  const config = configOf(env)
+  const sync = config.sync && Object.fromEntries(Object.entries(config.sync).filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
+  const entry = { team } as { board: ReturnType<typeof board>; team: Team }
+  entry.board = board({
+    backend: durable(env, () => entry.team, name),
+    ...(config.middleware ? { middleware: config.middleware } : {}),
+    // A deployment's own watchers and sync are its default board's.
+    ...(name === null && config.watch ? { watch: config.watch } : {}),
+    ...(name === null && sync && Object.keys(sync).length > 0 ? { sync } : {}),
+    url: boardUrl(team, name),
+    ...(name !== null ? { basePath: `/b/${key}` } : {}),
+    // The verifier chain (spec 03): the board's own tokens, then upstream's.
+    authenticate: async (request) => (await bordeauxTokens(env, team, request.credential, request.audience)) ?? tokens(request),
+  })
+  handles.set(`${team.id}/${key}`, entry)
+  return entry.board
 }
 
 /** Boards this isolate has seen exist, for 5 minutes: how long a board deleted elsewhere can still answer here. */
-const known = new Map<string, number>()
+const known = new Lru<string, number>(2000)
 const KNOWN_MS = 5 * 60_000
 
 /** Whether the team has a board named `name` (the default board always is). */

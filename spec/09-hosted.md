@@ -108,6 +108,13 @@ to teams. A team's record:
   account ID. One team per account: installing the App again on an account whose team was
   uninstalled restores that team, host and boards included.
 
+**As built:** an isolate also keeps a host with no team, for 30 seconds, and a lookup it hasn't
+kept is limited per client IP (`LOOKUP_LIMITER`), so made-up hosts can't keep the one registry
+from everyone else. What an isolate keeps per team (records, `board()` handles, issuer keys) is
+bounded, dropping what it used longest ago. A host with a trailing dot is the same host. A
+suspended or uninstalled team's boards send nothing out: their schedules and wakes wait, and
+each board asks the registry at most every 5 minutes whether its team is back.
+
 ### Later sign-in providers
 
 v1 signs teams up and people in with GitHub only. The design keeps GitHub out of what is
@@ -153,7 +160,8 @@ org owner ◀─(5) 302 https://<org>.board.dosu.ai
   share one set of logins, so a person's and an org's never clash. Logins (letters,
   numbers, and single hyphens, at most 39) are valid DNS labels. A few are reserved: `www`,
   `api`, `app`, `admin`, `docs`, `status`, `mail`, `hub`, `origin`. A login that's reserved or
-  already a team's host gets `<login>-<account id>`.
+  already a team's host gets `<login>-<account id>`, and if that's taken too,
+  `<login>-<account id>-<installation id>`.
 - **Renames.** A team's host is fixed at sign-up. A rename on GitHub doesn't move it, because
   every token's audience and every service grant names the board's URL
   ([03](03-identity-access.md#the-verifier-chain), "g4 names the URL the board started
@@ -164,7 +172,10 @@ org owner ◀─(5) 302 https://<org>.board.dosu.ai
 hub checks events with the App's `GITHUB_WEBHOOK_SECRET`. A person's rename arrives as
 `installation_target.renamed`, which the record follows too. `/setup?setup_action=request` (a
 member asked an owner to install the App) says an owner has to approve it. `/setup` for an
-installation that already has a team sends the person to it without asking GitHub.
+installation that already has a team sends the person to it without asking GitHub; if GitHub
+doesn't answer, it asks the person to load it again. GitHub may deliver an installation's
+events out of order, so the record keeps the newest `installation.updated_at` it applied and
+ignores an older one. An enterprise account makes no team: a board is an org's or a person's.
 
 ### Personal teams
 
@@ -272,7 +283,12 @@ release, and a team record may override one later for paid plans.
 overrides any of them. Requests and wakes are two rate-limiting bindings, `REQUEST_LIMITER` and
 `WAKE_LIMITER`, so their numbers are in `wrangler.jsonc`, not vars, and a record can't change
 them. Over the data limit, deleting a message and canceling a schedule still work, since they
-stop more coming. Files count when a direct upload starts, at once, not a minute later. Wakes
+stop more coming. Files count when a direct upload starts, at once, not a minute later. A
+board reports what it stores before a write is checked, at most once a minute, so the first
+write after its DO starts is checked against the team's totals, and a board over the limit
+learns when they go down. Every call to a board's DO carries the team's record as the request
+found it, so a changed limit reaches the board within the 5 minutes a team's record is kept.
+An empty limit var is unset. Wakes
 are the board's alarm, not a Queue: one past the limit waits 10 seconds and tries again, and
 one wake covers every match until it goes.
 
