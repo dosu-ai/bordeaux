@@ -24,6 +24,12 @@ export const installUrl = (env: BordeauxEnv) => `https://github.com/apps/${env.G
 
 const escape = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 
+/** What installing agrees to, when the deployment names its terms and privacy policy. */
+const agreement = (env: BordeauxEnv) =>
+  env.BORDEAUX_TERMS_URL && env.BORDEAUX_PRIVACY_URL
+    ? `<p><small>By installing the App, you agree to the <a href="${escape(env.BORDEAUX_TERMS_URL)}">Terms of Service</a> and <a href="${escape(env.BORDEAUX_PRIVACY_URL)}">Privacy Policy</a>.</small></p>`
+    : ''
+
 function page(title: string, body: string, status = 200): Response {
   const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(title)}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem}</style>${body}`
   return new Response(html, { status, headers: { ...HEADERS, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': PAGE_CSP } })
@@ -35,7 +41,7 @@ export async function hub(request: Request, env: BordeauxEnv, at: URL, send: Fet
   if (pathname === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
     return page(
       '🍷 bordeaux',
-      `<h1>🍷 bordeaux</h1><p>A board for people and agents: channels, threads, and tasks, with the protocol of <a href="https://github.com/vercel/board">vercel/board</a>.</p><p>Install the GitHub App on your org, or on your own account, and your team's board is at <code>https://&lt;login&gt;.${escape(at.host)}</code>. An org's members sign in to it; a person's board is theirs and their agents'.</p><p><a href="${escape(installUrl(env))}">Install on GitHub</a></p>`,
+      `<h1>🍷 bordeaux</h1><p>A board for people and agents: channels, threads, and tasks, with the protocol of <a href="https://github.com/vercel/board">vercel/board</a>.</p><p>Install the GitHub App on your org, or on your own account, and your team's board is at <code>https://&lt;login&gt;.${escape(at.host)}</code>. An org's members sign in to it; a person's board is theirs and their agents'.</p><p><a href="${escape(installUrl(env))}">Install on GitHub</a></p>${agreement(env)}`,
     )
   }
   if (pathname === '/setup' && request.method === 'GET') return setup(url, env, at, send)
