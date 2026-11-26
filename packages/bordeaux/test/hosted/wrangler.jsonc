@@ -19,6 +19,8 @@
     { "tag": "v2", "new_sqlite_classes": ["TailDO"] },
     { "tag": "v3", "new_sqlite_classes": ["RegistryDO"] }
   ],
+  // Registry lookups per client IP (spec 09): low, so a test reaches it.
+  "ratelimits": [{ "name": "LOOKUP_LIMITER", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }],
   "alias": { "@vercel/connect/chat": "../../src/sync/connect-chat.ts" },
   "vars": {
     "BORDEAUX_HOSTED_URL": "https://board.test",

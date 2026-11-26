@@ -39,8 +39,11 @@ export async function hub(request: Request, env: BordeauxEnv, at: URL, send: Fet
   if (pathname === '/__dev/team' && request.method === 'POST' && env.BORDEAUX_DEV === '1') {
     const body = (await request.json().catch(() => ({}))) as { login?: string; id?: number; type?: 'Organization' | 'User' }
     if (!body.login || !/^[a-z0-9](?:-?[a-z0-9])*$/i.test(body.login) || body.login.length > 39) return refuse(400, 'invalid_request', 'login: a GitHub login')
-    const id = Number(body.id ?? [...body.login.toLowerCase()].reduce((sum, c) => (sum * 31 + c.charCodeAt(0)) % 1_000_000, 7))
-    const { team, created } = await registry(env).register({ id, login: body.login, type: body.type ?? 'Organization', installation: id }, at.host)
+    // The same login finds its team; a new one gets an account and installation ID of its own.
+    const same = await registry(env).byHost(`${body.login.toLowerCase()}.${at.host}`)
+    const id = body.id ?? same?.github.id ?? crypto.getRandomValues(new Uint32Array(1))[0]!
+    const { team, created } = await registry(env).register({ id, login: body.login, type: body.type ?? 'Organization', installation: same?.github.installation ?? id }, at.host)
+    forgetHost(team.host)
     return Response.json({ team: team.id, url: teamOfRecord(team, at).url, created }, { status: created ? 201 : 200 })
   }
   return refuse(404, 'not_found', `no route ${request.method} ${pathname}`)
@@ -57,12 +60,21 @@ async function setup(url: URL, env: BordeauxEnv, at: URL, send: Fetch): Promise<
   if (action === 'request') return page('🍷 asked', `<h1>🍷 asked</h1><p>An owner of the org has to approve installing the App. Once they do, the org's board is ready.</p>`)
   const installation = url.searchParams.get('installation_id') ?? ''
   if (!/^\d{1,20}$/.test(installation)) return page('🍷 no installation', `<h1>🍷 no installation</h1><p>GitHub didn't say which installation this is. <a href="${escape(installUrl(env))}">Install the App</a> again.</p>`, 400)
-  const known = await registry(env).byInstallation(Number(installation))
-  if (known) return Response.redirect(`${teamOfRecord(known, at).url}/`, 302)
-  const account = await installationOf(env, installation, send)
-  if (!account) return page('🍷 not ours', `<h1>🍷 not ours</h1><p>That isn't an installation of this App. <a href="${escape(installUrl(env))}">Install it</a> on your org or account.</p>`, 404)
-  const { team } = await registry(env).register({ ...account, installation: Number(installation) }, at.host)
-  return Response.redirect(`${teamOfRecord(team, at).url}/`, 302)
+  try {
+    const known = await registry(env).byInstallation(Number(installation))
+    if (known) return Response.redirect(`${teamOfRecord(known, at).url}/`, 302)
+    const account = await installationOf(env, installation, send)
+    if (!account) return page('🍷 not ours', `<h1>🍷 not ours</h1><p>That isn't an installation of this App. <a href="${escape(installUrl(env))}">Install it</a> on your org or account.</p>`, 404)
+    const type = accountType(account.type)
+    if (!type) return page('🍷 not supported', `<h1>🍷 not supported</h1><p>A board is for a GitHub org or a person, not an ${escape(account.type)} account. Install the App on an org or your own account instead.</p>`, 400)
+    const { team } = await registry(env).register({ id: account.id, login: account.login, type, installation: Number(installation) }, at.host)
+    forgetHost(team.host)
+    return Response.redirect(`${teamOfRecord(team, at).url}/`, 302)
+  } catch (error) {
+    // The installation event usually makes the team anyway: this page can be loaded again.
+    console.error('[bordeaux] setup failed:', (error as Error)?.message ?? error)
+    return page('🍷 almost', `<h1>🍷 almost</h1><p>GitHub didn't answer just now, so your board isn't ready yet. <a href="${escape(url.pathname + url.search)}">Try again</a> in a moment.</p>`, 503)
+  }
 }
 
 /**
@@ -89,7 +101,10 @@ async function signed(request: Request, secret: string): Promise<string | null> 
   return crypto.subtle.timingSafeEqual(mac, expected) ? body : null
 }
 
-type InstallationEvent = { action?: string; installation?: { id: number; account?: { id: number; login: string; type: string } }; account?: { id: number; login: string }; organization?: { id: number; login: string } }
+/** The kinds of account a team can be: an org or a person, not an enterprise. */
+const accountType = (type: string): GitHubLink['type'] | null => (type === 'Organization' || type === 'User' ? type : null)
+
+type InstallationEvent = { action?: string; installation?: { id: number; updated_at?: string; account?: { id: number; login: string; type: string } }; account?: { id: number; login: string }; organization?: { id: number; login: string } }
 
 /** The App's installation events: a team made, suspended, restored, uninstalled, or renamed. */
 async function events(request: Request, env: BordeauxEnv, at: URL): Promise<Response> {
@@ -97,17 +112,24 @@ async function events(request: Request, env: BordeauxEnv, at: URL): Promise<Resp
   const body = await signed(request, env.GITHUB_WEBHOOK_SECRET)
   if (body === null) return refuse(401, 'invalid_signature', "that event isn't signed with the App's webhook secret")
   const kind = request.headers.get('x-github-event')
-  const event = JSON.parse(body) as InstallationEvent
+  let event: InstallationEvent
+  try {
+    event = JSON.parse(body) as InstallationEvent
+  } catch {
+    return refuse(400, 'invalid_request', "that event's body isn't JSON: set the App's webhook content type to application/json")
+  }
   const installation = event.installation?.id
+  // GitHub may deliver an installation's events out of order, and again later: the newest wins.
+  const eventAt = Date.parse(event.installation?.updated_at ?? '')
+  const when = Number.isNaN(eventAt) ? undefined : eventAt
   let changed: TeamRecord | null = null
   if (kind === 'installation' && installation !== undefined) {
     const account = event.installation?.account
-    if (event.action === 'created' && account) {
-      const github: GitHubLink = { id: account.id, login: account.login, type: account.type === 'User' ? 'User' : 'Organization', installation }
-      changed = (await registry(env).register(github, at.host)).team
-    } else if (event.action === 'deleted') changed = await registry(env).setState(installation, 'uninstalled')
-    else if (event.action === 'suspend') changed = await registry(env).setState(installation, 'suspended')
-    else if (event.action === 'unsuspend') changed = await registry(env).setState(installation, 'active')
+    const type = account && accountType(account.type)
+    if (event.action === 'created' && account && type) changed = (await registry(env).register({ id: account.id, login: account.login, type, installation }, at.host)).team
+    else if (event.action === 'deleted') changed = await registry(env).setState(installation, 'uninstalled', when)
+    else if (event.action === 'suspend') changed = await registry(env).setState(installation, 'suspended', when)
+    else if (event.action === 'unsuspend') changed = await registry(env).setState(installation, 'active', when)
   }
   // An org's rename, or any account's (installation_target covers people too).
   const renamed = kind === 'organization' ? event.organization : kind === 'installation_target' ? event.account : undefined
