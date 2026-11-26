@@ -21,6 +21,16 @@ const RENEW_MS = 10 * 60 * 1000
 /** Where GitHub sends a person back to: one URL for every board, which the App names as its callback. */
 export const CALLBACK = '/inspect/callback'
 
+/**
+ * Where GitHub sends this team's people back to, and the `state` it carries. Hosted, every team
+ * shares the hub's callback (an App lists at most 10), so `state` names the team's host for the
+ * hub to send them on to (spec 09, "Signing in").
+ */
+function returnOf(env: BordeauxEnv, team: Team, state: string): { redirect: string; state: string } {
+  if (!env.BORDEAUX_HOSTED_URL) return { redirect: `${team.url}${CALLBACK}`, state }
+  return { redirect: `${new URL(env.BORDEAUX_HOSTED_URL).origin}${CALLBACK}`, state: `${new URL(team.url).host}.${state}` }
+}
+
 const ACCESS_COOKIE = 'bx_inspect'
 const REFRESH_COOKIE = 'bx_inspect_refresh'
 const STATE_COOKIE = 'bx_inspect_state'
@@ -122,9 +132,10 @@ async function login(request: Request, env: BordeauxEnv, board: InspectedBoard):
     return text(501, 'this board has no GitHub App to sign in to its inspector with: set GITHUB_CLIENT_ID and the GITHUB_CLIENT_SECRET secret')
   const state = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
   const authorize = new URL('https://github.com/login/oauth/authorize')
+  const back = returnOf(env, board.team, state)
   authorize.searchParams.set('client_id', env.GITHUB_CLIENT_ID)
-  authorize.searchParams.set('redirect_uri', `${board.team.url}${CALLBACK}`)
-  authorize.searchParams.set('state', state)
+  authorize.searchParams.set('redirect_uri', back.redirect)
+  authorize.searchParams.set('state', back.state)
   const headers = new Headers({ location: authorize.toString(), ...HEADERS })
   // Which board to come back to rides with the state, which only this browser has.
   headers.append('set-cookie', cookie(board.team, STATE_COOKIE, `${state}.${board.name ?? ''}`, CALLBACK, 600))
@@ -134,15 +145,19 @@ async function login(request: Request, env: BordeauxEnv, board: InspectedBoard):
 /** GitHub's redirect back: the code becomes a GitHub token, used once to check membership, then the board's tokens. */
 async function callback(request: Request, env: BordeauxEnv, team: Team): Promise<Response> {
   const url = new URL(request.url)
-  const [state, name] = (cookies(request)[STATE_COOKIE] ?? '').split('.')
-  if (!state || state !== url.searchParams.get('state')) return text(400, 'that sign-in has expired or came from somewhere else: open the inspector again')
+  // The state is hex, so the first dot ends it: a board's name may have dots of its own.
+  const kept = cookies(request)[STATE_COOKIE] ?? ''
+  const dot = kept.indexOf('.')
+  const [state, name] = dot === -1 ? [kept, ''] : [kept.slice(0, dot), kept.slice(dot + 1)]
+  const back = returnOf(env, team, state ?? '')
+  if (!state || back.state !== url.searchParams.get('state')) return text(400, 'that sign-in has expired or came from somewhere else: open the inspector again')
   const code = url.searchParams.get('code')
   if (!code) return text(400, `GitHub didn't sign you in: ${url.searchParams.get('error_description') ?? url.searchParams.get('error') ?? 'no code'}`)
   if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return text(501, 'this board has no GitHub App to sign in with')
   const exchanged = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET, code, redirect_uri: `${team.url}${CALLBACK}` }),
+    body: new URLSearchParams({ client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET, code, redirect_uri: back.redirect }),
   })
   const answer = (await exchanged.json().catch(() => ({}))) as { access_token?: string; error_description?: string }
   if (!answer.access_token) return text(400, `GitHub gave no token: ${answer.error_description ?? exchanged.status}`)
