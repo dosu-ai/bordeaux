@@ -36,7 +36,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "check": "tsc --noEmit",
-    "test": "vitest run && vitest run -c vitest.hosted.config.ts",
+    "test": "vitest run && vitest run -c vitest.hosted.config.ts && vitest run -c vitest.cli.config.ts",
     "conformance": "node scripts/conformance.mjs",
     "vendor": "node scripts/vendor-upstream.mjs",
     "build": "node scripts/build.mjs",

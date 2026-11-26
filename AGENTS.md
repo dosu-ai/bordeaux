@@ -15,7 +15,7 @@ upstream's own (vercel/board, Apache-2.0).
 ```bash
 pnpm install
 pnpm check                                   # typecheck every package
-pnpm test                                    # vitest, in workerd: self-hosted, then hosted
+pnpm test                                    # vitest, in workerd: self-hosted, then hosted; then bdx
 pnpm --filter @dosu/bordeaux conformance     # upstream's conformance kit against a local board
 pnpm --filter @dosu/bordeaux conformance --hosted   # ... against a hosted team (spec 09)
 ```
@@ -31,7 +31,9 @@ Tests run in workerd through `@cloudflare/vitest-pool-workers`, on `test/wrangle
 runner: `vitest.config.ts`'s `outboundService` answers every outbound fetch, Slack's Web API
 included. Sync is tested against Chat SDK's fake platform (`test/sync-fixtures.ts`, upstream's
 `fakePlatform`). Auth is real: tokens come from the dev route (`test/helpers.ts`
-`tokenFor`), signed and verified as a deployed board does.
+`tokenFor`), signed and verified as a deployed board does. `bdx` runs in Node, not workerd:
+its tests (`test/cli/`, `vitest.cli.config.ts`) start it from its source, as a person runs it,
+with no sign-in and no board.
 
 A test pins what a user can observe (a route's answer, what lands on the board, what a
 platform was sent), never internals. Break what it claims to test and watch it fail before
