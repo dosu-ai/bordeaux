@@ -150,10 +150,11 @@ Record the date and what passed in spec 09's Testing section.
 `console.error`, kept 7 days. The Worker reports each failure it handles that way (a team's
 daily job, a board's timer, a sign-up GitHub didn't answer), so Workers Issues sees it.
 
-1. **Workers & Pages → bordeaux-hosted → Observability → Issues**: turn Issues on.
-2. **Add an automation**: every new issue, with an occurrence threshold of `1`, to Dosu's
-   alert destination. Add a recurrence trigger, so an issue that comes back after a quiet hour
-   alerts again.
+1. **Workers & Pages → bordeaux-hosted → Issues**: turn issue detection on.
+2. **Observability → Monitors → Create Monitor → Threshold**: dataset **Workers Real-Time
+   Issues**, filter `scriptName = bordeaux-hosted`, trigger when the count is `>= 1` over `1m`,
+   repeat after `1h`. Name it `bordeaux-hosted: new errors` and add Dosu's alert email.
+   (Issues' own automations post to webhooks, chat, and incident tools, not email.)
 
 A team whose daily job fails five times lands in `bordeaux-teams-dead`; each failure is an
 issue first.
