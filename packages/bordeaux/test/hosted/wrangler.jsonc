@@ -25,6 +25,8 @@
   "vars": {
     "BORDEAUX_HOSTED_URL": "https://board.test",
     "GITHUB_CLIENT_ID": "Iv1.test",
+    // A test value only: what the App's webhook secret would be.
+    "GITHUB_WEBHOOK_SECRET": "hub-test-secret",
     "BORDEAUX_DEV": "1"
   }
 }

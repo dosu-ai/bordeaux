@@ -6,7 +6,7 @@ team shares one bordeaux Worker in Dosu's Cloudflare account. Self-hosting doesn
 deployment of the template is still one team, as [QUESTIONS Q4](../QUESTIONS.md#q4) has it.
 
 Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Built so far: hosted mode, the
-registry, and personal teams' sign-in.
+registry, personal teams' sign-in, and signing up.
 
 ## Decisions
 
@@ -166,6 +166,15 @@ org owner ◀─(5) 302 https://<org>.board.dosu.ai
   ([03](03-identity-access.md#the-verifier-chain), "g4 names the URL the board started
   with"). The record's GitHub login follows the `organization.renamed` webhook. Moving a team
   to a new host is an operator action, later.
+
+**As built:** the App's slug is the `GITHUB_APP_SLUG` var (`bordeaux-ai` if unset), and the
+hub checks events with the App's `GITHUB_WEBHOOK_SECRET`. A person's rename arrives as
+`installation_target.renamed`, which the record follows too. `/setup?setup_action=request` (a
+member asked an owner to install the App) says an owner has to approve it. `/setup` for an
+installation that already has a team sends the person to it without asking GitHub; if GitHub
+doesn't answer, it asks the person to load it again. GitHub may deliver an installation's
+events out of order, so the record keeps the newest `installation.updated_at` it applied and
+ignores an older one. An enterprise account makes no team: a board is an org's or a person's.
 
 ### Personal teams
 

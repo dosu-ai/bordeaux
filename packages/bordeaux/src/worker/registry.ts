@@ -17,6 +17,8 @@ export type TeamRecord = {
   state: TeamState
   /** When the team was last suspended or uninstalled. */
   state_at: number | null
+  /** When GitHub says the installation last changed, as of the last event applied: an older one that arrives late is ignored. */
+  event_at?: number
   created_at: number
 }
 
@@ -103,10 +105,19 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
     return { team, created: true }
   }
 
+  /** Follows a GitHub account's new login. The team's host doesn't move: every token names it (spec 09, "Renames"). */
+  async rename(account: number, login: string): Promise<TeamRecord | null> {
+    const found = this.one('account', account)
+    if (!found || found.github.login === login) return found
+    return this.save({ ...found, github: { ...found.github, login } })
+  }
+
   /** Marks the team on an installation suspended, uninstalled, or active again; null for none. */
-  async setState(installation: number, state: TeamState): Promise<TeamRecord | null> {
+  async setState(installation: number, state: TeamState, eventAt?: number): Promise<TeamRecord | null> {
     const found = this.one('installation', installation)
-    if (!found || found.state === state) return found
-    return this.save({ ...found, state, state_at: state === 'active' ? null : Date.now() })
+    if (!found || (eventAt !== undefined && (found.event_at ?? 0) > eventAt)) return found
+    const at = eventAt !== undefined ? { event_at: eventAt } : {}
+    if (found.state === state) return eventAt !== undefined ? this.save({ ...found, ...at }) : found
+    return this.save({ ...found, ...at, state, state_at: state === 'active' ? null : Date.now() })
   }
 }
