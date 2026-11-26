@@ -99,6 +99,12 @@ export class Files {
     return true
   }
 
+  /** The bytes of every file kept here, and every direct upload started. */
+  bytes(): number {
+    const [row] = this.storage.sql.exec<{ n: number | null }>('select sum(size) as n from bx_files').toArray()
+    return Number(row?.n ?? 0)
+  }
+
   /** An upload sent in the request, up to 4 MB: stored under a fresh ID (upstream `writeUpload`). */
   async upload(input: { data: Uint8Array; name: string | null; type: string | null; uploadedBy: string }, max = ATTACHMENT_BYTES_MAX): Promise<AttachmentType> {
     const bucket = this.bucketOrFail()

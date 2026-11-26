@@ -25,31 +25,37 @@ export function boardNamed(team: Team, url: string): string | null | undefined {
 }
 
 /** board() per team and board, for the boards this isolate served most recently. */
-const handles = new Lru<string, ReturnType<typeof board>>(500)
+const handles = new Lru<string, { board: ReturnType<typeof board>; team: Team }>(500)
 
-/** board() for the team's board named `name`, or its default board for null: one per isolate. */
+/**
+ * board() for the team's board named `name`, or its default board for null: one per isolate. The
+ * handle keeps the team as the latest request found it, which its backend sends the board's DO.
+ */
 export function boardOf(env: BordeauxEnv, team: Team, name: string | null) {
   const key = name?.toLowerCase() ?? ''
-  let found = handles.get(`${team.id}/${key}`)
-  if (!found) {
-    // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
-    const tokens = oidcTokens({ oidc: { [team.url]: issuerKeys(env, team) } })
-    const config = configOf(env)
-    const sync = config.sync && Object.fromEntries(Object.entries(config.sync).filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
-    found = board({
-      backend: durable(env, team, name),
-      ...(config.middleware ? { middleware: config.middleware } : {}),
-      // A deployment's own watchers and sync are its default board's.
-      ...(name === null && config.watch ? { watch: config.watch } : {}),
-      ...(name === null && sync && Object.keys(sync).length > 0 ? { sync } : {}),
-      url: boardUrl(team, name),
-      ...(name !== null ? { basePath: `/b/${key}` } : {}),
-      // The verifier chain (spec 03): the board's own tokens, then upstream's.
-      authenticate: async (request) => (await bordeauxTokens(env, team, request.credential, request.audience)) ?? tokens(request),
-    })
-    handles.set(`${team.id}/${key}`, found)
+  const kept = handles.get(`${team.id}/${key}`)
+  if (kept) {
+    kept.team = team
+    return kept.board
   }
-  return found
+  // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
+  const tokens = oidcTokens({ oidc: { [team.url]: issuerKeys(env, team) } })
+  const config = configOf(env)
+  const sync = config.sync && Object.fromEntries(Object.entries(config.sync).filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
+  const entry = { team } as { board: ReturnType<typeof board>; team: Team }
+  entry.board = board({
+    backend: durable(env, () => entry.team, name),
+    ...(config.middleware ? { middleware: config.middleware } : {}),
+    // A deployment's own watchers and sync are its default board's.
+    ...(name === null && config.watch ? { watch: config.watch } : {}),
+    ...(name === null && sync && Object.keys(sync).length > 0 ? { sync } : {}),
+    url: boardUrl(team, name),
+    ...(name !== null ? { basePath: `/b/${key}` } : {}),
+    // The verifier chain (spec 03): the board's own tokens, then upstream's.
+    authenticate: async (request) => (await bordeauxTokens(env, team, request.credential, request.audience)) ?? tokens(request),
+  })
+  handles.set(`${team.id}/${key}`, entry)
+  return entry.board
 }
 
 /** Boards this isolate has seen exist, for 5 minutes: how long a board deleted elsewhere can still answer here. */

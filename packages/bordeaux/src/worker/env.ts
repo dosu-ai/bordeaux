@@ -24,6 +24,18 @@ export interface BordeauxEnv {
   BORDEAUX_HOSTED_URL?: string
   /** Hosted: registry lookups per client IP (`ratelimits` in wrangler.jsonc), for hosts this isolate hasn't kept. */
   LOOKUP_LIMITER?: RateLimit
+  /** Hosted: each team's requests, keyed by team ID (`ratelimits` in wrangler.jsonc); over it, 429. */
+  REQUEST_LIMITER?: RateLimit
+  /** Hosted: each team's wakes, keyed by team ID; over it, a wake waits. */
+  WAKE_LIMITER?: RateLimit
+  /** Hosted: a team's named boards (default 20). A team's record may override each limit. */
+  BORDEAUX_LIMIT_BOARDS?: string
+  /** Hosted: what a team's boards store, in bytes (default 1 GB). */
+  BORDEAUX_LIMIT_DATA_BYTES?: string
+  /** Hosted: a team's files, in bytes (default 5 GB). */
+  BORDEAUX_LIMIT_FILE_BYTES?: string
+  /** Hosted: registered watchers per board (default 50). */
+  BORDEAUX_LIMIT_WATCHERS?: string
   /** The team's files (spec 08, "Files"): each board's under its own prefix. */
   FILES?: R2Bucket
   /** The board's public URL, which every token's audience must equal. Self-hosted only. */

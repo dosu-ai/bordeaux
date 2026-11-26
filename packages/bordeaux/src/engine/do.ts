@@ -11,6 +11,7 @@ import { indexOf } from '../upstream/server/feed.ts'
 import { bindingOf } from '../worker/backend.ts'
 import { boardOf } from '../worker/boards.ts'
 import { envTeam, type Team } from '../worker/team.ts'
+import { bytes } from '../worker/limits.ts'
 import { registry } from '../worker/registry.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
 import type { Collected, DeadLetter, Failure, Health } from './engine.ts'
@@ -36,6 +37,18 @@ export type Envelope = { ok: true; value: unknown } | { ok: false; error: WireEr
 /** The methods this board answers itself; the rest answer 501. */
 const KEPT = ['channels', 'createChannel', 'actors', 'channelMessages', 'threads', 'message', 'posted', 'post', 'edit', 'delete', 'react', 'label', 'events', 'schemas', 'schema', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'attachment', 'schedule', 'schedules', 'cancelSchedule', 'tasks', 'createTask', 'createTasks', 'createdTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask', 'watchers', 'register', 'matches', 'ack', 'synced', 'linked', 'syncImport', 'syncReceipt', 'syncThread', 'syncFind', 'syncCopies', 'inboxPush', 'inboxNext', 'inboxAck', 'inbox', 'typing', 'readSource', 'joinSource'] as const
 type Kept = (typeof KEPT)[number]
+
+/**
+ * What a hosted team over its data limit can't do (spec 09, "Limits"): everything that adds to the
+ * board, but deleting a message and canceling a schedule, which stop more coming.
+ */
+const WRITES = new Set(['createChannel', 'post', 'edit', 'react', 'label', 'schedule', 'createSchema', 'upload', 'uploadStart', 'uploadFinish', 'createTask', 'createTasks', 'claimReadyTask', 'claimTask', 'renewTask', 'releaseTask', 'completeTask', 'failTask', 'blockTask', 'unblockTask', 'reopenTask', 'assignTask', 'setTaskNeeds', 'cancelTask', 'register', 'syncImport', 'syncReceipt', 'syncThread', 'inboxPush', 'joinSource'])
+
+/** How often a hosted board tells its team's directory what it stores, at most. */
+const REPORT_MS = 60_000
+/** The bytes a call adds to the team's files: an upload's, or a direct upload's it started. */
+const sizeOf = (method: string, input: unknown) => (method === 'upload' ? (input as { data: Uint8Array }).data.byteLength : method === 'uploadStart' ? (input as { size: number }).size : 0)
+
 const isKept = (method: string): method is Kept => (KEPT as readonly string[]).includes(method)
 
 export function toWireError(error: unknown): WireError {
@@ -50,6 +63,8 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
   private readonly engine: BoardEngine
   /** Resets this instance once a newer Worker version calls it and it's idle (spec 08, "Deploys"). */
   private readonly reloader: Reloader
+  /** A hosted board's last report to its team's directory, and the team's totals it answered. */
+  private usage = { at: 0, data: 0, files: 0 }
 
   constructor(ctx: DurableObjectState, env: BordeauxEnv) {
     super(ctx, env)
@@ -160,7 +175,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
           continue
         }
         if (timer.kind === 'lease.due') await this.engine.leaseDue(timer.payload, timer.name)
-        else if (timer.kind === 'wake') await this.wake(timer.payload.owner)
+        else if (timer.kind === 'wake') await this.wake(timer)
         else if (timer.kind === 'run') await this.runOwn()
         else await this.send(timer)
       } catch (error) {
@@ -319,9 +334,12 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
    * Wakes a registrant that has matches (spec 04, Δ wake by URL): `POST <url>/wake`, saying which
    * watchers the board holds for it. One wake covers every match since; a failed one is tried again.
    */
-  private async wake(owner: string) {
-    const target = this.engine.wakeTarget(owner)
+  private async wake(timer: Extract<Timer, { kind: 'wake' }>) {
+    const target = this.engine.wakeTarget(timer.payload.owner)
     if (!target) return
+    // A hosted team's wakes past its limit wait: one wake covers every match until it goes.
+    const { team } = this.boardRef()
+    if (team?.limits && this.env.WAKE_LIMITER && !(await this.env.WAKE_LIMITER.limit({ key: team.id })).success) return this.engine.later(timer, Date.now() + 10_000)
     const response = await fetch(new URL('wake', target.url.endsWith('/') ? target.url : `${target.url}/`), { method: 'POST', headers: { 'x-board-watchers': target.hash } })
     if (!response.ok && response.status !== 202) throw new Error(`${target.url} answered ${response.status} to a wake`)
   }
@@ -393,11 +411,49 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       this.named(board, team)
       if (!isKept(method)) throw notKeptHere(method)
       const caller = fromWire(wire)
+      const limits = (team ?? this.boardRef().team)?.limits
+      if (limits && WRITES.has(method)) {
+        await this.report()
+        this.withinLimits(limits, method, caller.principal.id, input)
+      }
       // `tasks` is the task list's method; the engine names it apart from its task store.
       const run = (method === 'tasks' ? this.engine.tasksList : this.engine[method]) as (caller: ReturnType<typeof fromWire>, input: unknown) => Promise<unknown>
-      return { ok: true, value: await run.call(this.engine, caller, input) }
+      const value = await run.call(this.engine, caller, input)
+      // A file counts at once, so a burst of uploads can't wait out the minute.
+      if (limits) this.usage.files += sizeOf(method, input)
+      return { ok: true, value }
     } catch (error) {
       return { ok: false, error: toWireError(error) }
+    }
+  }
+
+  /** A hosted team's limits on a call, as this board last heard its team's totals (spec 09, "Limits"). */
+  private withinLimits(limits: NonNullable<Team['limits']>, method: string, owner: string, input: unknown) {
+    if (WRITES.has(method) && this.usage.data > limits.dataBytes)
+      throw new HttpError(413, 'limit_data', `this team's boards hold ${bytes(this.usage.data)}, over its ${bytes(limits.dataBytes)}: reading and bdx export still work`)
+    const size = sizeOf(method, input)
+    if (size > 0 && this.usage.files + size > limits.fileBytes)
+      throw new HttpError(413, 'limit_files', `this team's files would be over its ${bytes(limits.fileBytes)}: it has ${bytes(this.usage.files)}`)
+    if (method === 'register' && this.engine.watcherCount(owner) + Object.keys((input as { watch: object }).watch).length > limits.watchers)
+      throw new HttpError(403, 'limit_watchers', `a board holds at most ${limits.watchers} registered watchers`)
+  }
+
+  /**
+   * Before a hosted board's write is checked: what it stores, and its files' bytes, to its team's
+   * directory, at most once a minute; the team's totals come back. The first write since the DO
+   * started reports before it's checked, and a board over the limit still learns when the
+   * team's totals go down.
+   */
+  private async report() {
+    if (Date.now() - this.usage.at < REPORT_MS) return
+    this.usage.at = Date.now()
+    const { team, name } = this.boardRef()
+    if (!team) return
+    try {
+      const totals = await this.env.DIRECTORY.get(this.env.DIRECTORY.idFromName(team.id)).usage(name ?? '', this.ctx.storage.sql.databaseSize, this.engine.fileBytes())
+      this.usage = { at: this.usage.at, ...totals }
+    } catch (error) {
+      console.error('[bordeaux] the board could not report its usage:', (error as Error)?.message ?? error)
     }
   }
 }

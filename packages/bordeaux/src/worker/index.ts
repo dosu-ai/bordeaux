@@ -95,7 +95,10 @@ export default {
       const host = `${url.hostname.replace(/\.$/, '')}${url.port ? `:${url.port}` : ''}`
       if (host === at.host) return hub(request, env, at)
       const team = await teamAt(env, at, host, request)
-      return team instanceof Response ? team : route(request, env, team)
+      if (team instanceof Response) return team
+      if (env.REQUEST_LIMITER && !(await env.REQUEST_LIMITER.limit({ key: team.id })).success)
+        return Response.json({ error: { code: 'rate_limited', message: 'this team has made too many requests this minute: wait and try again' } }, { status: 429, headers: { 'retry-after': '60' } })
+      return route(request, env, team)
     })
   },
 

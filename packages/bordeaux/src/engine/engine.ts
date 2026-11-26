@@ -1119,6 +1119,16 @@ export class BoardEngine {
     this.arm(timer.name, at, timer, timer.attempt)
   }
 
+  /** How many watchers the board holds for registrants other than `owner`. */
+  watcherCount(owner: string): number {
+    return Object.values(this.registry.byOwner).reduce((sum, found) => sum + (found.owner === owner ? 0 : Object.keys(found.watch).length), 0)
+  }
+
+  /** The bytes of every file the board keeps or is waiting on. */
+  fileBytes(): number {
+    return this.files.bytes()
+  }
+
   /** A timer that failed, armed again a little later, up to 10 tries (as A2 retries a consumer). */
   retry(timer: Timer) {
     if (timer.attempt >= 10) {
