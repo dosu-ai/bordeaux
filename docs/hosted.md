@@ -52,11 +52,13 @@ dosu.ai stays registered at GoDaddy. Its DNS moves to Dosu's Cloudflare account.
    `100::` is an address with nothing behind it: a redirect rule or the Worker answers.
 3. **Rules → Redirect Rules**: hostname is `dosu.ai` or `www.dosu.ai` → 301 to
    `https://dosu.dev/`, as GoDaddy forwards them today.
-4. **SSL/TLS → Edge Certificates → Order Advanced Certificate**: hostnames `dosu.ai`,
-   `board.dosu.ai`, and `*.board.dosu.ai`, TXT validation. Universal SSL's `*.dosu.ai` doesn't
-   reach `acme.board.dosu.ai`. Advanced Certificate Manager is $10 a month.
-5. At GoDaddy, set dosu.ai's nameservers to the two Cloudflare names, and wait for the zone to
-   be active.
+4. At GoDaddy, set dosu.ai's nameservers to the two Cloudflare names, and wait for the zone to
+   be active. Until it is, Cloudflare answers with `100::` and nothing redirects: do this step
+   when a short gap doesn't matter.
+5. Once the zone is active, **SSL/TLS → Edge Certificates → Activate Advanced Certificate
+   Manager** ($10 a month), then **Order an advanced certificate**: Google Trust Services, the
+   form's `dosu.ai` and `*.dosu.ai`, plus `*.board.dosu.ai`, TXT validation, 3 months.
+   Universal SSL's `*.dosu.ai` doesn't reach `acme.board.dosu.ai`.
 
 Then check:
 
