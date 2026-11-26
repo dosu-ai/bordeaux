@@ -56,9 +56,10 @@ describe('hosted teams', () => {
   it("keeps each team's boards and directories apart", async () => {
     const [a, b] = [await team('acme-apart'), await team('beta-apart')]
     const [ta, tb] = [await tokenAt(a, 1, 'ada'), await tokenAt(b, 2, 'bob')]
-    await call(a, ta, 'POST', '/channels', { name: 'general' })
-    await call(a, ta, 'POST', '/channels/general/messages', { text: 'hello from acme' })
-    expect((await call(b, tb, 'GET', '/channels')).body.channels ?? []).toEqual([])
+    expect((await call(a, ta, 'POST', '/messages', { channel: 'acme-only', text: 'hello from acme' })).status).toBe(201)
+    expect((await call(a, ta, 'GET', '/messages?channel=acme-only')).body.messages).toHaveLength(1)
+    expect((await call(b, tb, 'GET', '/channels')).body.channels.map((found: { name: string }) => found.name)).not.toContain('acme-only')
+    expect((await call(b, tb, 'GET', '/messages?channel=acme-only')).body.messages ?? []).toEqual([])
     expect((await call(a, ta, 'POST', '/admin/boards', { name: 'ops' })).status).toBe(201)
     expect((await call(a, await tokenAt(a, 1, 'ada', `${a}/b/ops`), 'GET', '/b/ops/channels')).status).toBe(200)
     expect((await call(b, tb, 'GET', '/b/ops/channels')).body).toMatchObject({ error: { code: 'no_board' } })
