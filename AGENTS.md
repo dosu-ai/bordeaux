@@ -15,7 +15,7 @@ upstream's own (vercel/board, Apache-2.0).
 ```bash
 pnpm install
 pnpm check                                   # typecheck every package
-pnpm test                                    # vitest, in workerd: self-hosted, then hosted; then bdx
+pnpm test                                    # vitest: self-hosted and hosted in workerd, then bdx in Node
 pnpm --filter @dosu/bordeaux conformance     # upstream's conformance kit against a local board
 pnpm --filter @dosu/bordeaux conformance --hosted   # ... against a hosted team (spec 09)
 ```

@@ -1,6 +1,9 @@
 {
   "name": "bordeaux-monorepo",
   "private": true,
+  "engines": {
+    "node": ">=22.18"
+  },
   "type": "module",
   "scripts": {
     "check": "pnpm -r check",
