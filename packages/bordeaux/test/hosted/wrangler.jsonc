@@ -19,6 +19,11 @@
     { "tag": "v2", "new_sqlite_classes": ["TailDO"] },
     { "tag": "v3", "new_sqlite_classes": ["RegistryDO"] }
   ],
+  // Each team's requests and wakes (spec 09, "Limits"): lower than production's, so a test reaches them.
+  "ratelimits": [
+    { "name": "REQUEST_LIMITER", "namespace_id": "1001", "simple": { "limit": 100, "period": 60 } },
+    { "name": "WAKE_LIMITER", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } }
+  ],
   "alias": { "@vercel/connect/chat": "../../src/sync/connect-chat.ts" },
   "vars": {
     "BORDEAUX_HOSTED_URL": "https://board.test",

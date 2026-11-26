@@ -39,7 +39,8 @@ export async function admin(request: Request, env: BordeauxEnv, team: Team, me: 
   if (pathname === '/admin/boards' && request.method === 'POST') {
     const { name } = (await request.json().catch(() => ({}))) as { name?: string }
     if (!name || !BOARD_NAME.test(name)) return error(400, 'invalid_request', 'name: 1 to 64 letters, numbers, and ._-')
-    const created = await dir.createBoard(name.toLowerCase(), who.principal)
+    const created = await dir.createBoard(name.toLowerCase(), who.principal, team.limits?.boards)
+    if (created === 'full') return error(403, 'limit_boards', `this team has its ${team.limits!.boards} named boards: delete one first (bdx boards rm)`)
     return Response.json({ board: { name: name.toLowerCase(), url: boardUrl(team, name) }, created }, { status: created ? 201 : 200 })
   }
   const deleting = /^\/admin\/boards\/([^/]+)$/.exec(pathname)

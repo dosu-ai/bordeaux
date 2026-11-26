@@ -22,6 +22,7 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     ctx.storage.sql.exec('create table if not exists bx_revoked (jti text primary key, until integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_owners (principal text primary key, until integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_boards (name text primary key, by text not null, created_at integer not null)')
+    ctx.storage.sql.exec('create table if not exists bx_usage (board text primary key, data integer not null, files integer not null, at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_tokens (jti text primary key, sub text not null, by text not null, expires_at integer not null, revoked integer not null default 0)')
   }
 
@@ -94,9 +95,19 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     return this.ctx.storage.sql.exec('select 1 from bx_boards where name = ?', name).toArray().length > 0
   }
 
-  /** Makes a named board, or finds the one there: `created` says which. */
-  async createBoard(name: string, by: string): Promise<boolean> {
+  /** Makes a named board, or finds the one there (false), or makes none past `max` boards ('full'). */
+  async createBoard(name: string, by: string, max = Infinity): Promise<boolean | 'full'> {
+    if (await this.hasBoard(name)) return false
+    const [row] = this.ctx.storage.sql.exec<{ n: number }>('select count(*) as n from bx_boards').toArray()
+    if (Number(row?.n ?? 0) >= max) return 'full'
     return this.ctx.storage.sql.exec('insert into bx_boards (name, by, created_at) values (?, ?, ?) on conflict (name) do nothing returning 1 as made', name, by, Date.now()).toArray().length > 0
+  }
+
+  /** Keeps what one of the team's boards stores and its files' bytes, as it reported them: the team's totals. */
+  async usage(board: string, data: number, files: number): Promise<{ data: number; files: number }> {
+    this.ctx.storage.sql.exec('insert into bx_usage (board, data, files, at) values (?, ?, ?, ?) on conflict (board) do update set data = excluded.data, files = excluded.files, at = excluded.at', board, data, files, Date.now())
+    const [row] = this.ctx.storage.sql.exec<{ data: number | null; files: number | null }>('select sum(data) as data, sum(files) as files from bx_usage').toArray()
+    return { data: Number(row?.data ?? 0), files: Number(row?.files ?? 0) }
   }
 
   async deleteBoard(name: string): Promise<boolean> {

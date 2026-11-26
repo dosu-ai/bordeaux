@@ -6,7 +6,7 @@ team shares one bordeaux Worker in Dosu's Cloudflare account. Self-hosting doesn
 deployment of the template is still one team, as [QUESTIONS Q4](../QUESTIONS.md#q4) has it.
 
 Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Built so far: hosted mode, the
-registry, personal teams' sign-in, signing up, and the hub's sign-in callback.
+registry, personal teams' sign-in, signing up, the hub's sign-in callback, and the limits.
 
 ## Decisions
 
@@ -265,6 +265,15 @@ release, and a team record may override one later for paid plans.
 - **Usage is recorded** per team by the daily cron (boards, file bytes, messages), for limits
   now and plans later.
 - The defaults are guesses to check against real use (see [Open](#open)).
+
+**As built:** the vars are `BORDEAUX_LIMIT_BOARDS`, `BORDEAUX_LIMIT_DATA_BYTES`,
+`BORDEAUX_LIMIT_FILE_BYTES`, and `BORDEAUX_LIMIT_WATCHERS`, and a team record's `limits`
+overrides any of them. Requests and wakes are two rate-limiting bindings, `REQUEST_LIMITER` and
+`WAKE_LIMITER`, so their numbers are in `wrangler.jsonc`, not vars, and a record can't change
+them. Over the data limit, deleting a message and canceling a schedule still work, since they
+stop more coming. Files count when a direct upload starts, at once, not a minute later. Wakes
+are the board's alarm, not a Queue: one past the limit waits 10 seconds and tries again, and
+one wake covers every match until it goes.
 
 ## How the Worker changes
 

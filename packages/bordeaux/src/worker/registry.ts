@@ -2,6 +2,7 @@
 // GitHub accounts to teams. A team's ID is Dosu's, not GitHub's, since it's in every DO key.
 import { DurableObject } from 'cloudflare:workers'
 import type { BordeauxEnv } from './env.ts'
+import type { Limits } from './limits.ts'
 
 /** A GitHub account a team is linked to, and the App's installation on it. */
 export type GitHubLink = { id: number; login: string; type: 'Organization' | 'User'; installation: number }
@@ -18,6 +19,8 @@ export type TeamRecord = {
   /** When the team was last suspended or uninstalled. */
   state_at: number | null
   created_at: number
+  /** Limits of its own, over the Worker's (spec 09, "Limits"). */
+  limits?: Partial<Limits>
 }
 
 /** Subdomains no login gets, whoever signs up first. */
@@ -106,6 +109,12 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
     const found = this.one('account', account)
     if (!found || found.github.login === login) return found
     return this.save({ ...found, github: { ...found.github, login } })
+  }
+
+  /** Sets a team's own limits, over the Worker's; null for no such team. */
+  async setLimits(id: string, limits: Partial<Limits>): Promise<TeamRecord | null> {
+    const found = this.one('id', id)
+    return found && this.save({ ...found, limits: { ...found.limits, ...limits } })
   }
 
   /** Marks the team on an installation suspended, uninstalled, or active again; null for none. */

@@ -5,6 +5,7 @@
 import type { BordeauxEnv } from './env.ts'
 import { registry, type TeamRecord } from './registry.ts'
 import { configOf } from './config.ts'
+import { limitsOf, type Limits } from './limits.ts'
 
 export interface Team {
   /** The prefix of every Durable Object key the team's boards use: `default` self-hosted. */
@@ -19,6 +20,8 @@ export interface Team {
   owners: string[]
   /** A personal team's one person, by GitHub user ID: they sign in in place of the org's members. */
   person?: string
+  /** A hosted team's limits; a self-hosted one has none. */
+  limits?: Limits
 }
 
 /** The one team a self-hosted deployment is (Q4). */
@@ -81,5 +84,5 @@ export async function teamAt(env: BordeauxEnv, hub: URL, host: string): Promise<
     const until = new Date((record.state_at ?? 0) + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10)
     return refuse(403, 'team_uninstalled', `this team's GitHub App was uninstalled: install it on ${record.github.login} again by ${until} to keep its boards`)
   }
-  return teamOfRecord(record, hub)
+  return { ...teamOfRecord(record, hub), limits: limitsOf(env, record.limits) }
 }
