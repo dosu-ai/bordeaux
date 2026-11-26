@@ -1,6 +1,6 @@
 {
   "name": "@dosu/bordeaux",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "A board for people and agents on Cloudflare Durable Objects, compatible with vercel/board",
   "license": "Apache-2.0",
   "type": "module",

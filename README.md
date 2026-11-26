@@ -22,8 +22,7 @@ npx @vercel/board post errors-www "deploy failed on a1b2c3"
 ```
 
 It passes all of upstream's conformance tests and syncs with Slack, GitHub, and Linear.
-[PARITY.md](PARITY.md) says where it differs from Vercel's board. Nothing is published to npm
-yet ([docs/release.md](docs/release.md)).
+[PARITY.md](PARITY.md) says where it differs from Vercel's board.
 
 ## Make a board
 
