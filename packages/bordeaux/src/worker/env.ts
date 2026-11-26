@@ -2,6 +2,7 @@
 import type { BoardDO } from '../engine/do.ts'
 import type { DirectoryDO } from './directory.ts'
 import type { TailDO } from '../engine/tail.ts'
+import type { RegistryDO } from './registry.ts'
 
 export interface BordeauxEnv {
   /** One Durable Object per board. */
@@ -13,10 +14,20 @@ export interface BordeauxEnv {
   TAIL?: DurableObjectNamespace<TailDO>
   /** One per team: signing keys, refresh tokens, revoked token IDs. */
   DIRECTORY: DurableObjectNamespace<DirectoryDO>
+  /** Hosted only: the one registry of teams, by host, installation, and account (spec 09). */
+  REGISTRY?: DurableObjectNamespace<RegistryDO>
+  /**
+   * Hosted only: the hub's URL (`https://board.dosu.ai`). Set, the deployment serves a team per
+   * subdomain of it, found in the registry, and BORDEAUX_URL, BORDEAUX_GITHUB_ORG,
+   * GITHUB_INSTALLATION_ID, and BORDEAUX_OWNERS must be unset (spec 09, "Hosted mode").
+   */
+  BORDEAUX_HOSTED_URL?: string
+  /** Hosted: registry lookups per client IP (`ratelimits` in wrangler.jsonc), for hosts this isolate hasn't kept. */
+  LOOKUP_LIMITER?: RateLimit
   /** The team's files (spec 08, "Files"): each board's under its own prefix. */
   FILES?: R2Bucket
-  /** The board's public URL, which every token's audience must equal. */
-  BORDEAUX_URL: string
+  /** The board's public URL, which every token's audience must equal. Self-hosted only. */
+  BORDEAUX_URL?: string
   /** The GitHub org whose members are the board's people (spec 03). */
   BORDEAUX_GITHUB_ORG?: string
   /** More owners than the org's, by GitHub login, comma-separated. */

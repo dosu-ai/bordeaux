@@ -1114,6 +1114,11 @@ export class BoardEngine {
     return rows.map((row) => ({ name: row.name, dueAt: Number(row.due_at), kind: row.kind, payload: JSON.parse(row.payload), attempt: Number(row.attempt) }) as Timer)
   }
 
+  /** A timer put off until `at`, not failed: its tries don't count up. */
+  later(timer: Timer, at: number) {
+    this.arm(timer.name, at, timer, timer.attempt)
+  }
+
   /** A timer that failed, armed again a little later, up to 10 tries (as A2 retries a consumer). */
   retry(timer: Timer) {
     if (timer.attempt >= 10) {

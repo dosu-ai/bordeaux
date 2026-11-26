@@ -1,0 +1,29 @@
+// Hosted mode on a laptop (spec 09): every team at a subdomain of the hub, here
+// http://<login>.board.localhost:8787. `POST http://board.localhost:8787/__dev/team` makes one.
+{
+  "name": "bordeaux-hosted-dev",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "BOARD", "class_name": "BoardDO" },
+      { "name": "DIRECTORY", "class_name": "DirectoryDO" },
+      { "name": "TAIL", "class_name": "TailDO" },
+      { "name": "REGISTRY", "class_name": "RegistryDO" }
+    ]
+  },
+  "assets": { "directory": "./node_modules/@vercel/board/dist/inspect", "binding": "ASSETS", "run_worker_first": true },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "bordeaux-files" }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["TailDO"] },
+    { "tag": "v3", "new_sqlite_classes": ["RegistryDO"] }
+  ],
+  "alias": { "@vercel/connect/chat": "./src/sync/connect-chat.ts" },
+  "vars": {
+    "BORDEAUX_HOSTED_URL": "http://board.localhost:8787",
+    "BORDEAUX_DEV": "1"
+  }
+}

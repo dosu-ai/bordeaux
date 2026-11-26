@@ -30,6 +30,8 @@ export async function member(send: Fetch, team: Team, token: string): Promise<{ 
   const user = await github(send, '/user', token)
   if (!user.ok) return oauthError(502, 'server_error', `GitHub didn't say who signed in: ${user.status}`)
   const { id, login } = (await user.json()) as { id: number; login: string }
+  // A personal team's one person is the account itself, and its owner (spec 09).
+  if (team.person !== undefined) return String(id) === team.person ? { id: String(id), login, owner: true } : oauthError(403, 'access_denied', `${login} can't sign in to a personal board: only its owner can`)
   const org = team.org
   if (!org) return oauthError(500, 'server_error', "this board has no GitHub org to check members against: set BORDEAUX_GITHUB_ORG")
   // Outside collaborators aren't members, as on Vercel (decided, Q2a).
@@ -50,6 +52,8 @@ const ownerOf = (team: Team, login: string, role: string | undefined) => role ==
 export async function renewed(env: BordeauxEnv, team: Team, session: Session, send: Fetch): Promise<Session | Response> {
   const next = { ...session, expiresAt: Date.now() + REFRESH_TTL_MS }
   if (Date.now() - session.checkedAt < RECHECK_MS) return next
+  // A personal team's person stays its person: an uninstall closes the whole team instead.
+  if (team.person !== undefined) return session.id === team.person ? { ...next, owner: true, checkedAt: Date.now() } : oauthError(403, 'access_denied', `${session.login} can't sign in to a personal board: only its owner can`)
   const org = team.org
   if (!org) return oauthError(500, 'server_error', 'this board has no GitHub org to check members against: set BORDEAUX_GITHUB_ORG')
   const membership = await membershipOf(env, team, org, session.login, send)

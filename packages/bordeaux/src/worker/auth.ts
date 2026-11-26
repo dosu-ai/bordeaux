@@ -5,6 +5,7 @@ import type { HostPrincipal } from '@vercel/board/access'
 import { createLocalJWKSet, decodeJwt, errors, jwtVerify, type JWTPayload, type JWTVerifyGetKey } from 'jose'
 import type { BordeauxEnv } from './env.ts'
 import type { Team } from './team.ts'
+import { Lru } from './lru.ts'
 
 /** The team's directory: its issuer's keys, sign-ins, and named boards. */
 export const directory = (env: BordeauxEnv, team: Team) => env.DIRECTORY.get(env.DIRECTORY.idFromName(team.id))
@@ -13,7 +14,7 @@ export const directory = (env: BordeauxEnv, team: Team) => env.DIRECTORY.get(env
 export const personId = (githubId: string | number) => `bordeaux:user:${githubId}`
 
 /** Each team's issuer keys, as this isolate last fetched them. */
-const keys = new Map<string, { fetched: number; set: ReturnType<typeof createLocalJWKSet> }>()
+const keys = new Lru<string, { fetched: number; set: ReturnType<typeof createLocalJWKSet> }>(500)
 
 /** How soon after fetching the keys a token naming an unknown key fetches them again: once, not per request. */
 const REFETCH_MS = 30_000

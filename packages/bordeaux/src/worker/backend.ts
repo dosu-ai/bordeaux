@@ -7,6 +7,7 @@ import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
 import { directory } from './auth.ts'
 import { createTrust } from './trust.ts'
+import { Lru } from './lru.ts'
 import { boardUrl, type Team } from './team.ts'
 
 /** The upstream version bordeaux speaks the protocol of (spec 00). */
@@ -16,7 +17,7 @@ export const UPSTREAM_VERSION = '0.56.1'
 const METHODS = 'discovery me channels createChannel actors channelMessages threads message post posted edit delete react label schedule schedules cancelSchedule tasks createTask createTasks createdTasks claimReadyTask claimTask renewTask releaseTask completeTask failTask blockTask unblockTask reopenTask assignTask setTaskNeeds cancelTask grants createGrant createGrants updateGrant explain revokeGrant schemas schema createSchema upload attachment uploadStart uploadFinish watchers register matches ack events typing readSource joinSource synced linked syncImport syncReceipt syncThread syncFind syncCopies inboxPush inboxNext inboxAck inbox'.split(' ')
 
 /** Each board's binding, once board() has bound it in this isolate: what a schedule's send posts through. */
-const bindings = new Map<string, BoardBinding>()
+const bindings = new Lru<string, BoardBinding>(500)
 export const bindingOf = (team: string, name: string | null) => bindings.get(boardKey(team, name)) ?? null
 
 /** The Durable Object a board lives in: `<team id>/<board>`, the default board's name `default`. */
