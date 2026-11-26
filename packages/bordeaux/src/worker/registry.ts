@@ -101,6 +101,13 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
     return { team, created: true }
   }
 
+  /** Follows a GitHub account's new login. The team's host doesn't move: every token names it (spec 09, "Renames"). */
+  async rename(account: number, login: string): Promise<TeamRecord | null> {
+    const found = this.one('account', account)
+    if (!found || found.github.login === login) return found
+    return this.save({ ...found, github: { ...found.github, login } })
+  }
+
   /** Marks the team on an installation suspended, uninstalled, or active again; null for none. */
   async setState(installation: number, state: TeamState): Promise<TeamRecord | null> {
     const found = this.one('installation', installation)

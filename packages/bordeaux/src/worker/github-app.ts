@@ -36,21 +36,40 @@ export function toPkcs8(pem: string): string {
   return `-----BEGIN PRIVATE KEY-----\n${base64}\n-----END PRIVATE KEY-----\n`
 }
 
-let cached: { installation: string; token: string; until: number } | null = null
+/** The App itself, as GitHub's API knows it: a JWT signed with its private key, good for 10 minutes. */
+async function appJwt(app: { id: string; key: string }): Promise<string> {
+  const now = Math.floor(Date.now() / 1000)
+  // Issued a minute early, as GitHub suggests, for clocks that run ahead.
+  return new SignJWT({}).setProtectedHeader({ alg: 'RS256' }).setIssuer(app.id).setIssuedAt(now - 60).setExpirationTime(now + 540).sign(await importPKCS8(toPkcs8(app.key), 'RS256'))
+}
+
+/** The account an installation of the App is on, as GitHub says, asked as the App; null for one that isn't the App's. */
+export async function installationOf(env: BordeauxEnv, installation: string, send: Fetch = fetch): Promise<{ id: number; login: string; type: 'Organization' | 'User' } | null> {
+  if (!env.GITHUB_APP_ID || !env.GITHUB_PRIVATE_KEY) throw new Error('the hub has no GitHub App to ask: set GITHUB_APP_ID and the GITHUB_PRIVATE_KEY secret')
+  const response = await send(`https://api.github.com/app/installations/${encodeURIComponent(installation)}`, {
+    headers: { authorization: `Bearer ${await appJwt({ id: env.GITHUB_APP_ID, key: env.GITHUB_PRIVATE_KEY })}`, accept: 'application/vnd.github+json', 'user-agent': 'bordeaux' },
+  })
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`GitHub didn't say whose installation ${installation} is: ${response.status}`)
+  const { account } = (await response.json()) as { account: { id: number; login: string; type: string } }
+  return { id: account.id, login: account.login, type: account.type === 'User' ? 'User' : 'Organization' }
+}
+
+/** Installation tokens, by installation, each cached for up to 55 minutes (GitHub's last an hour). */
+const cached = new Map<string, { token: string; until: number }>()
 
 /** An installation token, cached for up to 55 minutes (GitHub's last an hour). */
 export async function installationToken(app: NonNullable<ReturnType<typeof appOf>>, send: Fetch = fetch): Promise<string> {
-  if (cached && cached.installation === app.installation && cached.until > Date.now()) return cached.token
-  const now = Math.floor(Date.now() / 1000)
-  // Issued a minute early, as GitHub suggests, for clocks that run ahead.
-  const jwt = await new SignJWT({}).setProtectedHeader({ alg: 'RS256' }).setIssuer(app.id).setIssuedAt(now - 60).setExpirationTime(now + 540).sign(await importPKCS8(toPkcs8(app.key), 'RS256'))
+  const found = cached.get(app.installation)
+  if (found && found.until > Date.now()) return found.token
+  const jwt = await appJwt(app)
   const response = await send(`https://api.github.com/app/installations/${app.installation}/access_tokens`, {
     method: 'POST',
     headers: { authorization: `Bearer ${jwt}`, accept: 'application/vnd.github+json', 'user-agent': 'bordeaux' },
   })
   if (!response.ok) throw new Error(`GitHub didn't give the App an installation token: ${response.status}`)
   const { token } = (await response.json()) as { token: string }
-  cached = { installation: app.installation, token, until: Date.now() + 55 * 60_000 }
+  cached.set(app.installation, { token, until: Date.now() + 55 * 60_000 })
   return token
 }
 

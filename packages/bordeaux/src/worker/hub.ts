@@ -1,12 +1,38 @@
-// The hub (spec 09, "The hub"): the hosted deployment's own host, which is no team's board.
+// The hub (spec 09, "The hub"): the hosted deployment's own host, which is no team's board. A
+// GitHub org or person signs up by installing the App; GitHub sends them to /setup, and the App's
+// installation events to /__bordeaux/github/events. Both make the same team.
 import type { BordeauxEnv } from './env.ts'
-import { registry } from './registry.ts'
-import { teamOfRecord } from './team.ts'
+import { installationOf } from './github-app.ts'
+import { registry, type GitHubLink, type TeamRecord } from './registry.ts'
+import { forgetHost, teamOfRecord } from './team.ts'
+
+type Fetch = typeof fetch
 
 const refuse = (status: number, code: string, message: string) => Response.json({ error: { code, message } }, { status })
+const HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' }
+const PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"
 
-export async function hub(request: Request, env: BordeauxEnv, at: URL): Promise<Response> {
-  const { pathname } = new URL(request.url)
+/** Where an org owner or a person installs the App. */
+export const installUrl = (env: BordeauxEnv) => `https://github.com/apps/${env.GITHUB_APP_SLUG ?? 'bordeaux-ai'}/installations/new`
+
+const escape = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
+
+function page(title: string, body: string, status = 200): Response {
+  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(title)}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem}</style>${body}`
+  return new Response(html, { status, headers: { ...HEADERS, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': PAGE_CSP } })
+}
+
+export async function hub(request: Request, env: BordeauxEnv, at: URL, send: Fetch = fetch): Promise<Response> {
+  const url = new URL(request.url)
+  const { pathname } = url
+  if (pathname === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
+    return page(
+      '🍷 bordeaux',
+      `<h1>🍷 bordeaux</h1><p>A board for people and agents: channels, threads, and tasks, with the protocol of <a href="https://github.com/vercel/board">vercel/board</a>.</p><p>Install the GitHub App on your org, or on your own account, and your team's board is at <code>https://&lt;login&gt;.${escape(at.host)}</code>. An org's members sign in to it; a person's board is theirs and their agents'.</p><p><a href="${escape(installUrl(env))}">Install on GitHub</a></p>`,
+    )
+  }
+  if (pathname === '/setup' && request.method === 'GET') return setup(url, env, at, send)
+  if (pathname === '/__bordeaux/github/events' && request.method === 'POST') return events(request, env, at)
   // A team with no GitHub App behind it, for local development and tests: `POST /__dev/team {"login": "acme"}`.
   if (pathname === '/__dev/team' && request.method === 'POST' && env.BORDEAUX_DEV === '1') {
     const body = (await request.json().catch(() => ({}))) as { login?: string; id?: number; type?: 'Organization' | 'User' }
@@ -16,4 +42,61 @@ export async function hub(request: Request, env: BordeauxEnv, at: URL): Promise<
     return Response.json({ team: team.id, url: teamOfRecord(team, at).url, created }, { status: created ? 201 : 200 })
   }
   return refuse(404, 'not_found', `no route ${request.method} ${pathname}`)
+}
+
+/**
+ * Where GitHub sends someone who installed the App. The query is only a name to ask GitHub
+ * about, as the App: a forged one names an installation that isn't the App's, or one whose team
+ * is already made.
+ */
+async function setup(url: URL, env: BordeauxEnv, at: URL, send: Fetch): Promise<Response> {
+  const action = url.searchParams.get('setup_action')
+  // A member asked an org owner to install it: GitHub sends no installation until an owner does.
+  if (action === 'request') return page('🍷 asked', `<h1>🍷 asked</h1><p>An owner of the org has to approve installing the App. Once they do, the org's board is ready.</p>`)
+  const installation = url.searchParams.get('installation_id') ?? ''
+  if (!/^\d{1,20}$/.test(installation)) return page('🍷 no installation', `<h1>🍷 no installation</h1><p>GitHub didn't say which installation this is. <a href="${escape(installUrl(env))}">Install the App</a> again.</p>`, 400)
+  const known = await registry(env).byInstallation(Number(installation))
+  if (known) return Response.redirect(`${teamOfRecord(known, at).url}/`, 302)
+  const account = await installationOf(env, installation, send)
+  if (!account) return page('🍷 not ours', `<h1>🍷 not ours</h1><p>That isn't an installation of this App. <a href="${escape(installUrl(env))}">Install it</a> on your org or account.</p>`, 404)
+  const { team } = await registry(env).register({ ...account, installation: Number(installation) }, at.host)
+  return Response.redirect(`${teamOfRecord(team, at).url}/`, 302)
+}
+
+/** A GitHub webhook's body, if its `X-Hub-Signature-256` is the App's webhook secret's HMAC of it. */
+async function signed(request: Request, secret: string): Promise<string | null> {
+  const body = await request.text()
+  const given = /^sha256=([0-9a-f]{64})$/.exec(request.headers.get('x-hub-signature-256') ?? '')?.[1]
+  if (!given) return null
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body)))
+  const expected = Uint8Array.from(given.match(/../g)!, (pair) => parseInt(pair, 16))
+  return crypto.subtle.timingSafeEqual(mac, expected) ? body : null
+}
+
+type InstallationEvent = { action?: string; installation?: { id: number; account?: { id: number; login: string; type: string } }; account?: { id: number; login: string }; organization?: { id: number; login: string } }
+
+/** The App's installation events: a team made, suspended, restored, uninstalled, or renamed. */
+async function events(request: Request, env: BordeauxEnv, at: URL): Promise<Response> {
+  if (!env.GITHUB_WEBHOOK_SECRET) return refuse(501, 'no_webhooks', 'the hub has no webhook secret to check events by: set GITHUB_WEBHOOK_SECRET')
+  const body = await signed(request, env.GITHUB_WEBHOOK_SECRET)
+  if (body === null) return refuse(401, 'invalid_signature', "that event isn't signed with the App's webhook secret")
+  const kind = request.headers.get('x-github-event')
+  const event = JSON.parse(body) as InstallationEvent
+  const installation = event.installation?.id
+  let changed: TeamRecord | null = null
+  if (kind === 'installation' && installation !== undefined) {
+    const account = event.installation?.account
+    if (event.action === 'created' && account) {
+      const github: GitHubLink = { id: account.id, login: account.login, type: account.type === 'User' ? 'User' : 'Organization', installation }
+      changed = (await registry(env).register(github, at.host)).team
+    } else if (event.action === 'deleted') changed = await registry(env).setState(installation, 'uninstalled')
+    else if (event.action === 'suspend') changed = await registry(env).setState(installation, 'suspended')
+    else if (event.action === 'unsuspend') changed = await registry(env).setState(installation, 'active')
+  }
+  // An org's rename, or any account's (installation_target covers people too).
+  const renamed = kind === 'organization' ? event.organization : kind === 'installation_target' ? event.account : undefined
+  if (event.action === 'renamed' && renamed) changed = await registry(env).rename(renamed.id, renamed.login)
+  if (changed) forgetHost(changed.host)
+  return Response.json({ ok: true, team: changed?.id ?? null })
 }

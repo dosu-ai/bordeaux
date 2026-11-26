@@ -42,6 +42,10 @@ export interface BordeauxEnv {
   GITHUB_PRIVATE_KEY?: string
   /** The App's installation on the board's org. */
   GITHUB_INSTALLATION_ID?: string
+  /** The App's webhook secret: hosted, what the hub checks the App's installation events by. A secret. */
+  GITHUB_WEBHOOK_SECRET?: string
+  /** Hosted: the App's slug, which its install page is named by (`github.com/apps/<slug>`). */
+  GITHUB_APP_SLUG?: string
   /**
    * This Worker version's ID and upload time (`version_metadata` in wrangler.jsonc). A board's
    * Durable Object that a newer version calls resets itself once it's idle, so a deploy reaches
