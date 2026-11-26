@@ -1,14 +1,16 @@
 import { execFile } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 
 const BDX = join(import.meta.dirname, '../../src/cli/bdx.ts')
+const CONFIG = mkdtempSync(join(tmpdir(), 'bdx-'))
+afterAll(() => rmSync(CONFIG, { recursive: true, force: true }))
 
 /** Runs bdx with no sign-in and no board, as a person who just installed it. */
 function bdx(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  const env = { ...process.env, XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), 'bdx-')) }
+  const env = { ...process.env, XDG_CONFIG_HOME: CONFIG }
   delete env.BOARD_URL
   delete env.BOARD_TOKEN
   delete env.BOARD_NAME
@@ -28,15 +30,28 @@ describe('bdx --help on bordeaux’s own commands', () => {
     }
   })
 
-  it('answers without a sign-in for each command bordeaux runs itself', async () => {
-    const tokens = await bdx('tokens', '--help')
-    expect(tokens.code).toBe(0)
-    expect(tokens.stdout).toContain('bdx tokens create --service <name>')
-    expect(tokens.stdout).toContain('bdx tokens list | revoke <id>')
-    for (const command of ['logout', 'boards', 'export', 'import', 'token', 'health', 'dead-letters', 'gc', 'redact', 'doctor', 'redactions']) {
+  it('answers without a sign-in, in 80 columns, for each command bdx --help lists as bordeaux’s', async () => {
+    const help = (await bdx('--help')).stdout
+    const section = help.slice(help.indexOf('bordeaux:\n'), help.indexOf("board commands (upstream's"))
+    // grants is upstream's, with bordeaux's flags added: its help is upstream's.
+    const commands = [...new Set([...section.matchAll(/^ {2}([a-z-]+)/gm)].map(([, command]) => command!))].filter((command) => command !== 'grants')
+    expect(commands).toContain('tokens')
+    for (const command of commands) {
       const run = await bdx(command, '--help')
       expect(run, command).toMatchObject({ code: 0, stderr: '' })
       expect(run.stdout, command).toMatch(new RegExp(`^usage:\\n  bdx ${command} `))
+      for (const line of run.stdout.split('\n')) expect(line.length, `${command}: ${line}`).toBeLessThanOrEqual(80)
+    }
+    const tokens = await bdx('tokens', '--help')
+    expect(tokens.stdout).toContain('bdx tokens create --service <name>')
+    expect(tokens.stdout).toContain('bdx tokens list | revoke <id>')
+  })
+
+  it('finds the command after a flag’s value', async () => {
+    for (const args of [['--name', 'ops', 'gc', '--help'], ['--url', 'https://board.example', 'health', '--help']]) {
+      const run = await bdx(...args)
+      expect(run, args.join(' ')).toMatchObject({ code: 0, stderr: '' })
+      expect(run.stdout, args.join(' ')).toMatch(new RegExp(`^usage:\\n  bdx ${args[2]} `))
     }
   })
 
@@ -54,5 +69,11 @@ describe('bdx login', () => {
       expect(run).toMatchObject({ code: 1, stdout: '' })
       expect(run.stderr).toBe(`bdx: ${given} isn't a board's URL: bdx login https://<board>\n`)
     }
+  })
+
+  it('takes the board from --url, as every other command does', async () => {
+    const run = await bdx('login', '--url', 'not-a-url')
+    expect(run).toMatchObject({ code: 1, stdout: '' })
+    expect(run.stderr).toBe("bdx: not-a-url isn't a board's URL: bdx login https://<board>\n")
   })
 })
