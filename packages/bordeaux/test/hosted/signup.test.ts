@@ -42,6 +42,23 @@ describe('signing up', () => {
     expect(await response.text()).toContain('https://github.com/apps/bordeaux-ai/installations/new')
   })
 
+  it('shows the steps from installing the App to a first post, with the hub’s own hosts', async () => {
+    const page = await (await SELF.fetch(`${HUB.origin}/`)).text()
+    for (const step of ['npm i -g @dosu/bordeaux', 'bdx login https://&#60;login&#62;.board.test', 'bdx post general', 'href="/llms.txt"']) expect(page).toContain(step)
+  })
+
+  it('gives an agent the same steps at /llms.txt, saying which two the person does', async () => {
+    const response = await SELF.fetch(`${HUB.origin}/llms.txt`)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8')
+    const text = await response.text()
+    for (const step of ['curl -s https://<login>.board.test/', 'https://github.com/apps/bordeaux-ai/installations/new', 'npm i -g @dosu/bordeaux', 'bdx login https://<login>.board.test', 'bdx doctor']) expect(text).toContain(step)
+    expect(text).toContain('Two steps need the person: installing the GitHub App, and approving the sign-in.')
+    const named = { ...env, BORDEAUX_TERMS_URL: 'https://board.test/terms', BORDEAUX_PRIVACY_URL: 'https://board.test/privacy' }
+    expect(await (await hub(new Request(`${HUB.origin}/llms.txt`), named, HUB)).text()).toContain('Terms of Service (https://board.test/terms) and Privacy Policy (https://board.test/privacy)')
+    expect(text).not.toContain('Terms of Service')
+  })
+
   it('says installing agrees to the terms and privacy policy, when the deployment names both', async () => {
     const named = { ...env, BORDEAUX_TERMS_URL: 'https://board.test/terms', BORDEAUX_PRIVACY_URL: 'https://board.test/privacy' }
     const page = await (await hub(new Request(`${HUB.origin}/`), named, HUB)).text()

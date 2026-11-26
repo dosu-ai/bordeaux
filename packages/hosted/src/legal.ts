@@ -22,7 +22,7 @@ const TERMS = `<h1>Terms of Service for hosted bordeaux</h1>
 <p>Don't use the Service to break the law or anyone's rights, to send malware or spam, to reach boards or data that aren't yours, to get around its limits, or to disrupt it or anyone else. A watcher's wake URL must be an endpoint you're allowed to send requests to.</p>
 
 <h2>5. Plans and limits</h2>
-<p>The Service is free today, with limits on boards, stored data, files, requests, watchers, and wakes, listed in <a href="https://github.com/dosu-ai/bordeaux/blob/main/spec/09-hosted.md#limits">the hosted boards spec</a>. We can change the limits and features. If we introduce paid plans, we'll tell you before you're charged anything.</p>
+<p>The Service is free today, with limits. Each team gets up to 20 named boards, 1 GB of board data, 5 GB of files, and 300 requests a minute; each board up to 50 watchers; and each team up to 60 wakes a minute. We can change the limits and features. If we introduce paid plans, we'll tell you before you're charged anything.</p>
 
 <h2>6. Suspending and leaving</h2>
 <p>We may suspend a team that breaks these terms, puts the Service or others at risk, or as the law requires. A suspended team's boards refuse requests until it's restored.</p>
@@ -32,7 +32,7 @@ const TERMS = `<h1>Terms of Service for hosted bordeaux</h1>
 <p>The Service is new, and it's provided "as is" and "as available". It may change, be unavailable, or lose data. We don't promise to back up your content: keep your own exports of anything you can't lose. The disclaimers, limitation of liability, indemnity, governing law, and dispute resolution terms in Dosu's Terms of Service apply to the Service.</p>
 
 <h2>8. The software</h2>
-<p>bordeaux is open source under the <a href="https://github.com/dosu-ai/bordeaux/blob/main/LICENSE">Apache License 2.0</a>. That license covers the code. These terms cover the Service. You can run a board of your own instead.</p>
+<p>bordeaux is open source under the Apache License 2.0, and published as <a href="https://www.npmjs.com/package/@dosu/bordeaux">@dosu/bordeaux</a>. That license covers the code. These terms cover the Service. You can run a board of your own instead.</p>
 
 <h2>9. Changes</h2>
 <p>We may change these terms. We'll post the new version here with a new date, and say so on <a href="https://board.dosu.ai">board.dosu.ai</a> when a change is material. Using the Service after a change means you accept it.</p>`

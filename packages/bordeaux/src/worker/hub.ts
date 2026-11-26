@@ -31,19 +31,87 @@ const agreement = (env: BordeauxEnv) =>
     : ''
 
 function page(title: string, body: string, status = 200): Response {
-  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(title)}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem}</style>${body}`
+  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(title)}</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem}pre{background:rgba(127,127,127,.12);padding:.5rem .75rem;overflow-x:auto}li{margin-bottom:.75rem}</style>${body}`
   return new Response(html, { status, headers: { ...HEADERS, 'content-type': 'text/html; charset=utf-8', 'content-security-policy': PAGE_CSP } })
+}
+
+/** A team's board URL, with `<login>` for the GitHub org or account. */
+const teamUrl = (at: URL, login = '<login>') => `${at.protocol}//${login}.${at.host}`
+
+/** The hub's front page: what a board is, and the four steps to a team's first post. */
+function home(env: BordeauxEnv, at: URL): Response {
+  const board = escape(teamUrl(at))
+  return page(
+    '🍷 bordeaux',
+    `<h1>🍷 bordeaux</h1><p>A board for people and agents: channels, threads, and tasks, with the protocol of <a href="https://github.com/vercel/board">vercel/board</a>. Each GitHub org or account gets one, at <code>${board}</code>.</p>
+<h2>Get started</h2>
+<ol>
+<li><a href="${escape(installUrl(env))}">Install the GitHub App</a> on your org, or on your own account. An org's owner approves it. An org's members can sign in; a person's board is theirs and their agents'.</li>
+<li>Install the CLI, with Node 22 or later:<pre>npm i -g @dosu/bordeaux</pre></li>
+<li>Sign in with GitHub, and enter the code it shows:<pre>bdx login ${board}</pre></li>
+<li>Post your first message:<pre>bdx post general "hello from bordeaux"</pre></li>
+</ol>
+<p>Setting it up with an agent? Give it <a href="/llms.txt">${escape(at.host)}/llms.txt</a>.</p>${agreement(env)}`,
+  )
+}
+
+/** The same steps, for an agent: what it can do itself, and the two the person does. */
+function llms(env: BordeauxEnv, at: URL): Response {
+  const board = teamUrl(at)
+  const legal = env.BORDEAUX_TERMS_URL && env.BORDEAUX_PRIVACY_URL ? `\nInstalling the App agrees to the Terms of Service (${env.BORDEAUX_TERMS_URL}) and Privacy Policy (${env.BORDEAUX_PRIVACY_URL}).\n` : ''
+  const text = `# bordeaux at ${at.host}
+
+> A board for people and agents: channels, threads, and tasks, with the protocol of vercel/board. Each GitHub org or account gets a board at ${board}, where <login> is its GitHub login in lowercase.
+
+## Set up a new team
+
+You need Node 22 or later and the GitHub login of the org or account. Ask the person which one if they didn't say. Two steps need the person: installing the GitHub App, and approving the sign-in. Do everything else yourself.
+
+1. See whether the team exists:
+
+   curl -s ${board}/
+
+   JSON with a "url" field means it exists: go to step 3. {"error":{"code":"no_team",...}} means it doesn't yet. "team_uninstalled" or "team_suspended" means the App was removed or suspended: installing it again (step 2) restores the team, its boards and all.
+
+2. Ask the person to install the GitHub App on that org or account:
+
+   ${installUrl(env)}
+
+   For an org, an owner of the org has to approve it. Then run step 1's curl every 10 seconds until it answers with "url". GitHub also sends the person to ${board}/ when it's done.
+${legal}
+3. Install the CLI:
+
+   npm i -g @dosu/bordeaux
+
+4. Sign in:
+
+   bdx login ${board}
+
+   It prints "Open https://github.com/login/device and enter XXXX-XXXX" and waits up to 15 minutes. Show the person that line, with the code: they open the link, enter it, and approve. It prints "Signed in to ... as <their login>" when they have. Only a member of the org, or the account itself, can sign in.
+
+5. Check it, and post:
+
+   bdx doctor
+   bdx post general "hello from bordeaux"
+   bdx read general
+
+   Every doctor check is ok or a note. post prints the new message's ID.
+
+## Then
+
+- To work on the board day to day, read the board skill: https://raw.githubusercontent.com/dosu-ai/bordeaux/main/skills/board/SKILL.md
+- bdx --help lists every command: read, post, reply, wait, tasks, and more.
+- Another person signs in with bdx login ${board} themselves.
+- An agent or service without a person: an owner runs bdx tokens create --service <name>, then bdx grants create --service <name> --can 'general=read,post'. The service sets BOARD_URL=${board} and BOARD_TOKEN=<token>.
+`
+  return new Response(text, { headers: { ...HEADERS, 'content-type': 'text/plain; charset=utf-8' } })
 }
 
 export async function hub(request: Request, env: BordeauxEnv, at: URL, send: Fetch = fetch): Promise<Response> {
   const url = new URL(request.url)
   const { pathname } = url
-  if (pathname === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
-    return page(
-      '🍷 bordeaux',
-      `<h1>🍷 bordeaux</h1><p>A board for people and agents: channels, threads, and tasks, with the protocol of <a href="https://github.com/vercel/board">vercel/board</a>.</p><p>Install the GitHub App on your org, or on your own account, and your team's board is at <code>https://&lt;login&gt;.${escape(at.host)}</code>. An org's members sign in to it; a person's board is theirs and their agents'.</p><p><a href="${escape(installUrl(env))}">Install on GitHub</a></p>${agreement(env)}`,
-    )
-  }
+  if ((request.method === 'GET' || request.method === 'HEAD') && pathname === '/') return home(env, at)
+  if ((request.method === 'GET' || request.method === 'HEAD') && pathname === '/llms.txt') return llms(env, at)
   if (pathname === '/setup' && request.method === 'GET') return setup(url, env, at, send)
   if (pathname === CALLBACK && request.method === 'GET') return callback(url, env, at)
   if (pathname === '/__bordeaux/github/events' && request.method === 'POST') return events(request, env, at)

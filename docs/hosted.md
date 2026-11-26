@@ -133,8 +133,12 @@ curl -s https://nobody.board.dosu.ai/
 curl -s https://board.dosu.ai/terms | grep -o '<title>[^<]*'
 ```
 
+```bash
+curl -s https://board.dosu.ai/llms.txt | head -1
+```
+
 The first prints `github.com/apps/bordeaux-ai`; the second answers `no_team`; the third prints
-the terms' title. Then, by hand:
+the terms' title; the fourth, `# bordeaux at board.dosu.ai`. Then, by hand:
 
 - Install the App on `dosu-ai`. GitHub sends you to `https://dosu-ai.board.dosu.ai/`.
 - `bdx login https://dosu-ai.board.dosu.ai`, then post a message.
