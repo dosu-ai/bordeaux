@@ -6,6 +6,9 @@ import type { BordeauxEnv } from './env.ts'
 
 const ALG = 'ES256'
 
+/** Why a destroyed Durable Object resets itself: its caller expects this one. */
+export const DESTROYED = 'bordeaux: destroyed'
+
 /** A person's sign-in, as a refresh token keeps it. */
 export type Session = { id: string; login: string; owner: boolean; checkedAt: number; expiresAt: number }
 
@@ -22,6 +25,8 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     ctx.storage.sql.exec('create table if not exists bx_revoked (jti text primary key, until integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_owners (principal text primary key, until integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_boards (name text primary key, by text not null, created_at integer not null)')
+    // Named boards deleted: their Durable Objects keep what they had until the team is deleted.
+    ctx.storage.sql.exec('create table if not exists bx_deleted_boards (name text primary key, at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_usage (board text primary key, data integer not null, files integer not null, at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_tokens (jti text primary key, sub text not null, by text not null, expires_at integer not null, revoked integer not null default 0)')
   }
@@ -106,12 +111,31 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
   /** Keeps what one of the team's boards stores and its files' bytes, as it reported them: the team's totals. */
   async usage(board: string, data: number, files: number): Promise<{ data: number; files: number }> {
     this.ctx.storage.sql.exec('insert into bx_usage (board, data, files, at) values (?, ?, ?, ?) on conflict (board) do update set data = excluded.data, files = excluded.files, at = excluded.at', board, data, files, Date.now())
+    return this.totals()
+  }
+
+  async deleteBoard(name: string): Promise<boolean> {
+    const gone = this.ctx.storage.sql.exec('delete from bx_boards where name = ? returning 1 as gone', name).toArray().length > 0
+    if (gone) this.ctx.storage.sql.exec('insert or replace into bx_deleted_boards (name, at) values (?, ?)', name, Date.now())
+    return gone
+  }
+
+  /** Every named board the team has had, deleted or not: what deleting the team deletes. */
+  async everyBoard(): Promise<string[]> {
+    return this.ctx.storage.sql.exec<{ name: string }>('select name from bx_boards union select name from bx_deleted_boards order by name').toArray().map((row) => row.name)
+  }
+
+  /** The team's totals, as its boards last reported them. */
+  async totals(): Promise<{ data: number; files: number }> {
     const [row] = this.ctx.storage.sql.exec<{ data: number | null; files: number | null }>('select sum(data) as data, sum(files) as files from bx_usage').toArray()
     return { data: Number(row?.data ?? 0), files: Number(row?.files ?? 0) }
   }
 
-  async deleteBoard(name: string): Promise<boolean> {
-    return this.ctx.storage.sql.exec('delete from bx_boards where name = ? returning 1 as gone', name).toArray().length > 0
+  /** Deletes all the team's directory keeps: its keys, sign-ins, boards' names, and tokens. */
+  async destroy() {
+    await this.ctx.storage.deleteAll()
+    // What this instance holds in memory goes too: a call after this starts from nothing.
+    this.ctx.abort(DESTROYED)
   }
 
   /** Keeps a service token's record, to list and revoke it: never the token itself. */

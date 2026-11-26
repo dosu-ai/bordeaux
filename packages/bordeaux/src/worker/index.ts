@@ -3,12 +3,14 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { directory, revokedToken } from './auth.ts'
 import { admin } from './admin.ts'
-import { boardNamed, boardOf, boardUrl, BOARD_NAME, exists } from './boards.ts'
+import { boardOf, boardUrl, BOARD_NAME, exists } from './boards.ts'
 import { putUpload, UPLOADS } from './uploads.ts'
 import { broker } from './broker.ts'
 import type { BordeauxEnv } from './env.ts'
 import { envTeam, hubOf, teamAt, type Team } from './team.ts'
 import { hub } from './hub.ts'
+import { devSignIn } from './dev.ts'
+import { fanOut, tend } from './operate.ts'
 
 import { inspect } from './inspect.ts'
 import { collectAll, GC_CRON, scheduledCheck } from './health.ts'
@@ -21,18 +23,6 @@ export { RegistryDO } from './registry.ts'
 // Upstream's waitUntil looks up Vercel's request context: it gets the Worker's own (spec 08).
 const requestContext = new AsyncLocalStorage<{ waitUntil(promise: Promise<unknown>): void }>()
 Reflect.set(globalThis, Symbol.for('@vercel/request-context'), { get: () => requestContext.getStore() })
-
-async function devSignIn(request: Request, env: BordeauxEnv, team: Team): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { id?: number | string; login?: string; ttl?: number; audience?: string }
-  const id = String(body.id ?? 1)
-  if (!/^\d+$/.test(id)) return Response.json({ error: { code: 'invalid_request', message: 'id: a GitHub user ID' } }, { status: 400 })
-  if (body.audience !== undefined && boardNamed(team, body.audience) === undefined) return Response.json({ error: { code: 'invalid_request', message: 'audience: one of this deployment\'s boards' } }, { status: 400 })
-  const login = body.login ?? `dev${id}`
-  const dir = directory(env, team)
-  const { token, expiresAt } = await dir.mint({ sub: `user:${id}`, login }, Math.min(body.ttl ?? 3600, 12 * 3600), team.url, body.audience)
-  const refresh = await dir.startSession({ id, login, owner: false, checkedAt: Date.now(), expiresAt: Date.now() + 24 * 3600 * 1000 })
-  return Response.json({ access_token: token, token_type: 'Bearer', expires_at: new Date(expiresAt).toISOString(), refresh_token: refresh, login })
-}
 
 /** One request to one of the team's boards, or to its routes beside them. */
 async function route(request: Request, env: BordeauxEnv, team: Team): Promise<Response> {
@@ -102,13 +92,34 @@ export default {
     })
   },
 
-  /** A cron (`triggers.crons` in wrangler.jsonc): retention daily at GC_CRON, else a sync check. */
+  /**
+   * A cron (`triggers.crons` in wrangler.jsonc): retention daily at GC_CRON, else a sync check.
+   * Hosted, the daily cron puts each team on the Queue, and there's no sync to check yet.
+   */
   async scheduled(controller: ScheduledController, env: BordeauxEnv): Promise<void> {
-    // A hosted deployment's teams have no crons yet.
-    if (env.BORDEAUX_HOSTED_URL) return
+    if (env.BORDEAUX_HOSTED_URL) {
+      if (controller.cron === GC_CRON) await fanOut(env)
+      return
+    }
     // A deployment with no URL serves no board, and has none to collect: say so, once a run.
     if (!env.BORDEAUX_URL) return console.error("[bordeaux] the cron has no board to run on: set BORDEAUX_URL, the board's public URL")
     if (controller.cron === GC_CRON) await collectAll(env, envTeam(env))
     else await scheduledCheck(env)
   },
-} satisfies ExportedHandler<BordeauxEnv>
+
+  /** Hosted: the `bordeaux-teams` Queue, one team's daily work per message. */
+  async queue(batch: MessageBatch<{ team: string }>, env: BordeauxEnv): Promise<void> {
+    const at = hubOf(env)
+    if (!at) throw new Error('only a hosted deployment takes the bordeaux-teams Queue')
+    for (const message of batch.messages) {
+      try {
+        const done = await tend(env, at, message.body.team)
+        console.log(`[bordeaux] team ${message.body.team}: ${done}`)
+        message.ack()
+      } catch (error) {
+        console.error(`[bordeaux] team ${message.body.team} failed:`, (error as Error)?.message ?? error)
+        message.retry()
+      }
+    }
+  },
+} satisfies ExportedHandler<BordeauxEnv, { team: string }>

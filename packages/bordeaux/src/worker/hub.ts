@@ -1,10 +1,16 @@
 // The hub (spec 09, "The hub"): the hosted deployment's own host, which is no team's board. A
 // GitHub org or person signs up by installing the App; GitHub sends them to /setup, and the App's
 // installation events to /__bordeaux/github/events. Both make the same team.
+import { HttpError } from '@vercel/board'
+import { bordeauxTokens, directory } from './auth.ts'
+import { broker } from './broker.ts'
+import { devSignIn } from './dev.ts'
 import type { BordeauxEnv } from './env.ts'
 import { installationOf } from './github-app.ts'
+import type { Limits } from './limits.ts'
+import { deleteTeam } from './operate.ts'
 import { registry, type GitHubLink, type TeamRecord } from './registry.ts'
-import { forgetHost, teamOfRecord } from './team.ts'
+import { forgetHost, teamOfRecord, type Team } from './team.ts'
 import { CALLBACK } from './inspect.ts'
 
 type Fetch = typeof fetch
@@ -35,6 +41,11 @@ export async function hub(request: Request, env: BordeauxEnv, at: URL, send: Fet
   if (pathname === '/setup' && request.method === 'GET') return setup(url, env, at, send)
   if (pathname === CALLBACK && request.method === 'GET') return callback(url, env, at)
   if (pathname === '/__bordeaux/github/events' && request.method === 'POST') return events(request, env, at)
+  // The hub's own sign-in, for Dosu's operators.
+  const operators = operatorTeam(env, at)
+  if (pathname.startsWith('/auth/')) return operators ? broker(request, env, operators, send) : refuse(404, 'not_found', 'this hub has no operators to sign in: set BORDEAUX_OPERATOR_ORG')
+  if (pathname === '/__dev/token' && request.method === 'POST' && env.BORDEAUX_DEV === '1' && operators) return devSignIn(request, env, operators)
+  if (pathname === '/__bordeaux/teams' || pathname.startsWith('/__bordeaux/teams/')) return operate(request, env, at)
   // A team with no GitHub App behind it, for local development and tests: `POST /__dev/team {"login": "acme"}`.
   if (pathname === '/__dev/team' && request.method === 'POST' && env.BORDEAUX_DEV === '1') {
     const body = (await request.json().catch(() => ({}))) as { login?: string; id?: number; type?: 'Organization' | 'User' }
@@ -47,6 +58,68 @@ export async function hub(request: Request, env: BordeauxEnv, at: URL, send: Fet
     return Response.json({ team: team.id, url: teamOfRecord(team, at).url, created }, { status: created ? 201 : 200 })
   }
   return refuse(404, 'not_found', `no route ${request.method} ${pathname}`)
+}
+
+/** The hub as a team of its own: the operator org's people sign in to it, and its owners operate. */
+function operatorTeam(env: BordeauxEnv, at: URL): Team | null {
+  if (!env.BORDEAUX_OPERATOR_ORG) return null
+  return { id: 'hub', url: at.origin, org: env.BORDEAUX_OPERATOR_ORG, installation: undefined, owners: [] }
+}
+
+/** What the operator routes show of a team: who it is and what it uses, never what's on its boards. */
+const view = (record: TeamRecord, at: URL) => ({
+  id: record.id,
+  url: teamOfRecord(record, at).url,
+  github: { id: record.github.id, login: record.github.login, type: record.github.type, installation: record.github.installation },
+  state: record.state,
+  state_at: record.state_at === null ? null : new Date(record.state_at).toISOString(),
+  held_at: record.held_at ? new Date(record.held_at).toISOString() : null,
+  created_at: new Date(record.created_at).toISOString(),
+  limits: record.limits ?? {},
+  usage: record.usage ? { ...record.usage, at: new Date(record.usage.at).toISOString() } : null,
+})
+
+/**
+ * The operator routes (spec 09, "Operating it"): list teams and their usage; suspend, restore,
+ * set limits for, or delete one. Only an owner of BORDEAUX_OPERATOR_ORG, signed in to the hub.
+ */
+async function operate(request: Request, env: BordeauxEnv, at: URL): Promise<Response> {
+  const operators = operatorTeam(env, at)
+  if (!operators) return refuse(404, 'not_found', 'this hub has no operators: set BORDEAUX_OPERATOR_ORG')
+  const credential = /^Bearer\s+(\S+)$/i.exec(request.headers.get('authorization') ?? '')?.[1] ?? null
+  let principal
+  try {
+    principal = await bordeauxTokens(env, operators, credential, at.origin)
+  } catch (error) {
+    if (error instanceof HttpError) return refuse(error.status, error.code, error.message)
+    throw error
+  }
+  if (!principal) return refuse(401, 'unauthorized', `sign in to the hub first: bdx login ${at.origin}`)
+  if (!(await directory(env, operators).isOwner(principal.id))) return refuse(403, 'forbidden', `only an owner of ${env.BORDEAUX_OPERATOR_ORG} operates teams`)
+
+  const { pathname } = new URL(request.url)
+  if (pathname === '/__bordeaux/teams' && request.method === 'GET') return Response.json({ teams: (await registry(env).list()).map((record) => view(record, at)) })
+  const found = /^\/__bordeaux\/teams\/(t_[a-z2-7]+)(\/[a-z]+)?$/.exec(pathname)
+  const record = found ? await registry(env).byId(found[1]!) : null
+  if (!found || !record) return refuse(404, 'no_team', `no team at ${pathname}`)
+  const action = `${request.method} ${found[2] ?? ''}`
+  let changed: TeamRecord | null = null
+  if (action === 'GET ') changed = record
+  else if (action === 'POST /suspend') changed = await registry(env).hold(record.id, true)
+  else if (action === 'POST /restore') changed = await registry(env).hold(record.id, false)
+  else if (action === 'PATCH /limits') {
+    const body = (await request.json().catch(() => null)) as Partial<Record<keyof Limits, unknown>> | null
+    const limits = Object.fromEntries(Object.entries(body ?? {}).filter(([key, value]) => ['boards', 'dataBytes', 'fileBytes', 'watchers'].includes(key) && typeof value === 'number' && value >= 0))
+    if (Object.keys(limits).length === 0) return refuse(400, 'invalid_request', 'limits: any of boards, dataBytes, fileBytes, watchers, as numbers')
+    changed = await registry(env).setLimits(record.id, limits)
+  } else if (action === 'DELETE ') {
+    const claimed = await registry(env).claimDeletion(record.id, Infinity)
+    if (claimed) await deleteTeam(env, at, claimed)
+    forgetHost(record.host)
+    return Response.json({ deleted: record.id })
+  } else return refuse(404, 'not_found', `no route ${request.method} ${pathname}`)
+  forgetHost(record.host)
+  return Response.json({ team: view(changed!, at) })
 }
 
 /**
