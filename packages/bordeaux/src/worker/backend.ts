@@ -7,6 +7,7 @@ import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
 import { directory } from './auth.ts'
 import { createTrust } from './trust.ts'
+import type { Team } from './team.ts'
 
 /** The upstream version bordeaux speaks the protocol of (spec 00). */
 export const UPSTREAM_VERSION = '0.56.1'
@@ -16,16 +17,16 @@ const METHODS = 'discovery me channels createChannel actors channelMessages thre
 
 /** Each board's binding, once board() has bound it in this isolate: what a schedule's send posts through. */
 const bindings = new Map<string, BoardBinding>()
-export const bindingOf = (name: string | null) => bindings.get(boardKey(name)) ?? null
+export const bindingOf = (team: string, name: string | null) => bindings.get(boardKey(team, name)) ?? null
 
-/** The Durable Object a board lives in: one team per deployment for now (Q4), keyed so more can come. */
-export const boardKey = (name: string | null) => `default/${(name ?? 'default').toLowerCase()}`
+/** The Durable Object a board lives in: `<team id>/<board>`, the default board's name `default`. */
+export const boardKey = (team: string, name: string | null) => `${team}/${(name ?? 'default').toLowerCase()}`
 
-export function durable(env: BordeauxEnv, name: string | null = null): Backend {
+export function durable(env: BordeauxEnv, team: Team, name: string | null = null): Backend {
   let binding: BoardBinding | null = null
-  const url = name === null ? env.BORDEAUX_URL : `${env.BORDEAUX_URL}/b/${name.toLowerCase()}`
+  const url = name === null ? team.url : `${team.url}/b/${name.toLowerCase()}`
   // A board's DO resets when a newer version calls it: what was queued there is sent again.
-  const board = retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(name))))
+  const board = retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(team.id, name))))
   const stub = () => board
   // Which code is calling: the board's DO reloads when this is newer than its own.
   const version = env.CF_VERSION_METADATA ? { id: env.CF_VERSION_METADATA.id, timestamp: env.CF_VERSION_METADATA.timestamp } : undefined
@@ -73,18 +74,18 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
 
   // A wait on the feed goes to the board's TailDO, where every tail's wait is: the board's DO
   // serves it one follower, not one feed per tail (spec 08). A page that doesn't wait stays here.
-  const tailStub = env.TAIL ? retried(() => env.TAIL!.get(env.TAIL!.idFromName(boardKey(name)))) : null
+  const tailStub = env.TAIL ? retried(() => env.TAIL!.get(env.TAIL!.idFromName(boardKey(team.id, name)))) : null
   const tail = () => tailStub!
   const events = async (caller: Caller, input: unknown) => {
     const query = input as { wait?: number; last?: number }
     if (!env.TAIL || !query.wait || query.wait <= 0 || query.last !== undefined) return remote('events')(caller, input)
-    const answer = (await tail().events(toWire(caller), input as never, name, version)) as Envelope
+    const answer = (await tail().events(toWire(caller), input as never, name, version, team)) as Envelope
     if (!answer.ok) throw new HttpError(answer.error.status, answer.error.code, answer.error.message, answer.error.hint !== undefined ? { hint: answer.error.hint } : {})
     return answer.value
   }
 
   const remote = (method: string) => async (caller: Caller, input: unknown) => {
-    const answer = (await stub().call(method, toWire(caller), input, name, version)) as Envelope
+    const answer = (await stub().call(method, toWire(caller), input, name, version, team)) as Envelope
     if (!answer.ok) throw new HttpError(answer.error.status, answer.error.code, answer.error.message, answer.error.hint !== undefined ? { hint: answer.error.hint } : {})
     return answer.value
   }
@@ -95,9 +96,9 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
       if (!binding) throw new Error("durable: this backend isn't serving a board yet")
       return binding
     },
-    issuer: env.BORDEAUX_URL,
+    issuer: team.url,
     // A person whose last sign-in found them an owner of the GitHub org, or in BORDEAUX_OWNERS (decided, Q2a).
-    isOwner: async (principal) => principal.kind === 'person' && principal.id.startsWith('bordeaux:user:') && (await directory(env).isOwner(principal.id)),
+    isOwner: async (principal) => principal.kind === 'person' && principal.id.startsWith('bordeaux:user:') && (await directory(env, team).isOwner(principal.id)),
   })
   const GRANT_METHODS = ['grants', 'createGrant', 'createGrants', 'updateGrant', 'explain', 'revokeGrant'] as const
   const local: Record<string, (caller: Caller, input: never) => Promise<unknown>> = { discovery, me, events }
@@ -120,7 +121,7 @@ export function durable(env: BordeauxEnv, name: string | null = null): Backend {
     bind(given: BoardBinding) {
       if (binding) throw new Error('durable: this backend already serves a board: create one per board()')
       binding = given
-      bindings.set(boardKey(name), given)
+      bindings.set(boardKey(team.id, name), given)
     },
   }
 }

@@ -47,10 +47,9 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     return { keys: rows.map((row) => JSON.parse(row.public_jwk) as JWK) }
   }
 
-  /** A token from the board's own issuer, made out to `audience` (a board's URL), lasting `ttl` seconds. */
-  async mint(claims: JWTPayload & { sub: string }, ttl: number, audience?: string): Promise<{ token: string; jti: string; expiresAt: number }> {
+  /** A token from the team's issuer at `url`, made out to `audience` (one of its boards' URLs, the default board's if left out), lasting `ttl` seconds. */
+  async mint(claims: JWTPayload & { sub: string }, ttl: number, url: string, audience?: string): Promise<{ token: string; jti: string; expiresAt: number }> {
     const { key, kid } = await this.key()
-    const url = this.env.BORDEAUX_URL
     const jti = crypto.randomUUID()
     const now = Math.floor(Date.now() / 1000)
     const token = await new SignJWT(claims).setProtectedHeader({ alg: ALG, kid, typ: 'JWT' }).setIssuer(url).setAudience(audience ?? url).setIssuedAt(now).setExpirationTime(now + ttl).setJti(jti).sign(key)

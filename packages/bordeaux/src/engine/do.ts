@@ -10,6 +10,7 @@ import { ref } from '../upstream/server/feed.ts'
 import { indexOf } from '../upstream/server/feed.ts'
 import { bindingOf } from '../worker/backend.ts'
 import { boardOf } from '../worker/boards.ts'
+import { envTeam, type Team } from '../worker/team.ts'
 import { fromWire, type WireIdentity } from './identity.ts'
 import type { Collected, DeadLetter, Failure, Health } from './engine.ts'
 import type { Redaction } from './redact.ts'
@@ -56,9 +57,9 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       prefix: ctx.id.toString(),
       // board() for this board, in this isolate: its own sync's entries, links, and typing.
       binding: () => {
-        const name = this.boardName()
-        boardOf(this.env, name)
-        return bindingOf(name)
+        const { team, name } = this.boardRef()
+        boardOf(this.env, team, name)
+        return bindingOf(team.id, name)
       },
     })
     this.reloader = new Reloader(ctx, () => this.env.CF_VERSION_METADATA, () => this.engine.hurry())
@@ -103,17 +104,25 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     })
   }
 
-  /** The board this DO is, as the Worker names it (null for the default board): what its alarm sends through. */
-  private named(board: string | null | undefined) {
-    if (board === undefined) return
-    const key = JSON.stringify(board)
-    if (this.ctx.storage.sql.exec("select 1 from bx_state where key = 'board' and data = ?", key).toArray().length === 0)
-      this.ctx.storage.sql.exec("insert into bx_state (key, data) values ('board', ?) on conflict (key) do update set data = excluded.data", key)
+  /**
+   * The board this DO is, as the Worker names it (null for the default board), and its team, as
+   * the Worker last handed it over: what its alarm sends through. A self-hosted team is the env's,
+   * read fresh, so it isn't kept.
+   */
+  private named(board: string | null | undefined, team: Team | undefined) {
+    for (const [key, value] of [['board', board], ['team', team?.id === 'default' ? undefined : team]] as const) {
+      if (value === undefined) continue
+      const data = JSON.stringify(value)
+      if (this.ctx.storage.sql.exec('select 1 from bx_state where key = ? and data = ?', key, data).toArray().length === 0)
+        this.ctx.storage.sql.exec('insert into bx_state (key, data) values (?, ?) on conflict (key) do update set data = excluded.data', key, data)
+    }
   }
 
-  private boardName(): string | null {
-    const [row] = this.ctx.storage.sql.exec<{ data: string }>("select data from bx_state where key = 'board'").toArray()
-    return row ? (JSON.parse(row.data) as string | null) : null
+  /** This DO's board and team: a DO no Worker has named a team to is the deployment's own team's. */
+  private boardRef(): { team: Team; name: string | null } {
+    const rows = this.ctx.storage.sql.exec<{ key: string; data: string }>("select key, data from bx_state where key in ('board', 'team')").toArray()
+    const found = Object.fromEntries(rows.map((row) => [row.key, JSON.parse(row.data) as unknown]))
+    return { team: (found.team as Team | undefined) ?? envTeam(this.env), name: (found.board as string | null | undefined) ?? null }
   }
 
   /** Runs every timer that's due: a schedule's send (spec 05). A send that fails is tried again later. */
@@ -143,9 +152,9 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
    * `receive`, one item per lane at a time. One that throws is tried again later.
    */
   private async runOwn() {
-    const name = this.boardName()
-    boardOf(this.env, name)
-    const binding = bindingOf(name)
+    const { team, name } = this.boardRef()
+    boardOf(this.env, team, name)
+    const binding = bindingOf(team.id, name)
     if (!binding) return
     const until = Date.now() + 10 * 60_000
     const runMs = Number(this.env.BORDEAUX_RUN_TIMEOUT_MS) || RUN_MS
@@ -302,9 +311,9 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     const due = await this.engine.dueSend(timer.payload)
     if ('skip' in due) return
     const { schedule } = due
-    const name = this.boardName()
-    boardOf(this.env, name)
-    const binding = bindingOf(name)
+    const { team, name } = this.boardRef()
+    boardOf(this.env, team, name)
+    const binding = bindingOf(team.id, name)
     if (!binding) throw new Error('the board has no binding to send through')
     const access = await binding.accessNow(schedule.as.principal)
     if (!access) return this.engine.endSchedule(id, 'revoked')
@@ -347,14 +356,14 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     })
   }
 
-  async call(method: string, wire: WireIdentity, input: unknown, board?: string | null, version?: CallerVersion): Promise<Envelope> {
+  async call(method: string, wire: WireIdentity, input: unknown, board?: string | null, version?: CallerVersion, team?: Team): Promise<Envelope> {
     this.reloader.newer(version)
-    return this.reloader.spell(() => this.answer(method, wire, input, board))
+    return this.reloader.spell(() => this.answer(method, wire, input, board, team))
   }
 
-  private async answer(method: string, wire: WireIdentity, input: unknown, board?: string | null): Promise<Envelope> {
+  private async answer(method: string, wire: WireIdentity, input: unknown, board?: string | null, team?: Team): Promise<Envelope> {
     try {
-      this.named(board)
+      this.named(board, team)
       if (!isKept(method)) throw notKeptHere(method)
       const caller = fromWire(wire)
       // `tasks` is the task list's method; the engine names it apart from its task store.

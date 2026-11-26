@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { boardKey } from '../src/worker/backend.ts'
 import { api, BASE, tokenFor } from './helpers.ts'
 
-const board = (name: string) => env.BOARD.get(env.BOARD.idFromName(boardKey(name)))
+const board = (name: string) => env.BOARD.get(env.BOARD.idFromName(boardKey('default', name)))
 const OLD = { id: 'v1', tag: '', timestamp: '2026-11-01T00:00:00.000Z' }
 const NEW = { id: 'v2', timestamp: '2026-11-25T00:00:00.000Z' }
 
@@ -44,7 +44,7 @@ describe('a deploy', () => {
 
   it("reaches a TailDO: a newer version's long-poll ends the waiting ones at once, and it resets", async () => {
     const token = await tokenFor(151, 'tailer2')
-    const tail = env.TAIL!.get(env.TAIL!.idFromName(boardKey(null)))
+    const tail = env.TAIL!.get(env.TAIL!.idFromName(boardKey('default', null)))
     const { cursor } = (await api(token, 'GET', '/events')).body
     const started = Date.now()
     const polling = api(token, 'GET', `/events?after=${encodeURIComponent(cursor)}&wait=20`)
@@ -55,7 +55,7 @@ describe('a deploy', () => {
     expect((await polling).status).toBe(200)
     expect(Date.now() - started).toBeLessThan(5000)
     await settle()
-    expect(await runningOld(env.TAIL!.get(env.TAIL!.idFromName(boardKey(null))) as never)).toBe(false)
+    expect(await runningOld(env.TAIL!.get(env.TAIL!.idFromName(boardKey('default', null))) as never)).toBe(false)
   })
 
   it("fails no request that's under way when it resets: grants reads included", async () => {

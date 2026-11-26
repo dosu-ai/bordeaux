@@ -2,6 +2,7 @@ import { env, SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import { broker, RECHECK_MS } from '../src/worker/broker.ts'
 import { directory } from '../src/worker/auth.ts'
+import { envTeam } from '../src/worker/team.ts'
 import { BASE } from './helpers.ts'
 
 /** GitHub, faked at the process boundary: what the device flow and the membership check ask it. */
@@ -24,7 +25,7 @@ function fakeGitHub(options: { member?: 'member' | 'admin' | null; pending?: boo
 }
 
 const post = (path: string, body: unknown, send: typeof fetch) =>
-  broker(new Request(`${BASE}${path}`, { method: 'POST', body: JSON.stringify(body) }), env, send)
+  broker(new Request(`${BASE}${path}`, { method: 'POST', body: JSON.stringify(body) }), env, envTeam(env), send)
 
 const DEVICE = 'urn:ietf:params:oauth:grant-type:device_code'
 
@@ -70,9 +71,9 @@ describe('the token broker', () => {
       const pkcs1 = pkcs8.slice(26)
       return `-----BEGIN RSA PRIVATE KEY-----\n${btoa(String.fromCharCode(...pkcs1))}\n-----END RSA PRIVATE KEY-----`
     }
-    const stale = () => directory(env).startSession({ id: '42', login: 'ada', owner: false, checkedAt: Date.now() - RECHECK_MS - 1000, expiresAt: Date.now() + 3_600_000 })
+    const stale = () => directory(env, envTeam(env)).startSession({ id: '42', login: 'ada', owner: false, checkedAt: Date.now() - RECHECK_MS - 1000, expiresAt: Date.now() + 3_600_000 })
     const refresh = async (token: string, appEnv: typeof env, send: typeof fetch) =>
-      broker(new Request(`${BASE}/auth/token`, { method: 'POST', body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: token }) }), appEnv, send)
+      broker(new Request(`${BASE}/auth/token`, { method: 'POST', body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: token }) }), appEnv, envTeam(appEnv), send)
 
     it('asks GitHub through the App, and renews a member, as an owner when they became one', async () => {
       const appEnv = { ...env, GITHUB_APP_ID: '1', GITHUB_INSTALLATION_ID: '7', GITHUB_PRIVATE_KEY: await appKey() }

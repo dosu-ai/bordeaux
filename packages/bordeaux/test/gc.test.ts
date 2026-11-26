@@ -7,7 +7,7 @@ import worker from '../src/worker/index.ts'
 import { api, BASE, tokenFor } from './helpers.ts'
 
 const DAY = 86_400_000
-const board = () => env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+const board = () => env.BOARD.get(env.BOARD.idFromName(boardKey('default', null)))
 const sync = [{ key: 'gc-slack', platform: 'slack' }]
 const author = { id: 'gc-slack:user:U1', handle: 'kim', name: 'Kim', avatar: null, isBot: false }
 const reaction = (thread: string) => ({ kind: 'reaction', channel: 'gc-slack:C1', thread: `gc-slack:C1:${thread}`, subthread: null, message: thread, context: null, emoji: 'eyes', added: true, author })

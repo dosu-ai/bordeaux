@@ -4,7 +4,7 @@ import { boardKey } from '../src/worker/backend.ts'
 import { platform } from './config.ts'
 import { api, BASE, tokenFor } from './helpers.ts'
 
-const board = () => env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+const board = () => env.BOARD.get(env.BOARD.idFromName(boardKey('default', null)))
 /** Runs the board's own work until `done` holds, as its alarm would. */
 async function until<T>(done: () => Promise<T | undefined | null | false>): Promise<T> {
   for (const deadline = Date.now() + 4000; Date.now() < deadline; ) {

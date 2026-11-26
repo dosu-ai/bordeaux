@@ -11,19 +11,19 @@ describe("a deployment's own watchers", () => {
     const { message } = (await api(token, 'POST', '/messages', { channel: 'ops', text: 'db down' })).body
     let replies: { text: string; by: { actor: string } }[] = []
     for (const deadline = Date.now() + 5000; Date.now() < deadline && replies.length === 0; ) {
-      await runDurableObjectAlarm(env.BOARD.get(env.BOARD.idFromName(boardKey(null))))
+      await runDurableObjectAlarm(env.BOARD.get(env.BOARD.idFromName(boardKey('default', null))))
       replies = (await api(token, 'GET', `/messages/${message.id}`)).body.replies
       if (replies.length === 0) await later(100)
     }
     expect(replies).toMatchObject([{ text: `paged on ${message.id}`, by: { actor: 'board:watch:pager' } }])
-    await runDurableObjectAlarm(env.BOARD.get(env.BOARD.idFromName(boardKey(null))))
+    await runDurableObjectAlarm(env.BOARD.get(env.BOARD.idFromName(boardKey('default', null))))
     expect((await api(token, 'GET', `/messages/${message.id}`)).body.replies).toHaveLength(1)
   })
 
   it("keeps the board's own failed runs for an operator to read", async () => {
     const token = await tokenFor(91, 'breaker')
     const { message } = (await api(token, 'POST', '/messages', { channel: 'broken', text: 'this breaks it' })).body
-    const board = env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+    const board = env.BOARD.get(env.BOARD.idFromName(boardKey('default', null)))
     let failures: { queue: string; error: string; attempt: number }[] = []
     for (const deadline = Date.now() + 5000; Date.now() < deadline && failures.length === 0; ) {
       await runDurableObjectAlarm(board)
@@ -37,7 +37,7 @@ describe("a deployment's own watchers", () => {
   it("doesn't run a watcher again while its last run is still going", async () => {
     const token = await tokenFor(92, 'patient')
     const { message } = (await api(token, 'POST', '/messages', { channel: 'slow', text: 'take your time' })).body
-    const board = env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+    const board = env.BOARD.get(env.BOARD.idFromName(boardKey('default', null)))
     const replies = async () => ((await api(token, 'GET', `/messages/${message.id}`)).body.replies as unknown[]).length
     for (const deadline = Date.now() + 4000; Date.now() < deadline; ) {
       await runDurableObjectAlarm(board)

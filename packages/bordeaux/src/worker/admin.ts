@@ -10,6 +10,7 @@ import type { BordeauxEnv } from './env.ts'
 import { checkSync } from './health.ts'
 import { configOf } from './config.ts'
 import { REASON_MAX, type Redacted } from '../engine/redact.ts'
+import type { Team } from './team.ts'
 
 /** The longest a service token lasts (spec 03). */
 const SERVICE_TTL_MAX = 90 * 24 * 3600
@@ -26,26 +27,26 @@ async function caller(request: Request, me: (request: Request) => Promise<Respon
 
 const manages = (found: Me) => (found.can['*'] ?? []).includes('manage')
 
-export async function admin(request: Request, env: BordeauxEnv, me: (request: Request) => Promise<Response>): Promise<Response> {
+export async function admin(request: Request, env: BordeauxEnv, team: Team, me: (request: Request) => Promise<Response>): Promise<Response> {
   const { pathname } = new URL(request.url)
   const who = await caller(request, me)
   if (who instanceof Response) return who
-  const dir = directory(env)
+  const dir = directory(env, team)
 
   // The team's boards: anyone the default board lets in lists and makes them, as on Vercel (`ensure`);
   // deleting one takes manage at * there. A deleted board's Durable Object keeps what it had.
-  if (pathname === '/admin/boards' && request.method === 'GET') return Response.json({ boards: [{ name: null, url: boardUrl(env, null) }, ...(await dir.boards()).map((found) => ({ ...found, url: boardUrl(env, found.name) }))] })
+  if (pathname === '/admin/boards' && request.method === 'GET') return Response.json({ boards: [{ name: null, url: boardUrl(team, null) }, ...(await dir.boards()).map((found) => ({ ...found, url: boardUrl(team, found.name) }))] })
   if (pathname === '/admin/boards' && request.method === 'POST') {
     const { name } = (await request.json().catch(() => ({}))) as { name?: string }
     if (!name || !BOARD_NAME.test(name)) return error(400, 'invalid_request', 'name: 1 to 64 letters, numbers, and ._-')
     const created = await dir.createBoard(name.toLowerCase(), who.principal)
-    return Response.json({ board: { name: name.toLowerCase(), url: boardUrl(env, name) }, created }, { status: created ? 201 : 200 })
+    return Response.json({ board: { name: name.toLowerCase(), url: boardUrl(team, name) }, created }, { status: created ? 201 : 200 })
   }
   const deleting = /^\/admin\/boards\/([^/]+)$/.exec(pathname)
   if (deleting && request.method === 'DELETE') {
     if (!manages(who)) return error(403, 'forbidden', "this token can't delete boards: it needs manage at *")
     const deleted = await dir.deleteBoard(deleting[1]!.toLowerCase())
-    forget(deleting[1]!)
+    forget(team, deleting[1]!)
     return Response.json({ deleted })
   }
 
@@ -55,7 +56,7 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
   const name = new URL(request.url).searchParams.get('board')
   const named = async () => {
     if (name !== null && (!BOARD_NAME.test(name) || !(await dir.hasBoard(name.toLowerCase())))) return error(404, 'no_board', `this team has no board named ${name}`)
-    return retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(name))))
+    return retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(team.id, name))))
   }
 
   // How a board stands (spec 08, "Health"): its queues, dead letters, failures, and timers, and
@@ -85,7 +86,7 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
   // URL it thinks it's at.
   if (pathname === '/admin/doctor' && request.method === 'GET') {
     const doctor: Doctor = {
-      url: env.BORDEAUX_URL,
+      url: team.url,
       version: env.CF_VERSION_METADATA?.id ?? null,
       bindings: { board: true, directory: true, tail: env.TAIL !== undefined, files: env.FILES !== undefined, assets: env.ASSETS !== undefined, versionMetadata: env.CF_VERSION_METADATA !== undefined },
       dev: env.BORDEAUX_DEV === '1',
@@ -104,7 +105,7 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
     if (!answer.ok) return error(answer.error.status, answer.error.code, answer.error.message)
     const redacted = answer.value as Redacted
     // The TailDO keeps the newest events and what it read: it forgets them, as the board did.
-    if (env.TAIL) await retried(() => env.TAIL!.get(env.TAIL!.idFromName(boardKey(name)))).forget().catch((thrown: unknown) => console.error('[bordeaux] redact: the TailDO did not forget:', (thrown as Error)?.message ?? thrown))
+    if (env.TAIL) await retried(() => env.TAIL!.get(env.TAIL!.idFromName(boardKey(team.id, name)))).forget().catch((thrown: unknown) => console.error('[bordeaux] redact: the TailDO did not forget:', (thrown as Error)?.message ?? thrown))
     return Response.json({ board: name?.toLowerCase() ?? null, redacted, ...(everywhere === true ? { everywhere: await deleteOrigin(env, name, redacted) } : {}) })
   }
   if (pathname === '/admin/redactions' && request.method === 'GET') {
@@ -153,7 +154,7 @@ export async function admin(request: Request, env: BordeauxEnv, me: (request: Re
     const ttl = Math.min(body.ttl ?? SERVICE_TTL_MAX, SERVICE_TTL_MAX)
     const sub = `service:${body.service}:${environment}`
     // Made out to one board: the default one unless it names another.
-    const minted = await dir.mint({ sub }, ttl, boardUrl(env, body.board ?? null))
+    const minted = await dir.mint({ sub }, ttl, team.url, boardUrl(team, body.board ?? null))
     await dir.recordToken({ jti: minted.jti, sub, by: who.principal, expiresAt: minted.expiresAt })
     return Response.json({ token: minted.token, jti: minted.jti, sub, expires_at: new Date(minted.expiresAt).toISOString() }, { status: 201 })
   }

@@ -3,13 +3,14 @@
 // someone is still in the org when their sign-in renews (spec 03).
 import { importPKCS8, SignJWT } from 'jose'
 import type { BordeauxEnv } from './env.ts'
+import type { Team } from './team.ts'
 
 type Fetch = typeof fetch
 
-/** The App's credentials, or null when the board has no App installed. */
-export function appOf(env: BordeauxEnv): { id: string; key: string; installation: string } | null {
-  if (!env.GITHUB_APP_ID || !env.GITHUB_PRIVATE_KEY || !env.GITHUB_INSTALLATION_ID) return null
-  return { id: env.GITHUB_APP_ID, key: env.GITHUB_PRIVATE_KEY, installation: env.GITHUB_INSTALLATION_ID }
+/** The App's credentials and its installation on the team's org, or null when the team has no App installed. */
+export function appOf(env: BordeauxEnv, team: Team): { id: string; key: string; installation: string } | null {
+  if (!env.GITHUB_APP_ID || !env.GITHUB_PRIVATE_KEY || !team.installation) return null
+  return { id: env.GITHUB_APP_ID, key: env.GITHUB_PRIVATE_KEY, installation: team.installation }
 }
 
 /** DER length bytes. */
@@ -54,8 +55,8 @@ export async function installationToken(app: NonNullable<ReturnType<typeof appOf
 }
 
 /** `login`'s membership of `org`, as the App sees it: active with a role, or null for none. */
-export async function membershipOf(env: BordeauxEnv, org: string, login: string, send: Fetch = fetch): Promise<{ role: string } | null | 'unknown'> {
-  const app = appOf(env)
+export async function membershipOf(env: BordeauxEnv, team: Team, org: string, login: string, send: Fetch = fetch): Promise<{ role: string } | null | 'unknown'> {
+  const app = appOf(env, team)
   if (!app) return 'unknown'
   const token = await installationToken(app, send)
   const response = await send(`https://api.github.com/orgs/${encodeURIComponent(org)}/memberships/${encodeURIComponent(login)}`, {

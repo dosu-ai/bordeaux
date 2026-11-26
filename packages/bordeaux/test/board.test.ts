@@ -36,7 +36,7 @@ describe('a board on a Durable Object', () => {
   it("rebuilds its tables from the log when a write's table update was cut short", async () => {
     const token = await tokenFor(3, 'linus')
     const { message } = (await api(token, 'POST', '/messages', { channel: 'restarts', text: 'before the crash' })).body
-    const stub = env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+    const stub = env.BOARD.get(env.BOARD.idFromName(boardKey('default', null)))
     await runInDurableObject(stub, async (_instance, state) => {
       // As if the DO stopped after the log's transaction and before the tables applied it.
       for (const table of ['board_messages', 'board_versions', 'board_terms']) state.storage.sql.exec(`delete from ${table}`)

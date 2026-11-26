@@ -27,7 +27,7 @@ describe("a board's TailDO", () => {
     const everything = await bothWays(author, `after=${after}`)
     expect(everything.tail).toEqual(everything.board)
     // The wait was the TailDO's: it follows the board, to where the board's feed ends.
-    const followed = await runInDurableObject(env.TAIL!.get(env.TAIL!.idFromName(boardKey(null))), async (instance) => (instance as any).at?.index)
+    const followed = await runInDurableObject(env.TAIL!.get(env.TAIL!.idFromName(boardKey('default', null))), async (instance) => (instance as any).at?.index)
     expect(String(followed)).toBe(everything.board.cursor)
     expect(everything.tail.events.map((event: { message: { text: string } }) => event.message.text)).toEqual(['in a', 'in b'])
 
