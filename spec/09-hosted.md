@@ -16,7 +16,7 @@ Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Nothing here is built
 | What is a team? | **A GitHub org, for now.** Its members are its people and its owners are its owners, as on a self-hosted board ([03](03-identity-access.md#people)). The team's ID is Dosu's own, not GitHub's, so a later sign-in provider is one more link on the team (see [Later sign-in providers](#later-sign-in-providers)). |
 | Where is a team's board? | **`https://<org>.board.dosu.ai`**, its named boards at `/b/<name>/`. A subdomain per team, not a path, so each team's inspector is its own origin (see [Why subdomains](#why-subdomains)). |
 | How do hostnames reach the Worker? | **dosu.ai moves to Dosu's Cloudflare account**, and two Worker routes and one wildcard certificate serve every team. Cloudflare for SaaS was the alternative, with dosu.ai's DNS left at GoDaddy and a custom hostname per team. It stays the way to a team's own domain later. |
-| Who can sign up? | **Any GitHub org**, by installing Dosu's GitHub App. Free for now, with per-team limits. Paid plans come later. |
+| Who can sign up? | **Any GitHub org**, by installing Dosu's GitHub App, `bordeaux-ai`. Free for now, with per-team limits. Paid plans come later. |
 | What can a hosted team configure? | **No code.** A hosted team gets the protocol, the inspector, `bdx` and `vb`, named boards, and registered watchers woken by URL. Config watchers, middleware, and sync are a deployment's code, so they stay self-hosted. |
 | Sync? | **Later, as data.** GitHub first, then Slack and Linear (see [Sync, later](#sync-later)). |
 | Dosu's own board | `dosu-ai` signs up like any org, as the first team, at `https://dosu-ai.board.dosu.ai`. Nothing moves from the workers.dev board. |
@@ -127,7 +127,7 @@ permanent, so another provider adds to it without moving anything:
 ### Signing up
 
 ```
-org owner ──(1) install the App on the org (github.com/apps/<app>/installations/new)──▶ GitHub
+org owner ──(1) install the App on the org (github.com/apps/bordeaux-ai/installations/new)──▶ GitHub
           ◀─(2) 302 https://board.dosu.ai/setup?installation_id=…&setup_action=install ──
 hub       ──(3) GET /app/installations/{id}, as the App ──▶ GitHub: the account, its type, its ID
           ──(4) record the team ──▶ RegistryDO
@@ -170,7 +170,8 @@ org owner ◀─(5) 302 https://<org>.board.dosu.ai
 
 The flows are spec 03's. What changes is which org and App they check.
 
-- **One App for every team.** The hosted Worker uses Dosu's public GitHub App: its client ID
+- **One App for every team.** The hosted Worker uses Dosu's public GitHub App, `bordeaux-ai`
+  (`bordeaux` is an existing GitHub account, and an App's name can't match one): its client ID
   for the device flow and the web flow, its private key for installation tokens. The team
   record supplies the org and the installation, in place of `BORDEAUX_GITHUB_ORG` and
   `GITHUB_INSTALLATION_ID`.
@@ -323,6 +324,5 @@ team, and the hub's webhook route is namespaced by platform.
 
 - **Personal accounts:** refuse them (as above), or give a person a team of one.
 - **The limits' numbers**, once there's real use.
-- **The App's name** on GitHub, which every org owner sees when installing it.
 - When this ships, PARITY.md gets a row for hosted teams, and [01](01-protocol.md) lists the
   new error codes (`no_team`, `team_suspended`, `team_uninstalled`, `limit_*`).
