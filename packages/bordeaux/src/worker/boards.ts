@@ -7,13 +7,13 @@ import { bordeauxTokens, directory, issuerKeys } from './auth.ts'
 import { durable } from './backend.ts'
 import type { BordeauxEnv } from './env.ts'
 import { configOf } from './config.ts'
-import type { Team } from './team.ts'
+import { Lru } from './lru.ts'
+import { boardUrl, type Team } from './team.ts'
+
+export { boardUrl }
 
 /** A board's name: 1 to 64 letters, numbers, and `._-`, matched whatever its case (as upstream's). */
 export const BOARD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
-
-/** A named board's URL, or the default board's for null. */
-export const boardUrl = (team: Team, name: string | null) => (name === null ? team.url : `${team.url}/b/${name.toLowerCase()}`)
 
 /** The board a URL of the team's names: null for the default, a name, or undefined for none. */
 export function boardNamed(team: Team, url: string): string | null | undefined {
@@ -24,7 +24,8 @@ export function boardNamed(team: Team, url: string): string | null | undefined {
   return found && BOARD_NAME.test(found[1]!) ? found[1]!.toLowerCase() : undefined
 }
 
-const handles = new Map<string, ReturnType<typeof board>>()
+/** board() per team and board, for the boards this isolate served most recently. */
+const handles = new Lru<string, ReturnType<typeof board>>(500)
 
 /** board() for the team's board named `name`, or its default board for null: one per isolate. */
 export function boardOf(env: BordeauxEnv, team: Team, name: string | null) {
@@ -52,7 +53,7 @@ export function boardOf(env: BordeauxEnv, team: Team, name: string | null) {
 }
 
 /** Boards this isolate has seen exist, for 5 minutes: how long a board deleted elsewhere can still answer here. */
-const known = new Map<string, number>()
+const known = new Lru<string, number>(2000)
 const KNOWN_MS = 5 * 60_000
 
 /** Whether the team has a board named `name` (the default board always is). */

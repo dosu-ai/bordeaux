@@ -95,8 +95,10 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
     if (known) return { team: this.save({ ...known, github, state: 'active', state_at: null }), created: false }
     const login = github.login.toLowerCase()
     const taken = (host: string) => this.ctx.storage.sql.exec('select 1 from bx_teams where host = ?', host).toArray().length > 0
-    let host = `${login}.${hub}`
-    if (RESERVED.includes(login) || taken(host)) host = `${login}-${github.id}.${hub}`
+    // The login, unless it's reserved or a team's already: then the account's ID, then the installation's too.
+    const hosts = [`${login}.${hub}`, `${login}-${github.id}.${hub}`, `${login}-${github.id}-${github.installation}.${hub}`]
+    const host = hosts.find((one, n) => !(n === 0 && RESERVED.includes(login)) && !taken(one))
+    if (!host) throw new Error(`no host is free for ${github.login}: ${hosts.join(', ')} are taken`)
     const team = this.save({ id: newTeamId(), host, github, state: 'active', state_at: null, created_at: Date.now() })
     return { team, created: true }
   }

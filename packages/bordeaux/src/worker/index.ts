@@ -90,9 +90,11 @@ export default {
       }
       if (!at) return route(request, env, envTeam(env))
       // Hosted (spec 09): the hub at its own host, and each team at its own.
-      const { host } = new URL(request.url)
+      // A host as people write it: `acme.board.dosu.ai.` is `acme.board.dosu.ai`.
+      const url = new URL(request.url)
+      const host = `${url.hostname.replace(/\.$/, '')}${url.port ? `:${url.port}` : ''}`
       if (host === at.host) return hub(request, env, at)
-      const team = await teamAt(env, at, host)
+      const team = await teamAt(env, at, host, request)
       return team instanceof Response ? team : route(request, env, team)
     })
   },
@@ -101,6 +103,8 @@ export default {
   async scheduled(controller: ScheduledController, env: BordeauxEnv): Promise<void> {
     // A hosted deployment's teams have no crons yet.
     if (env.BORDEAUX_HOSTED_URL) return
+    // A deployment with no URL serves no board, and has none to collect: say so, once a run.
+    if (!env.BORDEAUX_URL) return console.error("[bordeaux] the cron has no board to run on: set BORDEAUX_URL, the board's public URL")
     if (controller.cron === GC_CRON) await collectAll(env, envTeam(env))
     else await scheduledCheck(env)
   },
