@@ -171,7 +171,10 @@ org owner ◀─(5) 302 https://<org>.board.dosu.ai
 hub checks events with the App's `GITHUB_WEBHOOK_SECRET`. A person's rename arrives as
 `installation_target.renamed`, which the record follows too. `/setup?setup_action=request` (a
 member asked an owner to install the App) says an owner has to approve it. `/setup` for an
-installation that already has a team sends the person to it without asking GitHub.
+installation that already has a team sends the person to it without asking GitHub; if GitHub
+doesn't answer, it asks the person to load it again. GitHub may deliver an installation's
+events out of order, so the record keeps the newest `installation.updated_at` it applied and
+ignores an older one. An enterprise account makes no team: a board is an org's or a person's.
 
 ### Personal teams
 

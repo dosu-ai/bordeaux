@@ -29,7 +29,7 @@ const setup = async (query: string, send: typeof fetch) => hub(new Request(`${HU
 
 /** An installation event, signed as GitHub signs it with the App's webhook secret. */
 async function deliver(kind: string, payload: unknown, secret = 'hub-test-secret') {
-  const body = JSON.stringify(payload)
+  const body = typeof payload === 'string' ? payload : JSON.stringify(payload)
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
   const mac = Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body))), (b) => b.toString(16).padStart(2, '0')).join('')
   return SELF.fetch(`${HUB.origin}/__bordeaux/github/events`, { method: 'POST', headers: { 'x-github-event': kind, 'x-hub-signature-256': `sha256=${mac}`, 'content-type': 'application/json' }, body })
@@ -89,6 +89,40 @@ describe('signing up', () => {
     expect((await SELF.fetch(board)).status).toBe(401)
     await deliver('installation', { action: 'deleted', installation: { id: 9005 } })
     expect(await (await SELF.fetch(board)).json()).toMatchObject({ error: { code: 'team_uninstalled' } })
+  })
+
+  it('applies the newest of an installation\'s events, whichever order they arrive in', async () => {
+    const account = { id: 3007, login: 'ordered', type: 'Organization' }
+    await deliver('installation', { action: 'created', installation: { id: 9007, account } })
+    await deliver('installation', { action: 'suspend', installation: { id: 9007, updated_at: '2026-11-26T10:00:02Z' } })
+    // The unsuspend that came before the suspend, delivered late.
+    await deliver('installation', { action: 'unsuspend', installation: { id: 9007, updated_at: '2026-11-26T10:00:01Z' } })
+    expect(await registry(env).byInstallation(9007)).toMatchObject({ state: 'suspended' })
+  })
+
+  it('makes no team for an enterprise account', async () => {
+    const enterprise = { id: 3008, login: 'big-co', type: 'Enterprise' }
+    const response = await setup('installation_id=9008&setup_action=install', github({ 9008: enterprise }).send)
+    expect(response.status).toBe(400)
+    await deliver('installation', { action: 'created', installation: { id: 9008, account: enterprise } })
+    expect(await registry(env).byInstallation(9008)).toBeNull()
+  })
+
+  it("asks the person to try /setup again when GitHub doesn't answer", async () => {
+    const down = (async () => new Response('bad gateway', { status: 502 })) as unknown as typeof fetch
+    const response = await setup('installation_id=9009&setup_action=install', down)
+    expect(response.status).toBe(503)
+    expect(await response.text()).toContain('/setup?installation_id=9009')
+  })
+
+  it("refuses a signed event whose body isn't JSON", async () => {
+    expect((await deliver('installation', 'payload=%7B%7D')).status).toBe(400)
+  })
+
+  it("follows a person's rename, which comes as installation_target", async () => {
+    await deliver('installation', { action: 'created', installation: { id: 9010, account: { id: 3010, login: 'old-me', type: 'User' } } })
+    await deliver('installation_target', { action: 'renamed', target_type: 'User', account: { id: 3010, login: 'new-me' }, installation: { id: 9010 } })
+    expect(await registry(env).byInstallation(9010)).toMatchObject({ host: 'old-me.board.test', github: { login: 'new-me', type: 'User' } })
   })
 
   it("follows an org's rename without moving its host", async () => {
