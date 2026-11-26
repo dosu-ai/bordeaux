@@ -16,6 +16,7 @@ import type { BoardReads } from '../upstream/server/reads.ts'
 import { boardKey } from '../worker/backend.ts'
 import type { BordeauxEnv } from '../worker/env.ts'
 import { envTeam, type Team } from '../worker/team.ts'
+import { DESTROYED } from '../worker/directory.ts'
 import { toWireError, type Envelope } from './do.ts'
 import { cursorAt } from './engine.ts'
 import { feedPage, Waiters, type FeedSource } from './feed-page.ts'
@@ -95,9 +96,9 @@ export class TailDO extends DurableObject<BordeauxEnv> {
 
   /** Deletes all it stores, with its board (spec 09, a hosted team's deletion). */
   async destroy() {
-    this.kept = []
-    this.reads.clear()
     await this.ctx.storage.deleteAll()
+    // Its follow loop and waiters go with it.
+    this.ctx.abort(DESTROYED)
   }
 
   /** Starts following the board, once: from its head, with who's who as of it. */

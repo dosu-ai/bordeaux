@@ -1,8 +1,9 @@
-import { createExecutionContext, env, SELF } from 'cloudflare:test'
+import { createExecutionContext, env, runDurableObjectAlarm, runInDurableObject, SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import worker from '../../src/worker/index.ts'
 import { directory } from '../../src/worker/auth.ts'
 import { broker } from '../../src/worker/broker.ts'
+import { boardKey } from '../../src/worker/backend.ts'
 import { registry } from '../../src/worker/registry.ts'
 import { teamOfRecord } from '../../src/worker/team.ts'
 
@@ -29,6 +30,41 @@ describe('hosted teams', () => {
     const response = await SELF.fetch('https://nobody.board.test/channels')
     expect(response.status).toBe(404)
     expect(await response.json()).toMatchObject({ error: { code: 'no_team' } })
+  })
+
+  it('holds one client to a few registry lookups a minute, so made-up hosts cost the registry little', async () => {
+    const from = { 'cf-connecting-ip': '203.0.113.9' }
+    const answers = []
+    for (let n = 0; n < 21; n++) answers.push((await SELF.fetch(`https://made-up-${n}.board.test/`, { headers: from })).status)
+    expect(answers.slice(0, 20).every((status) => status === 404)).toBe(true)
+    expect(answers[20]).toBe(429)
+    // A host it looked up already is kept, so asking again costs nothing.
+    expect((await SELF.fetch('https://made-up-0.board.test/', { headers: from })).status).toBe(404)
+  })
+
+  it('takes a host written with a trailing dot', async () => {
+    const url = await team('dotted')
+    const token = await tokenAt(url, 1, 'ada')
+    expect((await call('https://dotted.board.test.', token, 'GET', '/')).body).toMatchObject({ url })
+  })
+
+  it('makes one dev team per login, however often it is asked', async () => {
+    expect(await team('twice')).toBe(await team('twice'))
+  })
+
+  it("sends nothing out for a suspended team: its schedules wait", async () => {
+    const url = await team('quiet', 'Organization', 503)
+    const token = await tokenAt(url, 1, 'ada')
+    const made = await call(url, token, 'POST', '/schedules', { channel: 'standup', text: 'not while suspended', at: new Date(Date.now() + 500).toISOString() })
+    expect(made.status).toBe(201)
+    await registry(env).setState(503, 'suspended')
+    const record = (await registry(env).byHost('quiet.board.test'))!
+    const board = env.BOARD.get(env.BOARD.idFromName(boardKey(record.id, null)))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    await runDurableObjectAlarm(board)
+    const timers = await runInDurableObject(board, async (_, state) => state.storage.sql.exec<{ kind: string; due_at: number }>("select kind, due_at from bx_timers where kind = 'schedule.due'").toArray())
+    expect(timers).toHaveLength(1)
+    expect(timers[0]!.due_at).toBeGreaterThan(Date.now() + 4 * 60_000)
   })
 
   it('serves no board at the hub', async () => {
@@ -104,6 +140,11 @@ describe('the registry', () => {
 
   it('gives a reserved login its account ID', async () => {
     expect((await registry(env).register(link(603, 'WWW'), HUB.host)).team.host).toBe('www-603.board.test')
+  })
+
+  it('gives a login whose fallback is taken its installation ID too', async () => {
+    await registry(env).register(link(604, 'api-605'), HUB.host)
+    expect((await registry(env).register(link(605, 'api', 9605), HUB.host)).team.host).toBe('api-605-9605.board.test')
   })
 })
 

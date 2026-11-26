@@ -3,6 +3,7 @@
 // deleting a team for good.
 import { retried } from '../engine/reload.ts'
 import { directory } from './auth.ts'
+import { DESTROYED } from './directory.ts'
 import { boardKey } from './backend.ts'
 import type { BordeauxEnv } from './env.ts'
 import { collectAll } from './health.ts'
@@ -26,8 +27,10 @@ export async function fanOut(env: BordeauxEnv) {
 export async function tend(env: BordeauxEnv, hub: URL, id: string): Promise<'gone' | 'deleted' | 'tended'> {
   const record = await registry(env).byId(id)
   if (!record) return 'gone'
-  if (record.state === 'uninstalled' && Date.now() - (record.state_at ?? 0) > KEEP_UNINSTALLED_MS) {
-    await deleteTeam(env, hub, record)
+  // Claimed first, so installing the App again while it's deleted can't restore a team half gone.
+  const claimed = await registry(env).claimDeletion(id, Date.now() - KEEP_UNINSTALLED_MS)
+  if (claimed) {
+    await deleteTeam(env, hub, claimed)
     return 'deleted'
   }
   const team = hostedTeam(env, hub, record)
@@ -38,15 +41,28 @@ export async function tend(env: BordeauxEnv, hub: URL, id: string): Promise<'gon
   return 'tended'
 }
 
-/** Deletes a team for good: each board's DO and TailDO, its files in R2, its directory, and its record. */
+/** A destroyed Durable Object resets itself as it answers: that's the answer, not a failure. */
+async function destroyed(call: Promise<unknown>) {
+  try {
+    await call
+  } catch (error) {
+    if (!String((error as Error)?.message ?? error).includes(DESTROYED)) throw error
+  }
+}
+
+/**
+ * Deletes a team for good: each board's DO and TailDO, deleted boards' too, its files in R2, its
+ * directory, and last its record, which `claimDeletion` marked `deleting` first. A deletion that
+ * fails partway runs again whole: each step finds nothing where it already ran.
+ */
 export async function deleteTeam(env: BordeauxEnv, hub: URL, record: TeamRecord) {
   const team = hostedTeam(env, hub, record)
   const dir = directory(env, team)
-  for (const name of [null, ...(await dir.boards()).map((board) => board.name)]) {
-    await retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(team.id, name)))).destroy()
-    if (env.TAIL) await env.TAIL.get(env.TAIL.idFromName(boardKey(team.id, name))).destroy()
+  for (const name of [null, ...(await dir.everyBoard())]) {
+    await destroyed(retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(team.id, name)))).destroy())
+    if (env.TAIL) await destroyed(env.TAIL.get(env.TAIL.idFromName(boardKey(team.id, name))).destroy())
   }
-  await dir.destroy()
+  await destroyed(dir.destroy())
   await registry(env).remove(record.id)
   console.log(`[bordeaux] deleted team ${record.id} (${record.github.login})`)
 }

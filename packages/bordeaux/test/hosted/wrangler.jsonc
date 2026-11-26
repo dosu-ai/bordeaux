@@ -19,10 +19,12 @@
     { "tag": "v2", "new_sqlite_classes": ["TailDO"] },
     { "tag": "v3", "new_sqlite_classes": ["RegistryDO"] }
   ],
-  // Each team's requests and wakes (spec 09, "Limits"): lower than production's, so a test reaches them.
+  // Each team's requests and wakes, and registry lookups per client IP (spec 09, "Limits"):
+  // lower than production's, so a test reaches them.
   "ratelimits": [
     { "name": "REQUEST_LIMITER", "namespace_id": "1001", "simple": { "limit": 100, "period": 60 } },
-    { "name": "WAKE_LIMITER", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } }
+    { "name": "WAKE_LIMITER", "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } },
+    { "name": "LOOKUP_LIMITER", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
   ],
   // The daily cron's work, one message per team (spec 09, "Crons fan out").
   "queues": { "producers": [{ "binding": "TEAMS_QUEUE", "queue": "bordeaux-teams" }], "consumers": [{ "queue": "bordeaux-teams" }] },

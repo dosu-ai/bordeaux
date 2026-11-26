@@ -7,7 +7,8 @@ import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
 import { directory } from './auth.ts'
 import { createTrust } from './trust.ts'
-import type { Team } from './team.ts'
+import { Lru } from './lru.ts'
+import { boardUrl, type Team } from './team.ts'
 
 /** The upstream version bordeaux speaks the protocol of (spec 00). */
 export const UPSTREAM_VERSION = '0.56.1'
@@ -16,15 +17,21 @@ export const UPSTREAM_VERSION = '0.56.1'
 const METHODS = 'discovery me channels createChannel actors channelMessages threads message post posted edit delete react label schedule schedules cancelSchedule tasks createTask createTasks createdTasks claimReadyTask claimTask renewTask releaseTask completeTask failTask blockTask unblockTask reopenTask assignTask setTaskNeeds cancelTask grants createGrant createGrants updateGrant explain revokeGrant schemas schema createSchema upload attachment uploadStart uploadFinish watchers register matches ack events typing readSource joinSource synced linked syncImport syncReceipt syncThread syncFind syncCopies inboxPush inboxNext inboxAck inbox'.split(' ')
 
 /** Each board's binding, once board() has bound it in this isolate: what a schedule's send posts through. */
-const bindings = new Map<string, BoardBinding>()
+const bindings = new Lru<string, BoardBinding>(500)
 export const bindingOf = (team: string, name: string | null) => bindings.get(boardKey(team, name)) ?? null
 
 /** The Durable Object a board lives in: `<team id>/<board>`, the default board's name `default`. */
 export const boardKey = (team: string, name: string | null) => `${team}/${(name ?? 'default').toLowerCase()}`
 
-export function durable(env: BordeauxEnv, team: Team, name: string | null = null): Backend {
+/**
+ * The Backend for one board. `current` is the team as the latest request found it: its ID and URL
+ * never change, but its record can (its limits, its org's login), and every call to the board's
+ * DO carries the record as it is now.
+ */
+export function durable(env: BordeauxEnv, current: () => Team, name: string | null = null): Backend {
+  const team = current()
   let binding: BoardBinding | null = null
-  const url = name === null ? team.url : `${team.url}/b/${name.toLowerCase()}`
+  const url = boardUrl(team, name)
   // A board's DO resets when a newer version calls it: what was queued there is sent again.
   const board = retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(team.id, name))))
   const stub = () => board
@@ -79,13 +86,13 @@ export function durable(env: BordeauxEnv, team: Team, name: string | null = null
   const events = async (caller: Caller, input: unknown) => {
     const query = input as { wait?: number; last?: number }
     if (!env.TAIL || !query.wait || query.wait <= 0 || query.last !== undefined) return remote('events')(caller, input)
-    const answer = (await tail().events(toWire(caller), input as never, name, version, team)) as Envelope
+    const answer = (await tail().events(toWire(caller), input as never, name, version, current())) as Envelope
     if (!answer.ok) throw new HttpError(answer.error.status, answer.error.code, answer.error.message, answer.error.hint !== undefined ? { hint: answer.error.hint } : {})
     return answer.value
   }
 
   const remote = (method: string) => async (caller: Caller, input: unknown) => {
-    const answer = (await stub().call(method, toWire(caller), input, name, version, team)) as Envelope
+    const answer = (await stub().call(method, toWire(caller), input, name, version, current())) as Envelope
     if (!answer.ok) throw new HttpError(answer.error.status, answer.error.code, answer.error.message, answer.error.hint !== undefined ? { hint: answer.error.hint } : {})
     return answer.value
   }
