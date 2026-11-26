@@ -9,10 +9,12 @@
 import { createGitHubAdapter } from '@chat-adapter/github'
 import { createLinearAdapter } from '@chat-adapter/linear'
 import { createSlackAdapter } from '@chat-adapter/slack'
-import { github } from '@vercel/board/sync-github'
+import { github, repos } from '@vercel/board/sync-github'
 import { linear } from '@vercel/board/sync-linear'
 import { slack } from '@vercel/board/sync-slack'
 import { ConsoleLogger } from 'chat'
+import { mirror } from '@vercel/board/sync'
+import type { TeamSync } from '../worker/config.ts'
 import type { BordeauxEnv } from '../worker/env.ts'
 import { toPkcs8 } from '../worker/github-app.ts'
 
@@ -74,10 +76,53 @@ export function githubSync(env: Env, sync: Parameters<typeof github>[1], options
   const secrets = need(env, 'GitHub', 'GITHUB_APP_ID', 'GITHUB_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID', 'GITHUB_WEBHOOK_SECRET')
   if (!secrets) return null
   const [appId, privateKey, installationId, webhookSecret] = secrets
-  const botUserId = options.botUserId !== undefined ? { botUserId: options.botUserId } : {}
-  const adapter = createGitHubAdapter({ appId: appId!, privateKey: toPkcs8(privateKey!), installationId: Number(installationId), webhookSecret: webhookSecret!, userName: options.userName, ...botUserId })
+  return githubApp({ appId: appId!, privateKey: privateKey!, installationId: Number(installationId), webhookSecret: webhookSecret!, ...options }, sync)
+}
+
+/** Upstream's GitHub provider on Chat SDK's adapter, as one App's installation: it mints the installation's tokens itself. */
+function githubApp(app: { appId: string; privateKey: string; installationId: number; webhookSecret: string; userName: string; botUserId?: number }, sync: Parameters<typeof github>[1]) {
+  const botUserId = app.botUserId !== undefined ? { botUserId: app.botUserId } : {}
+  const adapter = createGitHubAdapter({ appId: app.appId, privateKey: toPkcs8(app.privateKey), installationId: app.installationId, webhookSecret: app.webhookSecret, userName: app.userName, ...botUserId })
   viewerDetects(adapter)
   return github({ adapter, ...botUserId }, sync)
+}
+
+/** A repo's name, as GitHub allows it. */
+const REPO = /^[A-Za-z0-9._-]{1,100}$/
+
+/**
+ * Hosted: GitHub sync for each team, as data (spec 09, "Sync, later"), through the sync App:
+ * `GITHUB_SYNC_APP_ID`, `GITHUB_SYNC_PRIVATE_KEY`, and `GITHUB_SYNC_WEBHOOK_SECRET`. A team's
+ * rows map its own repos to board channels, and the App's installation on the team's account
+ * is the one its tokens are minted for. Null when a secret isn't set.
+ *
+ *   configure((env) => ({ teamSync: { github: githubTeamSync(env) } }))
+ */
+export function githubTeamSync(env: Env): TeamSync | null {
+  const names = ['GITHUB_SYNC_APP_ID', 'GITHUB_SYNC_PRIVATE_KEY', 'GITHUB_SYNC_WEBHOOK_SECRET'] as const
+  // None set is a hosted deployment whose sync App isn't registered yet: off, and quietly, since
+  // every isolate would log it. Some set and not others is a mistake, and logged.
+  if (names.every((name) => !env[name])) return null
+  const secrets = need(env, 'Hosted GitHub', ...names)
+  if (!secrets) return null
+  const [appId, privateKey, webhookSecret] = secrets
+  const slug = env.GITHUB_SYNC_APP_SLUG || 'bordeaux-ai-sync'
+  return {
+    install: `https://github.com/apps/${slug}/installations/new`,
+    refuse(external, login) {
+      const [owner, repo, ...rest] = external.split('/')
+      if (!owner || !repo || rest.length > 0 || !REPO.test(repo)) return `external: a repo, as owner/repo, got ${external}`
+      // Upstream matches a repo as GitHub writes it, case included: the owner is the login, exactly.
+      if (!login || owner !== login) return `external: one of ${login ?? 'the team'}'s own repos, as GitHub writes them (${login ?? '<login>'}/<repo>): the sync App can't reach another account's`
+      return null
+    },
+    build(rows, link) {
+      if (!link) return null
+      // A row maps every PR and issue of its repo: imported `into` its channel, or `mirror`ed back.
+      const routing = repos(Object.fromEntries(rows.map((row) => [row.external, row.direction === 'mirror' ? mirror(row.channel) : row.channel])))
+      return githubApp({ appId: appId!, privateKey: privateKey!, installationId: Number(link), webhookSecret: webhookSecret!, userName: `${slug}[bot]` }, routing)
+    },
+  }
 }
 
 /**

@@ -5,6 +5,7 @@
 import type { BordeauxEnv } from './env.ts'
 import { registry, type TeamRecord } from './registry.ts'
 import { configOf } from './config.ts'
+import type { SyncRow } from './directory.ts'
 import { limitsOf, type Limits } from './limits.ts'
 import { Lru } from './lru.ts'
 
@@ -23,6 +24,12 @@ export interface Team {
   person?: string
   /** A hosted team's limits; a self-hosted one has none. */
   limits?: Limits
+  /**
+   * A hosted team's sync, as data (spec 09, "Sync, later"): its rows, and its links to each
+   * platform by provider (the sync App's installation on its account, for `github`). Carried
+   * with the team, since board() is built synchronously, here and in the board's DO.
+   */
+  sync?: { rows: SyncRow[]; links: Record<string, string> }
 }
 
 /** The team's board named `name`, or its default board for null: its URL, every token's audience. */

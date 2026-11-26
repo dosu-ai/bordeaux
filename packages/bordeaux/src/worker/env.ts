@@ -67,6 +67,14 @@ export interface BordeauxEnv {
   GITHUB_WEBHOOK_SECRET?: string
   /** Hosted: the App's slug, which its install page is named by (`github.com/apps/<slug>`). */
   GITHUB_APP_SLUG?: string
+  /** Hosted: the sync App's ID, the second GitHub App a team installs to sync with GitHub (spec 09, "Sync, later"). */
+  GITHUB_SYNC_APP_ID?: string
+  /** Hosted: the sync App's private key, PEM. A secret. */
+  GITHUB_SYNC_PRIVATE_KEY?: string
+  /** Hosted: the sync App's webhook secret, which the hub and each team's board check its events by. A secret. */
+  GITHUB_SYNC_WEBHOOK_SECRET?: string
+  /** Hosted: the sync App's slug (`bordeaux-ai-sync` if unset): its install page, and its bot's login, `<slug>[bot]`. */
+  GITHUB_SYNC_APP_SLUG?: string
   /**
    * This Worker version's ID and upload time (`version_metadata` in wrangler.jsonc). A board's
    * Durable Object that a newer version calls resets itself once it's idle, so a deploy reaches
