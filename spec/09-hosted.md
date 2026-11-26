@@ -282,7 +282,12 @@ release, and a team record may override one later for paid plans.
 overrides any of them. Requests and wakes are two rate-limiting bindings, `REQUEST_LIMITER` and
 `WAKE_LIMITER`, so their numbers are in `wrangler.jsonc`, not vars, and a record can't change
 them. Over the data limit, deleting a message and canceling a schedule still work, since they
-stop more coming. Files count when a direct upload starts, at once, not a minute later. Wakes
+stop more coming. Files count when a direct upload starts, at once, not a minute later. A
+board reports what it stores before a write is checked, at most once a minute, so the first
+write after its DO starts is checked against the team's totals, and a board over the limit
+learns when they go down. Every call to a board's DO carries the team's record as the request
+found it, so a changed limit reaches the board within the 5 minutes a team's record is kept.
+An empty limit var is unset. Wakes
 are the board's alarm, not a Queue: one past the limit waits 10 seconds and tries again, and
 one wake covers every match until it goes.
 

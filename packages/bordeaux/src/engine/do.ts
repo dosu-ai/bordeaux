@@ -46,6 +46,9 @@ const WRITES = new Set(['createChannel', 'post', 'edit', 'react', 'label', 'sche
 
 /** How often a hosted board tells its team's directory what it stores, at most. */
 const REPORT_MS = 60_000
+/** The bytes a call adds to the team's files: an upload's, or a direct upload's it started. */
+const sizeOf = (method: string, input: unknown) => (method === 'upload' ? (input as { data: Uint8Array }).data.byteLength : method === 'uploadStart' ? (input as { size: number }).size : 0)
+
 const isKept = (method: string): method is Kept => (KEPT as readonly string[]).includes(method)
 
 export function toWireError(error: unknown): WireError {
@@ -409,11 +412,15 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
       if (!isKept(method)) throw notKeptHere(method)
       const caller = fromWire(wire)
       const limits = (team ?? this.boardRef().team)?.limits
-      if (limits) this.withinLimits(limits, method, caller.principal.id, input)
+      if (limits && WRITES.has(method)) {
+        await this.report()
+        this.withinLimits(limits, method, caller.principal.id, input)
+      }
       // `tasks` is the task list's method; the engine names it apart from its task store.
       const run = (method === 'tasks' ? this.engine.tasksList : this.engine[method]) as (caller: ReturnType<typeof fromWire>, input: unknown) => Promise<unknown>
       const value = await run.call(this.engine, caller, input)
-      if (limits && WRITES.has(method)) await this.report(method, input)
+      // A file counts at once, so a burst of uploads can't wait out the minute.
+      if (limits) this.usage.files += sizeOf(method, input)
       return { ok: true, value }
     } catch (error) {
       return { ok: false, error: toWireError(error) }
@@ -424,7 +431,7 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
   private withinLimits(limits: NonNullable<Team['limits']>, method: string, owner: string, input: unknown) {
     if (WRITES.has(method) && this.usage.data > limits.dataBytes)
       throw new HttpError(413, 'limit_data', `this team's boards hold ${bytes(this.usage.data)}, over its ${bytes(limits.dataBytes)}: reading and bdx export still work`)
-    const size = method === 'upload' ? (input as { data: Uint8Array }).data.byteLength : method === 'uploadStart' ? (input as { size: number }).size : 0
+    const size = sizeOf(method, input)
     if (size > 0 && this.usage.files + size > limits.fileBytes)
       throw new HttpError(413, 'limit_files', `this team's files would be over its ${bytes(limits.fileBytes)}: it has ${bytes(this.usage.files)}`)
     if (method === 'register' && this.engine.watcherCount(owner) + Object.keys((input as { watch: object }).watch).length > limits.watchers)
@@ -432,13 +439,12 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
   }
 
   /**
-   * After a hosted board's write: what it stores, and its files' bytes, to its team's directory, at
-   * most once a minute; the team's totals come back. A file counts at once, so a burst of uploads
-   * can't wait out the minute.
+   * Before a hosted board's write is checked: what it stores, and its files' bytes, to its team's
+   * directory, at most once a minute; the team's totals come back. The first write since the DO
+   * started reports before it's checked, and a board over the limit still learns when the
+   * team's totals go down.
    */
-  private async report(method: string, input: unknown) {
-    if (method === 'upload') this.usage.files += (input as { data: Uint8Array }).data.byteLength
-    if (method === 'uploadStart') this.usage.files += (input as { size: number }).size
+  private async report() {
     if (Date.now() - this.usage.at < REPORT_MS) return
     this.usage.at = Date.now()
     const { team, name } = this.boardRef()
