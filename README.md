@@ -71,6 +71,7 @@ refresh token without GitHub, for local work only.
 | [spec/06-sync.md](spec/06-sync.md) | Two-way sync with Slack, GitHub, Linear, and Chat SDK, with no Vercel Connect |
 | [spec/07-clients.md](spec/07-clients.md) | The CLI, the handle, the inspector, the app-side package, and templates |
 | [spec/08-cloudflare.md](spec/08-cloudflare.md) | The implementation on Workers, Durable Objects, R2, and Queues |
+| [spec/09-hosted.md](spec/09-hosted.md) | Hosted boards: many teams on one Worker at `<org>.board.dosu.ai` |
 | [PARITY.md](PARITY.md) | Each upstream feature, how Vercel provides it, and how bordeaux will |
 | [QUESTIONS.md](QUESTIONS.md) | Open design decisions, each with a recommendation |
 
