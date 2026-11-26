@@ -400,6 +400,37 @@ async function tokens(url: string, args: string[]) {
   fail('usage: bdx tokens create --service <name> [--env <env>] | list | revoke <id>')
 }
 
+/** The words `bdx sync` takes for a hosted team's rows; anything else is upstream's `sync <id> [target]`. */
+const SYNC_ACTIONS = new Set(['add', 'rm', 'list'])
+
+/** `bdx sync add|rm|list`: a hosted team's sync, as rows (spec 09), changed by its owners. */
+async function syncRows(url: string, args: string[]) {
+  const [, action, provider, external, channel] = positionals(args)
+  const json = args.includes('--json')
+  if (action === 'list') {
+    const found = (await asYou(url, 'GET', '/admin/sync')) as { sync: { provider: string; external: string; channel: string; direction: string }[]; providers: { provider: string; linked: boolean; install: string }[] }
+    if (json) return void process.stdout.write(`${JSON.stringify(found)}\n`)
+    const width = Math.max(0, ...found.sync.map((row) => `${row.provider}  ${row.external}`.length))
+    for (const row of found.sync) process.stdout.write(`${`${row.provider}  ${row.external}`.padEnd(width)}  ${row.channel.padEnd(16)}  ${row.direction}\n`)
+    for (const given of found.providers) if (!given.linked && found.sync.some((row) => row.provider === given.provider)) process.stderr.write(`${given.provider} isn't installed yet: ${given.install}\n`)
+    return
+  }
+  if (action === 'add' && provider && external && channel) {
+    const made = (await asYou(url, 'POST', '/admin/sync', { provider, external, channel, direction: args.includes('--mirror') ? 'mirror' : 'into' })) as { created: boolean; linked: boolean; install?: string }
+    if (json) return void process.stdout.write(`${JSON.stringify(made)}\n`)
+    process.stderr.write(`${made.created ? 'syncing' : 'now syncing'} ${external} ${args.includes('--mirror') ? 'with' : 'into'} ${channel}\n`)
+    if (!made.linked) process.stderr.write(`install the ${provider} sync App on your account to start: ${made.install}\n`)
+    return
+  }
+  if (action === 'rm' && provider && external) {
+    const { removed } = await asYou(url, 'DELETE', `/admin/sync?provider=${encodeURIComponent(provider)}&external=${encodeURIComponent(external)}`)
+    if (json) return void process.stdout.write(`${JSON.stringify({ removed })}\n`)
+    if (!removed) fail(`this team doesn't sync ${provider} ${external}`)
+    return
+  }
+  fail('usage: bdx sync add github <owner/repo> <channel> [--mirror] | bdx sync rm github <owner/repo> | bdx sync list')
+}
+
 /**
  * `bdx grants create` with bordeaux's own principals, as upstream's flags: `--service www [--env
  * production]` is an oidc grant on the board's own issuer, and `--github-user ada` is ada's GitHub
@@ -442,6 +473,8 @@ bordeaux:
   redactions                          what's been redacted, and why
   tokens create --service <name>      a service's token, up to 90 days [--env <env>] [--ttl 30d]
   tokens list | revoke <id>           the service tokens, and revoking one
+  sync add github <repo> <channel>    hosted: sync a repo into a channel [--mirror]
+  sync rm github <repo> | sync list   stop syncing a repo, or list what syncs
   grants create --service <name>      let a service's tokens in [--env <env>], or
   grants create --github-user <login> a person by their GitHub login, with --can
 
@@ -451,9 +484,9 @@ board commands (upstream's, unchanged):
 /** The commands bordeaux answers itself; `grants` is upstream's, with bordeaux's flags added. */
 const OWN = new Set(['login', 'logout', 'list', 'boards', 'export', 'import', 'token', 'health', 'dead-letters', 'gc', 'redact', 'doctor', 'redactions', 'tokens'])
 
-/** One of bordeaux's own commands' lines from HELP, or null for upstream's. */
-function usageOf(word: string): string | null {
-  if (!OWN.has(word)) return null
+/** One of bordeaux's own commands' lines from HELP, or null for upstream's. `sync` is ours only for `add`, `rm`, and `list`. */
+function usageOf(word: string, next: string | undefined): string | null {
+  if (!OWN.has(word) && !(word === 'sync' && SYNC_ACTIONS.has(next ?? ''))) return null
   const rows = HELP.split('\n').filter((line) => line.startsWith(`  ${word} `)).map((line) => line.trim().split(/\s{2,}/))
   const width = Math.max(...rows.map(([command]) => command!.length))
   const lines = rows.map(([command, what]) => `  bdx ${command!.padEnd(width)}  ${what}`)
@@ -500,7 +533,7 @@ async function main(argv: string[]) {
   argv = [...argv]
   const [word, given] = positionals(argv)
   // bordeaux's own commands answer --help before they read their arguments: upstream's, below.
-  const usage = word !== undefined && (argv.includes('--help') || argv.includes('-h')) ? usageOf(word) : null
+  const usage = word !== undefined && (argv.includes('--help') || argv.includes('-h')) ? usageOf(word, given) : null
   if (usage) return void process.stdout.write(usage)
   if (word === 'login') return login(deploymentOf(boardUrlArg(given ?? deploymentUrl(argv) ?? fail('usage: bdx login <board url>'))))
   if (word === 'logout') {
@@ -527,6 +560,8 @@ async function main(argv: string[]) {
   if (word === 'gc') return gc(deploymentUrl(argv) ?? fail('no board: run bdx login <url>'), argv)
   if (word === 'health') return health(deploymentUrl(argv) ?? fail('no board: run bdx login <url>'), argv)
   if (word === 'tokens') return tokens(deploymentUrl(argv) ?? fail('no board: run bdx login <url>'), argv)
+  // `sync add|rm|list` are a hosted team's rows; `sync <id> [target]` is upstream's.
+  if (word === 'sync' && SYNC_ACTIONS.has(given ?? '')) return syncRows(deploymentUrl(argv) ?? fail('no board: run bdx login <url>'), argv)
 
   const app = createApp({ appName: 'bdx' })
   if (word === undefined || word === 'help' || argv.includes('--help') || argv.includes('-h')) {
