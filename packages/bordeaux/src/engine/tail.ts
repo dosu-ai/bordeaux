@@ -93,6 +93,13 @@ export class TailDO extends DurableObject<BordeauxEnv> {
     })
   }
 
+  /** Deletes all it stores, with its board (spec 09, a hosted team's deletion). */
+  async destroy() {
+    this.kept = []
+    this.reads.clear()
+    await this.ctx.storage.deleteAll()
+  }
+
   /** Starts following the board, once: from its head, with who's who as of it. */
   private async follow() {
     this.starting ??= (async () => {

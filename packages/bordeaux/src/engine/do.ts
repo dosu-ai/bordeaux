@@ -259,6 +259,22 @@ export class BoardDO extends DurableObject<BordeauxEnv> {
     })
   }
 
+  /** Deletes the board: its files in R2, its alarm, and all it stores (spec 09, a hosted team's deletion). */
+  async destroy(): Promise<{ files: number }> {
+    let files = 0
+    const prefix = `boards/${this.ctx.id.toString()}/`
+    for (let cursor: string | undefined; this.env.FILES; ) {
+      const page = await this.env.FILES.list({ prefix, ...(cursor ? { cursor } : {}) })
+      if (page.objects.length > 0) await this.env.FILES.delete(page.objects.map((found) => found.key))
+      files += page.objects.length
+      if (!page.truncated) break
+      cursor = page.cursor
+    }
+    await this.ctx.storage.deleteAlarm()
+    await this.ctx.storage.deleteAll()
+    return { files }
+  }
+
   /** Runs retention now (`bdx gc`, and the Worker's daily cron). */
   async gc(): Promise<Collected> {
     await this.engine.ready

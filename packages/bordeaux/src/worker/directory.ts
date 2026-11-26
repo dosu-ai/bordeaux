@@ -106,12 +106,22 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
   /** Keeps what one of the team's boards stores and its files' bytes, as it reported them: the team's totals. */
   async usage(board: string, data: number, files: number): Promise<{ data: number; files: number }> {
     this.ctx.storage.sql.exec('insert into bx_usage (board, data, files, at) values (?, ?, ?, ?) on conflict (board) do update set data = excluded.data, files = excluded.files, at = excluded.at', board, data, files, Date.now())
-    const [row] = this.ctx.storage.sql.exec<{ data: number | null; files: number | null }>('select sum(data) as data, sum(files) as files from bx_usage').toArray()
-    return { data: Number(row?.data ?? 0), files: Number(row?.files ?? 0) }
+    return this.totals()
   }
 
   async deleteBoard(name: string): Promise<boolean> {
     return this.ctx.storage.sql.exec('delete from bx_boards where name = ? returning 1 as gone', name).toArray().length > 0
+  }
+
+  /** The team's totals, as its boards last reported them. */
+  async totals(): Promise<{ data: number; files: number }> {
+    const [row] = this.ctx.storage.sql.exec<{ data: number | null; files: number | null }>('select sum(data) as data, sum(files) as files from bx_usage').toArray()
+    return { data: Number(row?.data ?? 0), files: Number(row?.files ?? 0) }
+  }
+
+  /** Deletes all the team's directory keeps: its keys, sign-ins, boards' names, and tokens. */
+  async destroy() {
+    await this.ctx.storage.deleteAll()
   }
 
   /** Keeps a service token's record, to list and revoke it: never the token itself. */

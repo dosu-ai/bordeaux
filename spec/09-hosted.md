@@ -6,7 +6,8 @@ team shares one bordeaux Worker in Dosu's Cloudflare account. Self-hosting doesn
 deployment of the template is still one team, as [QUESTIONS Q4](../QUESTIONS.md#q4) has it.
 
 Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Built so far: hosted mode, the
-registry, personal teams' sign-in, signing up, the hub's sign-in callback, and the limits.
+registry, personal teams' sign-in, signing up, the hub's sign-in callback, the limits, and
+operating teams. Not yet: the hosted Worker's own config, and going live.
 
 ## Decisions
 
@@ -331,6 +332,15 @@ interface Team {
   sign-in that names an owner of `BORDEAUX_OPERATOR_ORG` (`dosu-ai`).
 - **What Dosu can see.** The operator holds every hosted board's data. The hosted board's
   terms must say so. Operator routes show usage, not content.
+
+**As built:** the routes are `GET /__bordeaux/teams`, and for one team `GET`, `POST
+/suspend`, `POST /restore`, `PATCH /limits` (a record's own limits), and `DELETE` (now, not
+after 30 days), at `/__bordeaux/teams/<team id>`. The hub signs operators in as a team of its
+own, ID `hub`, with the device flow at `<hub>/auth/*`: `bdx login https://board.dosu.ai`. An
+owner is an admin of `BORDEAUX_OPERATOR_ORG` at sign-in. The hub's team has no installation, so
+a renewal after 12 hours asks the operator to sign in again. Dosu's suspension and GitHub's are
+one state, so GitHub's `unsuspend` also restores a team Dosu suspended. The daily usage record
+is boards, board data, and file bytes, not messages: counting them would wake every board.
 
 ## Sync, later
 

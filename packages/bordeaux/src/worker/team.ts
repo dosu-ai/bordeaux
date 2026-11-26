@@ -84,5 +84,8 @@ export async function teamAt(env: BordeauxEnv, hub: URL, host: string): Promise<
     const until = new Date((record.state_at ?? 0) + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10)
     return refuse(403, 'team_uninstalled', `this team's GitHub App was uninstalled: install it on ${record.github.login} again by ${until} to keep its boards`)
   }
-  return { ...teamOfRecord(record, hub), limits: limitsOf(env, record.limits) }
+  return hostedTeam(env, hub, record)
 }
+
+/** A hosted team as its requests see it: its record, and its limits. */
+export const hostedTeam = (env: BordeauxEnv, hub: URL, record: TeamRecord): Team => ({ ...teamOfRecord(record, hub), limits: limitsOf(env, record.limits) })

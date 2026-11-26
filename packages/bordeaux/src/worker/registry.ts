@@ -21,7 +21,11 @@ export type TeamRecord = {
   created_at: number
   /** Limits of its own, over the Worker's (spec 09, "Limits"). */
   limits?: Partial<Limits>
+  /** What the daily cron last found it uses. */
+  usage?: Usage
 }
+
+export type Usage = { boards: number; data: number; files: number; at: number }
 
 /** Subdomains no login gets, whoever signs up first. */
 export const RESERVED = ['www', 'api', 'app', 'admin', 'docs', 'status', 'mail', 'hub', 'origin']
@@ -119,8 +123,31 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
 
   /** Marks the team on an installation suspended, uninstalled, or active again; null for none. */
   async setState(installation: number, state: TeamState): Promise<TeamRecord | null> {
-    const found = this.one('installation', installation)
+    return this.changeState(this.one('installation', installation), state)
+  }
+
+  /** The same, for a team named by its ID: Dosu's own suspensions and restores. */
+  async setStateOf(id: string, state: TeamState): Promise<TeamRecord | null> {
+    return this.changeState(this.one('id', id), state)
+  }
+
+  private changeState(found: TeamRecord | null, state: TeamState) {
     if (!found || found.state === state) return found
     return this.save({ ...found, state, state_at: state === 'active' ? null : Date.now() })
+  }
+
+  /** Every team, oldest first. */
+  async list(): Promise<TeamRecord[]> {
+    return this.ctx.storage.sql.exec<{ data: string }>('select data from bx_teams').toArray().map((row) => JSON.parse(row.data) as TeamRecord).sort((a, b) => a.created_at - b.created_at)
+  }
+
+  async recordUsage(id: string, usage: Usage): Promise<void> {
+    const found = this.one('id', id)
+    if (found) this.save({ ...found, usage })
+  }
+
+  /** Forgets a team, whose boards are deleted. */
+  async remove(id: string): Promise<boolean> {
+    return this.ctx.storage.sql.exec('delete from bx_teams where id = ? returning 1 as gone', id).toArray().length > 0
   }
 }

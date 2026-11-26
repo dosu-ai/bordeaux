@@ -22,6 +22,10 @@ export interface BordeauxEnv {
    * GITHUB_INSTALLATION_ID, and BORDEAUX_OWNERS must be unset (spec 09, "Hosted mode").
    */
   BORDEAUX_HOSTED_URL?: string
+  /** Hosted: the daily cron's work, one message per team (`bordeaux-teams`), so no one run walks every team. */
+  TEAMS_QUEUE?: Queue<{ team: string }>
+  /** Hosted: the GitHub org whose owners may use the operator routes (`dosu-ai`). */
+  BORDEAUX_OPERATOR_ORG?: string
   /** Hosted: each team's requests, keyed by team ID (`ratelimits` in wrangler.jsonc); over it, 429. */
   REQUEST_LIMITER?: RateLimit
   /** Hosted: each team's wakes, keyed by team ID; over it, a wake waits. */
