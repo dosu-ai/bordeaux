@@ -129,7 +129,12 @@ curl -s https://board.dosu.ai/ | grep -o 'github.com/apps/[a-z-]*'
 curl -s https://nobody.board.dosu.ai/
 ```
 
-The first prints `github.com/apps/bordeaux-ai`; the second answers `no_team`. Then, by hand:
+```bash
+curl -s https://board.dosu.ai/terms | grep -o '<title>[^<]*'
+```
+
+The first prints `github.com/apps/bordeaux-ai`; the second answers `no_team`; the third prints
+the terms' title. Then, by hand:
 
 - Install the App on `dosu-ai`. GitHub sends you to `https://dosu-ai.board.dosu.ai/`.
 - `bdx login https://dosu-ai.board.dosu.ai`, then post a message.
@@ -138,6 +143,29 @@ The first prints `github.com/apps/bordeaux-ai`; the second answers `no_team`. Th
   else.
 
 Record the date and what passed in spec 09's Testing section.
+
+## 6. Logs and alerts
+
+`observability` in `wrangler.jsonc` turns on Workers Logs: every request, and every
+`console.error`, kept 7 days. The Worker reports each failure it handles that way (a team's
+daily job, a board's timer, a sign-up GitHub didn't answer), so Workers Issues sees it.
+
+1. **Workers & Pages → bordeaux-hosted → Observability → Issues**: turn Issues on.
+2. **Add an automation**: every new issue, with an occurrence threshold of `1`, to Dosu's
+   alert destination. Add a recurrence trigger, so an issue that comes back after a quiet hour
+   alerts again.
+
+A team whose daily job fails five times lands in `bordeaux-teams-dead`; each failure is an
+issue first.
+
+## Terms and privacy
+
+The hub serves Dosu's terms at `/terms` and privacy policy at `/privacy`, from
+`packages/hosted/src/legal.ts`, and its front page says installing agrees to both
+(`BORDEAUX_TERMS_URL`, `BORDEAUX_PRIVACY_URL`). They add to Dosu's own at `dosu.dev/legal`.
+legal@dosu.dev reviews any change to them before it deploys. Link both from the App's
+description too (**Settings → Developer settings → GitHub Apps → bordeaux-ai**), since people
+also install it from its page on GitHub.
 
 ## Operating
 
