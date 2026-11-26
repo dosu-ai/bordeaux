@@ -5,17 +5,18 @@ import { retried } from '../engine/reload.ts'
 import { boardKey } from './backend.ts'
 import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
+import type { Team } from './team.ts'
 
 const refuse = (status: number, code: string, message: string) => Response.json({ error: { code, message } }, { status })
 
 /** The path a board's direct uploads are PUT to, under the board's own URL. */
 export const UPLOADS = '/__bordeaux/uploads/'
 
-export async function putUpload(request: Request, env: BordeauxEnv, board: string | null, id: string): Promise<Response> {
+export async function putUpload(request: Request, env: BordeauxEnv, team: Team, board: string | null, id: string): Promise<Response> {
   if (request.method !== 'PUT') return refuse(405, 'invalid_request', 'PUT the file')
   if (!env.FILES) return refuse(501, 'no_files', 'this board keeps no files: bind an R2 bucket as FILES')
   const secret = new URL(request.url).searchParams.get('t') ?? ''
-  const stub = retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(board))))
+  const stub = retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(team.id, board))))
   const answer = (await stub.uploadTarget(id, secret)) as Envelope
   if (!answer.ok) return refuse(answer.error.status, answer.error.code, answer.error.message)
   const { key, size, type } = answer.value as { key: string; size: number; type: string }

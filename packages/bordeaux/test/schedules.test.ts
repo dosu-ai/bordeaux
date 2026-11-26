@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { boardKey } from '../src/worker/backend.ts'
 import { api, tokenFor } from './helpers.ts'
 
-const board = () => env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+const board = () => env.BOARD.get(env.BOARD.idFromName(boardKey('default', null)))
 const later = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 describe('schedules', () => {

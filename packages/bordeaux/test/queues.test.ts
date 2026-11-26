@@ -4,7 +4,7 @@ import { MATCH_TRIES, nextDue, type QueueState } from '../src/engine/watchers.ts
 import { boardKey } from '../src/worker/backend.ts'
 import { api, BASE, tokenFor } from './helpers.ts'
 
-const board = () => env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+const board = () => env.BOARD.get(env.BOARD.idFromName(boardKey('default', null)))
 const sync = [{ key: 'acme-slack', platform: 'slack' }]
 const author = { id: 'acme-slack:user:U9', handle: 'kim', name: 'Kim', avatar: null, isBot: false }
 const reaction = (thread: string) => ({ kind: 'reaction', channel: 'acme-slack:C9', thread: `acme-slack:C9:${thread}`, subthread: null, message: thread, context: null, emoji: 'eyes', added: true, author })

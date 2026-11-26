@@ -1,6 +1,7 @@
 import { env, SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import { directory, personId } from '../src/worker/auth.ts'
+import { envTeam } from '../src/worker/team.ts'
 import { api, BASE, tokenFor } from './helpers.ts'
 
 async function serviceToken(managerToken: string, service: string, environment = 'production') {
@@ -36,7 +37,7 @@ describe('grants', () => {
   it("let an owner manage them after revoking everyone's, and leave the rest of the team out", async () => {
     const owner = await tokenFor(20, 'boss')
     const member = await tokenFor(21, 'member')
-    await directory(env).setOwner(personId(20), true, Date.now() + 3_600_000)
+    await directory(env, envTeam(env)).setOwner(personId(20), true, Date.now() + 3_600_000)
 
     const { grants } = (await api(owner, 'GET', '/grants')).body
     expect(grants.map((grant: { id: string }) => grant.id)).toEqual(['g1', 'g2', 'g3', 'g4'])

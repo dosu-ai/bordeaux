@@ -7,6 +7,7 @@ import { boardKey } from './backend.ts'
 import { configOf, type BordeauxConfig } from './config.ts'
 import { directory } from './auth.ts'
 import type { BordeauxEnv } from './env.ts'
+import type { Team } from './team.ts'
 
 /** The cron that runs retention on every board, daily (`triggers.crons`); any other checks sync. */
 export const GC_CRON = '0 4 * * *'
@@ -44,11 +45,11 @@ export async function scheduledCheck(env: BordeauxEnv) {
 }
 
 /** The daily cron: retention on every one of the team's boards, logging what went. */
-export async function collectAll(env: BordeauxEnv) {
-  const names = [null, ...(await directory(env).boards()).map((board) => board.name)]
+export async function collectAll(env: BordeauxEnv, team: Team) {
+  const names = [null, ...(await directory(env, team).boards()).map((board) => board.name)]
   for (const name of names) {
     try {
-      const collected = await retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(name)))).gc()
+      const collected = await retried(() => env.BOARD.get(env.BOARD.idFromName(boardKey(team.id, name)))).gc()
       console.log(`[bordeaux] gc ${name ?? '(default)'}: ${JSON.stringify(collected)}`)
     } catch (error) {
       console.error(`[bordeaux] gc ${name ?? '(default)'} failed:`, (error as Error)?.message ?? error)

@@ -12,7 +12,7 @@ describe('the feed under load', () => {
     const token = await tokenFor(170, 'tails')
     const { cursor } = (await api(token, 'GET', '/events')).body
     await api(token, 'POST', '/messages', { channel: 'feed-load', text: 'there is always something to read' })
-    const board = env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+    const board = env.BOARD.get(env.BOARD.idFromName(boardKey('default', null)))
     // Each answers at once, with what's there: a timer it started and didn't clear outlives it.
     for (let done = 0; done < 10_200; done += 200) {
       const answers = await Promise.all(Array.from({ length: 200 }, () => board.call('events', wire as never, { after: cursor, wait: 30 }, null)))

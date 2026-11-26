@@ -9,7 +9,7 @@ const leaks = (value: unknown) => JSON.stringify(value).includes(SECRET)
 
 /** Runs the default board's own work until `done` holds, as its alarm would. */
 async function until<T>(done: () => Promise<T | undefined | null | false>): Promise<T> {
-  const board = env.BOARD.get(env.BOARD.idFromName(boardKey(null)))
+  const board = env.BOARD.get(env.BOARD.idFromName(boardKey('default', null)))
   for (const deadline = Date.now() + 4000; Date.now() < deadline; ) {
     await runDurableObjectAlarm(board)
     const found = await done()

@@ -10,6 +10,7 @@ import { CSP, relative, shell } from '../upstream/inspect/shell.ts'
 import { directory } from './auth.ts'
 import { member, renewed, tokensFor, REFRESH_TTL_MS } from './broker.ts'
 import type { BordeauxEnv } from './env.ts'
+import type { Team } from './team.ts'
 
 /** The page's credential for its proxy: no secret, a header no other site's page can send without asking first (upstream's). */
 const TOKEN = 'page'
@@ -30,13 +31,13 @@ const text = (status: number, body: string, headers: HeadersInit = {}) =>
 const json = (status: number, body: unknown) => Response.json(body, { status, headers: HEADERS })
 
 /** A board as the inspector serves it: where its page is, the URL its tokens name, and what answers its API. */
-export type InspectedBoard = { name: string | null; url: string; base: string; fetch(request: Request): Promise<Response> }
+export type InspectedBoard = { team: Team; name: string | null; url: string; base: string; fetch(request: Request): Promise<Response> }
 
 export async function inspect(request: Request, env: BordeauxEnv, board: InspectedBoard): Promise<Response> {
   const url = new URL(request.url)
   const at = url.pathname.slice(board.base.length) || '/'
   if (at === '/board' || at.startsWith('/board/')) return proxy(request, env, board, at.slice('/board'.length) || '/', url.search)
-  if (board.name === null && url.pathname === CALLBACK) return callback(request, env)
+  if (board.name === null && url.pathname === CALLBACK) return callback(request, env, board.team)
   if (at === '/login') return login(request, env, board)
   if (at === '/logout') return logout(request, env, board)
   if (request.method !== 'GET' && request.method !== 'HEAD') return text(405, 'method not allowed')
@@ -66,8 +67,8 @@ const cookies = (request: Request) =>
       .map(([name, ...value]) => [name!, decodeURIComponent(value.join('='))]),
   ) as Record<string, string | undefined>
 
-function cookie(env: BordeauxEnv, name: string, value: string, path: string, maxAge: number): string {
-  const secure = env.BORDEAUX_URL.startsWith('https:') ? '; Secure' : ''
+function cookie(team: Team, name: string, value: string, path: string, maxAge: number): string {
+  const secure = team.url.startsWith('https:') ? '; Secure' : ''
   return `${name}=${encodeURIComponent(value)}; Path=${path}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure}`
 }
 
@@ -81,10 +82,10 @@ function expiryOf(token: string): number {
   }
 }
 
-function sessionCookies(env: BordeauxEnv, base: string, tokens: { access: string; expiresAt: number; refresh: string }): Headers {
+function sessionCookies(team: Team, base: string, tokens: { access: string; expiresAt: number; refresh: string }): Headers {
   const headers = new Headers()
-  headers.append('set-cookie', cookie(env, ACCESS_COOKIE, tokens.access, base, Math.floor((tokens.expiresAt - Date.now()) / 1000)))
-  headers.append('set-cookie', cookie(env, REFRESH_COOKIE, tokens.refresh, base, Math.floor(REFRESH_TTL_MS / 1000)))
+  headers.append('set-cookie', cookie(team, ACCESS_COOKIE, tokens.access, base, Math.floor((tokens.expiresAt - Date.now()) / 1000)))
+  headers.append('set-cookie', cookie(team, REFRESH_COOKIE, tokens.refresh, base, Math.floor(REFRESH_TTL_MS / 1000)))
   return headers
 }
 
@@ -99,11 +100,11 @@ async function signedIn(request: Request, env: BordeauxEnv, board: InspectedBoar
   const left = access ? expiryOf(access) - Date.now() : 0
   if (access && left > RENEW_MS) return { token: access, headers: {} }
   const refresh = jar[REFRESH_COOKIE]
-  const session = refresh ? await directory(env).takeSession(refresh) : null
-  const next = session && (await renewed(env, session, fetch))
+  const session = refresh ? await directory(env, board.team).takeSession(refresh) : null
+  const next = session && (await renewed(env, board.team, session, fetch))
   if (!next || next instanceof Response) return access && left > 0 ? { token: access, headers: {} } : null
-  const tokens = await tokensFor(env, next, board.url)
-  return { token: tokens.access, headers: sessionCookies(env, board.base, tokens) }
+  const tokens = await tokensFor(env, board.team, next, board.url)
+  return { token: tokens.access, headers: sessionCookies(board.team, board.base, tokens) }
 }
 
 async function login(request: Request, env: BordeauxEnv, board: InspectedBoard): Promise<Response> {
@@ -112,8 +113,8 @@ async function login(request: Request, env: BordeauxEnv, board: InspectedBoard):
   // A local board that can't run GitHub's web flow signs in as a made-up person, as `POST /__dev/token` does.
   if (env.BORDEAUX_DEV === '1' && (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET)) {
     const id = /^\d+$/.test(url.searchParams.get('id') ?? '') ? url.searchParams.get('id')! : '1'
-    const tokens = await tokensFor(env, { id, login: url.searchParams.get('login') ?? `dev${id}`, owner: false, checkedAt: Date.now(), expiresAt: Date.now() + REFRESH_TTL_MS }, board.url)
-    const headers = sessionCookies(env, board.base, tokens)
+    const tokens = await tokensFor(env, board.team, { id, login: url.searchParams.get('login') ?? `dev${id}`, owner: false, checkedAt: Date.now(), expiresAt: Date.now() + REFRESH_TTL_MS }, board.url)
+    const headers = sessionCookies(board.team, board.base, tokens)
     headers.set('location', home)
     return new Response(null, { status: 302, headers })
   }
@@ -122,16 +123,16 @@ async function login(request: Request, env: BordeauxEnv, board: InspectedBoard):
   const state = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('')
   const authorize = new URL('https://github.com/login/oauth/authorize')
   authorize.searchParams.set('client_id', env.GITHUB_CLIENT_ID)
-  authorize.searchParams.set('redirect_uri', `${env.BORDEAUX_URL}${CALLBACK}`)
+  authorize.searchParams.set('redirect_uri', `${board.team.url}${CALLBACK}`)
   authorize.searchParams.set('state', state)
   const headers = new Headers({ location: authorize.toString(), ...HEADERS })
   // Which board to come back to rides with the state, which only this browser has.
-  headers.append('set-cookie', cookie(env, STATE_COOKIE, `${state}.${board.name ?? ''}`, CALLBACK, 600))
+  headers.append('set-cookie', cookie(board.team, STATE_COOKIE, `${state}.${board.name ?? ''}`, CALLBACK, 600))
   return new Response(null, { status: 302, headers })
 }
 
 /** GitHub's redirect back: the code becomes a GitHub token, used once to check membership, then the board's tokens. */
-async function callback(request: Request, env: BordeauxEnv): Promise<Response> {
+async function callback(request: Request, env: BordeauxEnv, team: Team): Promise<Response> {
   const url = new URL(request.url)
   const [state, name] = (cookies(request)[STATE_COOKIE] ?? '').split('.')
   if (!state || state !== url.searchParams.get('state')) return text(400, 'that sign-in has expired or came from somewhere else: open the inspector again')
@@ -141,17 +142,17 @@ async function callback(request: Request, env: BordeauxEnv): Promise<Response> {
   const exchanged = await fetch('https://github.com/login/oauth/access_token', {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET, code, redirect_uri: `${env.BORDEAUX_URL}${CALLBACK}` }),
+    body: new URLSearchParams({ client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET, code, redirect_uri: `${team.url}${CALLBACK}` }),
   })
   const answer = (await exchanged.json().catch(() => ({}))) as { access_token?: string; error_description?: string }
   if (!answer.access_token) return text(400, `GitHub gave no token: ${answer.error_description ?? exchanged.status}`)
-  const who = await member(fetch, env, answer.access_token)
+  const who = await member(fetch, team, answer.access_token)
   if (who instanceof Response) return text(who.status, ((await who.json()) as { error_description: string }).error_description)
   const base = name ? `/b/${name}/inspect` : '/inspect'
-  const boardUrl = name ? `${env.BORDEAUX_URL}/b/${name}` : env.BORDEAUX_URL
-  const tokens = await tokensFor(env, { ...who, checkedAt: Date.now(), expiresAt: Date.now() + REFRESH_TTL_MS }, boardUrl)
-  const headers = sessionCookies(env, base, tokens)
-  headers.append('set-cookie', cookie(env, STATE_COOKIE, '', CALLBACK, 0))
+  const boardUrl = name ? `${team.url}/b/${name}` : team.url
+  const tokens = await tokensFor(env, team, { ...who, checkedAt: Date.now(), expiresAt: Date.now() + REFRESH_TTL_MS }, boardUrl)
+  const headers = sessionCookies(team, base, tokens)
+  headers.append('set-cookie', cookie(team, STATE_COOKIE, '', CALLBACK, 0))
   headers.set('location', `${base}/`)
   return new Response(null, { status: 302, headers })
 }
@@ -164,10 +165,10 @@ async function logout(request: Request, env: BordeauxEnv, board: InspectedBoard)
   }
   if (request.method !== 'POST' || !sameOrigin(request)) return text(403, 'sign out from the board\'s own page')
   const refresh = cookies(request)[REFRESH_COOKIE]
-  if (refresh) await directory(env).takeSession(refresh)
+  if (refresh) await directory(env, board.team).takeSession(refresh)
   const headers = new Headers({ ...HEADERS, 'content-type': 'text/plain; charset=utf-8' })
-  headers.append('set-cookie', cookie(env, ACCESS_COOKIE, '', board.base, 0))
-  headers.append('set-cookie', cookie(env, REFRESH_COOKIE, '', board.base, 0))
+  headers.append('set-cookie', cookie(board.team, ACCESS_COOKIE, '', board.base, 0))
+  headers.append('set-cookie', cookie(board.team, REFRESH_COOKIE, '', board.base, 0))
   return new Response('signed out', { headers })
 }
 

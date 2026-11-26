@@ -15,6 +15,7 @@ import { linkedIds } from '../upstream/server/feed.ts'
 import type { BoardReads } from '../upstream/server/reads.ts'
 import { boardKey } from '../worker/backend.ts'
 import type { BordeauxEnv } from '../worker/env.ts'
+import { envTeam, type Team } from '../worker/team.ts'
 import { toWireError, type Envelope } from './do.ts'
 import { cursorAt } from './engine.ts'
 import { feedPage, Waiters, type FeedSource } from './feed-page.ts'
@@ -34,6 +35,7 @@ const REACH_MS = 2_000
 
 export class TailDO extends DurableObject<BordeauxEnv> {
   private name: string | null = null
+  private team: Team | null = null
   /** The last index followed, and who's who as of it; null until the first reader starts it. */
   private at: { index: number; actors: ActorsState } | null = null
   /** The newest events, in order, ending at `at.index`. */
@@ -55,12 +57,13 @@ export class TailDO extends DurableObject<BordeauxEnv> {
   }
 
   private board() {
-    return retried(() => this.env.BOARD.get(this.env.BOARD.idFromName(boardKey(this.name))))
+    return retried(() => this.env.BOARD.get(this.env.BOARD.idFromName(boardKey((this.team ?? envTeam(this.env)).id, this.name))))
   }
 
   /** A page of the feed, waited for here (upstream a2.ts `events`, as the board's DO answers it). */
-  async events(wire: WireIdentity, query: Protocol['events']['input'], board: string | null, version?: CallerVersion): Promise<Envelope> {
+  async events(wire: WireIdentity, query: Protocol['events']['input'], board: string | null, version?: CallerVersion, team?: Team): Promise<Envelope> {
     this.name = board
+    this.team = team ?? null
     this.reloader.newer(version)
     return this.reloader.spell(async () => {
       this.readers++
