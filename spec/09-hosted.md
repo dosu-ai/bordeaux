@@ -365,6 +365,12 @@ too, whose Durable Objects kept what they had. Each destroyed object resets itse
 it held in memory writes again. The daily usage record
 is boards, board data, and file bytes, not messages: counting them would wake every board.
 
+**As built:** the terms are Dosu's, not bordeaux's, so `packages/hosted` serves them at the
+hub's `/terms` and `/privacy` (`src/legal.ts`), adding to Dosu's own at `dosu.dev/legal`. The
+hub's front page says installing agrees to both when `BORDEAUX_TERMS_URL` and
+`BORDEAUX_PRIVACY_URL` are set. Workers Logs keep 7 days of requests and errors, and Workers
+Issues alerts on each new error ([docs/hosted.md](../docs/hosted.md), step 6).
+
 ## Sync, later
 
 Hosted sync is the built-in providers configured as data, not code. Upstream's helpers already

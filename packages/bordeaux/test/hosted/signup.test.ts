@@ -42,6 +42,15 @@ describe('signing up', () => {
     expect(await response.text()).toContain('https://github.com/apps/bordeaux-ai/installations/new')
   })
 
+  it('says installing agrees to the terms and privacy policy, when the deployment names both', async () => {
+    const named = { ...env, BORDEAUX_TERMS_URL: 'https://board.test/terms', BORDEAUX_PRIVACY_URL: 'https://board.test/privacy' }
+    const page = await (await hub(new Request(`${HUB.origin}/`), named, HUB)).text()
+    expect(page).toContain('By installing the App, you agree to the <a href="https://board.test/terms">Terms of Service</a> and <a href="https://board.test/privacy">Privacy Policy</a>.')
+    for (const one of [{ ...env, BORDEAUX_TERMS_URL: 'https://board.test/terms' }, env]) {
+      expect(await (await hub(new Request(`${HUB.origin}/`), one, HUB)).text()).not.toContain('you agree')
+    }
+  })
+
   it('makes the team from /setup by asking GitHub, as the App, whose installation it is, then sends the owner to it', async () => {
     const fake = github({ 9001: { id: 3001, login: 'Setup-Org', type: 'Organization' } })
     const response = await setup('installation_id=9001&setup_action=install', fake.send)

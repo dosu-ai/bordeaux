@@ -5,13 +5,15 @@
   "type": "module",
   "scripts": {
     "check": "wrangler deploy --dry-run --outdir .wrangler/check",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "vitest run"
   },
   "dependencies": {
     "@dosu/bordeaux": "workspace:*",
     "@vercel/board": "0.56.1"
   },
   "devDependencies": {
+    "vitest": "^4.1.0",
     "wrangler": "^4.168.0"
   }
 }
