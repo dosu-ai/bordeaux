@@ -5,6 +5,7 @@
 import type { BordeauxEnv } from './env.ts'
 import { registry, type TeamRecord } from './registry.ts'
 import { configOf } from './config.ts'
+import { Lru } from './lru.ts'
 
 export interface Team {
   /** The prefix of every Durable Object key the team's boards use: `default` self-hosted. */
@@ -61,9 +62,14 @@ export function hubOf(env: BordeauxEnv): URL | null {
   return hub
 }
 
-/** Hosted teams this isolate has looked up, by host, for 5 minutes: how long a suspension takes to reach it. */
-const found = new Map<string, { record: TeamRecord; until: number }>()
+/**
+ * Hosts this isolate has looked up: a team's record for 5 minutes, how long a suspension takes to
+ * reach it, and a host with no team for 30 seconds, so the same unknown host doesn't ask the
+ * registry on every request.
+ */
+const found = new Lru<string, { record: TeamRecord | null; until: number }>(2000)
 const FOUND_MS = 5 * 60_000
+const MISSING_MS = 30_000
 
 /** Drops what this isolate knows of a host, after its team changed here. */
 export const forgetHost = (host: string) => found.delete(host.toLowerCase())
@@ -71,14 +77,19 @@ export const forgetHost = (host: string) => found.delete(host.toLowerCase())
 const refuse = (status: number, code: string, message: string) => Response.json({ error: { code, message } }, { status })
 
 /** A hosted team's record, or what to answer instead: no team at that host, or one that can't be used. */
-export async function teamAt(env: BordeauxEnv, hub: URL, host: string): Promise<Team | Response> {
+export async function teamAt(env: BordeauxEnv, hub: URL, host: string, request?: Request): Promise<Team | Response> {
   const key = host.toLowerCase()
-  let record = (found.get(key)?.until ?? 0) > Date.now() ? found.get(key)!.record : null
-  if (!record) {
+  const kept = found.get(key)
+  let record = kept && kept.until > Date.now() ? kept.record : undefined
+  if (record === undefined) {
+    // Every lookup the isolate hasn't kept asks the one registry: a client making up hosts is held
+    // to a few a minute, so it can't keep the registry from everyone else.
+    const ip = request?.headers.get('cf-connecting-ip')
+    if (ip && env.LOOKUP_LIMITER && !(await env.LOOKUP_LIMITER.limit({ key: ip })).success) return refuse(429, 'rate_limited', 'too many hosts looked up from here this minute: wait and try again')
     record = await registry(env).byHost(key)
-    if (!record) return refuse(404, 'no_team', `no team is at ${key}: a GitHub org or person makes one at ${hub.origin}`)
-    found.set(key, { record, until: Date.now() + FOUND_MS })
+    found.set(key, { record, until: Date.now() + (record ? FOUND_MS : MISSING_MS) })
   }
+  if (!record) return refuse(404, 'no_team', `no team is at ${key}: a GitHub org or person makes one at ${hub.origin}`)
   if (record.state === 'suspended') return refuse(403, 'team_suspended', 'this team is suspended')
   if (record.state === 'uninstalled') {
     const until = new Date((record.state_at ?? 0) + 30 * 24 * 3600 * 1000).toISOString().slice(0, 10)

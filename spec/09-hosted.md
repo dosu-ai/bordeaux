@@ -107,6 +107,13 @@ to teams. A team's record:
   account ID. One team per account: installing the App again on an account whose team was
   uninstalled restores that team, host and boards included.
 
+**As built:** an isolate also keeps a host with no team, for 30 seconds, and a lookup it hasn't
+kept is limited per client IP (`LOOKUP_LIMITER`), so made-up hosts can't keep the one registry
+from everyone else. What an isolate keeps per team (records, `board()` handles, issuer keys) is
+bounded, dropping what it used longest ago. A host with a trailing dot is the same host. A
+suspended or uninstalled team's boards send nothing out: their schedules and wakes wait, and
+each board asks the registry at most every 5 minutes whether its team is back.
+
 ### Later sign-in providers
 
 v1 signs teams up and people in with GitHub only. The design keeps GitHub out of what is
@@ -152,7 +159,8 @@ org owner ◀─(5) 302 https://<org>.board.dosu.ai
   share one set of logins, so a person's and an org's never clash. Logins (letters,
   numbers, and single hyphens, at most 39) are valid DNS labels. A few are reserved: `www`,
   `api`, `app`, `admin`, `docs`, `status`, `mail`, `hub`, `origin`. A login that's reserved or
-  already a team's host gets `<login>-<account id>`.
+  already a team's host gets `<login>-<account id>`, and if that's taken too,
+  `<login>-<account id>-<installation id>`.
 - **Renames.** A team's host is fixed at sign-up. A rename on GitHub doesn't move it, because
   every token's audience and every service grant names the board's URL
   ([03](03-identity-access.md#the-verifier-chain), "g4 names the URL the board started

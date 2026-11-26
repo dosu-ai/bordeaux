@@ -90,9 +90,11 @@ export default {
       }
       if (!at) return route(request, env, envTeam(env))
       // Hosted (spec 09): the hub at its own host, and each team at its own.
-      const { host } = new URL(request.url)
+      // A host as people write it: `acme.board.dosu.ai.` is `acme.board.dosu.ai`.
+      const url = new URL(request.url)
+      const host = `${url.hostname.replace(/\.$/, '')}${url.port ? `:${url.port}` : ''}`
       if (host === at.host) return hub(request, env, at)
-      const team = await teamAt(env, at, host)
+      const team = await teamAt(env, at, host, request)
       return team instanceof Response ? team : route(request, env, team)
     })
   },

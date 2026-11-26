@@ -22,6 +22,8 @@ export interface BordeauxEnv {
    * GITHUB_INSTALLATION_ID, and BORDEAUX_OWNERS must be unset (spec 09, "Hosted mode").
    */
   BORDEAUX_HOSTED_URL?: string
+  /** Hosted: registry lookups per client IP (`ratelimits` in wrangler.jsonc), for hosts this isolate hasn't kept. */
+  LOOKUP_LIMITER?: RateLimit
   /** The team's files (spec 08, "Files"): each board's under its own prefix. */
   FILES?: R2Bucket
   /** The board's public URL, which every token's audience must equal. Self-hosted only. */
