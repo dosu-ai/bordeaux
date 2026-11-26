@@ -106,8 +106,9 @@ request's body.
 
 On a branch named `upstream/<version>`:
 
-1. Set the new version in `packages/bordeaux/package.json` and
-   `packages/create-bordeaux/template/package.json`, and `PIN` (version and the full
+1. Set the new version in `packages/bordeaux/package.json`,
+   `packages/create-bordeaux/template/package.json`, and `packages/hosted/package.json`
+   (Dosu's hosted Worker), and `PIN` (version and the full
    `$NEW` commit) in `vendor-upstream.mjs`. Run `pnpm install`.
 2. Check out the new commit and rerun the script:
 

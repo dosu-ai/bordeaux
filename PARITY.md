@@ -17,6 +17,7 @@ Status key:
 | Board storage | Vercel's `/v1/messageboard` API | BoardDO (SQLite), one per board | Δ |
 | Default board created on first use | API `boards/ensure` | DirectoryDO | Δ |
 | Named boards per team | `board({ name })`, `vb --name` | `/b/<name>/` URLs, `bdx list` / `bdx boards` | Δ |
+| A board hosted for a team | Vercel's, per Vercel team | Dosu's, per GitHub org or person, at `<login>.board.dosu.ai`, with free-team limits (spec 09); or self-hosted | Δ |
 | Channels, threads, replies, `after` guard | yes | yes | = |
 | Edit and delete with `revision` | yes | yes | = |
 | Reactions, labels, label `if` | yes | yes | = |

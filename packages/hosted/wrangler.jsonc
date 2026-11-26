@@ -1,0 +1,68 @@
+// Dosu's hosted bordeaux (spec 09): one Worker for every team, the hub at board.dosu.ai and each
+// team at <login>.board.dosu.ai. Setting it up, and its secrets, are in docs/hosted.md.
+// Secrets (wrangler secret put): GITHUB_PRIVATE_KEY, GITHUB_CLIENT_SECRET, GITHUB_WEBHOOK_SECRET.
+// `wrangler dev` sends every request to the first route's host, so hosted mode runs locally from
+// packages/bordeaux/wrangler.hosted.jsonc instead.
+{
+  "name": "bordeaux-hosted",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // A board is reachable only at its team's host: never at the Worker's own workers.dev URL.
+  "workers_dev": false,
+  "preview_urls": false,
+  // Every team's host, through one wildcard certificate (Advanced Certificate Manager). Workers
+  // Custom Domains can't be wildcards, so these are routes on the dosu.ai zone.
+  "routes": [
+    { "pattern": "board.dosu.ai/*", "zone_name": "dosu.ai" },
+    { "pattern": "*.board.dosu.ai/*", "zone_name": "dosu.ai" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "BOARD", "class_name": "BoardDO" },
+      { "name": "DIRECTORY", "class_name": "DirectoryDO" },
+      { "name": "TAIL", "class_name": "TailDO" },
+      { "name": "REGISTRY", "class_name": "RegistryDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["BoardDO", "DirectoryDO", "TailDO", "RegistryDO"] }
+  ],
+  // Upstream's prebuilt inspector page, served at /inspect by the Worker (never straight from assets).
+  "assets": { "directory": "./node_modules/@vercel/board/dist/inspect", "binding": "ASSETS", "run_worker_first": true },
+  // Daily at 04:00 UTC: each team onto the bordeaux-teams Queue, for retention, usage, and
+  // deleting teams uninstalled over 30 days ago.
+  "triggers": { "crons": ["0 4 * * *"] },
+  "queues": {
+    "producers": [{ "binding": "TEAMS_QUEUE", "queue": "bordeaux-teams" }],
+    // A team whose job fails five times lands in bordeaux-teams-dead, where an operator sees it.
+    "consumers": [{ "queue": "bordeaux-teams", "max_batch_size": 10, "max_retries": 5, "dead_letter_queue": "bordeaux-teams-dead" }]
+  },
+  // Each team's requests and wakes a minute, keyed by team ID, and registry lookups a minute per
+  // client IP (spec 09, "Limits"). Workers in one account that use the same namespace ID share
+  // its counters: these three are bordeaux-hosted's alone (docs/hosted.md, step 3).
+  "ratelimits": [
+    { "name": "REQUEST_LIMITER", "namespace_id": "9001", "simple": { "limit": 300, "period": 60 } },
+    { "name": "WAKE_LIMITER", "namespace_id": "9002", "simple": { "limit": 60, "period": 60 } },
+    { "name": "LOOKUP_LIMITER", "namespace_id": "9003", "simple": { "limit": 60, "period": 60 } }
+  ],
+  // This version's ID and upload time: a board's Durable Object reloads when a newer one calls it,
+  // so a deploy reaches a board a client keeps busy (spec 08, "Deploys").
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "bordeaux-hosted-files" }],
+  "alias": { "@vercel/connect/chat": "@dosu/bordeaux/connect-chat" },
+  "vars": {
+    "BORDEAUX_HOSTED_URL": "https://board.dosu.ai",
+    // The bordeaux-ai App's IDs, which aren't secret: set once it's registered (docs/hosted.md).
+    "GITHUB_APP_SLUG": "bordeaux-ai",
+    "GITHUB_APP_ID": "",
+    "GITHUB_CLIENT_ID": "",
+    // Whose owners operate teams at board.dosu.ai/__bordeaux/teams.
+    "BORDEAUX_OPERATOR_ORG": "dosu-ai",
+    // A free team's limits (spec 09); a team's record may override each.
+    "BORDEAUX_LIMIT_BOARDS": "20",
+    "BORDEAUX_LIMIT_DATA_BYTES": "1000000000",
+    "BORDEAUX_LIMIT_FILE_BYTES": "5000000000",
+    "BORDEAUX_LIMIT_WATCHERS": "50"
+  }
+}

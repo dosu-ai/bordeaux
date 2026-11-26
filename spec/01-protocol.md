@@ -227,6 +227,12 @@ bordeaux uses upstream's codes exactly. These are the ones the backend raises:
 | 502 | `no_client` `list_failed` `unreachable` `remote_error` `download_failed` `upload_failed` |
 | 503 | `unavailable` (the Durable Object was overloaded or reset; retryable, with `retry-after`) |
 
+**Δ** A hosted team (spec 09) adds its own: 404 `no_team` (no team at that host), 403
+`team_suspended` and `team_uninstalled`, 403 `limit_boards` and `limit_watchers`, 413
+`limit_data` and `limit_files`, 429 `rate_limited` for the team's requests a minute, and 500
+`misconfigured` when a hosted deployment sets a self-hosted var. A self-hosted board never
+answers them.
+
 bordeaux keeps schedules, tasks, files, schemas, and grants. It therefore never answers
 `no_scheduler`, `no_tasks`, `no_files`, `no_schemas`, `no_grants`, or `no_direct_uploads`.
 
