@@ -5,6 +5,7 @@ import type { BordeauxEnv } from './env.ts'
 import { installationOf } from './github-app.ts'
 import { registry, type GitHubLink, type TeamRecord } from './registry.ts'
 import { forgetHost, teamOfRecord } from './team.ts'
+import { CALLBACK } from './inspect.ts'
 
 type Fetch = typeof fetch
 
@@ -32,6 +33,7 @@ export async function hub(request: Request, env: BordeauxEnv, at: URL, send: Fet
     )
   }
   if (pathname === '/setup' && request.method === 'GET') return setup(url, env, at, send)
+  if (pathname === CALLBACK && request.method === 'GET') return callback(url, env, at)
   if (pathname === '/__bordeaux/github/events' && request.method === 'POST') return events(request, env, at)
   // A team with no GitHub App behind it, for local development and tests: `POST /__dev/team {"login": "acme"}`.
   if (pathname === '/__dev/team' && request.method === 'POST' && env.BORDEAUX_DEV === '1') {
@@ -61,6 +63,19 @@ async function setup(url: URL, env: BordeauxEnv, at: URL, send: Fetch): Promise<
   if (!account) return page('🍷 not ours', `<h1>🍷 not ours</h1><p>That isn't an installation of this App. <a href="${escape(installUrl(env))}">Install it</a> on your org or account.</p>`, 404)
   const { team } = await registry(env).register({ ...account, installation: Number(installation) }, at.host)
   return Response.redirect(`${teamOfRecord(team, at).url}/`, 302)
+}
+
+/**
+ * GitHub's web sign-in callback for every team's inspector: `state` names the team's host, and the
+ * hub sends the code on to that host's own callback, which checks the state against its cookie
+ * and exchanges the code. The hub exchanges nothing, and sends on only to a team's host.
+ */
+async function callback(url: URL, env: BordeauxEnv, at: URL): Promise<Response> {
+  const state = url.searchParams.get('state') ?? ''
+  const host = state.slice(0, state.lastIndexOf('.'))
+  const team = host ? await registry(env).byHost(host) : null
+  if (!team) return page('🍷 sign-in expired', `<h1>🍷 sign-in expired</h1><p>That sign-in isn't for a board here. Open your board's inspector and sign in again.</p>`, 400)
+  return Response.redirect(`${teamOfRecord(team, at).url}${CALLBACK}${url.search}`, 302)
 }
 
 /** A GitHub webhook's body, if its `X-Hub-Signature-256` is the App's webhook secret's HMAC of it. */

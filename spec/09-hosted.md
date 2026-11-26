@@ -6,7 +6,7 @@ team shares one bordeaux Worker in Dosu's Cloudflare account. Self-hosting doesn
 deployment of the template is still one team, as [QUESTIONS Q4](../QUESTIONS.md#q4) has it.
 
 Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Built so far: hosted mode, the
-registry, personal teams' sign-in, and signing up.
+registry, personal teams' sign-in, signing up, and the hub's sign-in callback.
 
 ## Decisions
 
