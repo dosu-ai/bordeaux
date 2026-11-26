@@ -59,6 +59,19 @@ importers:
 
   packages/create-bordeaux: {}
 
+  packages/hosted:
+    dependencies:
+      '@dosu/bordeaux':
+        specifier: workspace:*
+        version: link:../bordeaux
+      '@vercel/board':
+        specifier: 0.56.1
+        version: 0.56.1(@chat-adapter/github@4.45.0(zod@4.6.7))(@chat-adapter/linear@4.45.0(graphql@17.1.0)(zod@4.6.7))(@chat-adapter/slack@4.45.0(zod@4.6.7))(chat@4.45.0(zod@4.6.7))
+    devDependencies:
+      wrangler:
+        specifier: ^4.168.0
+        version: 4.168.0(@cloudflare/workers-types@5.20261125.1)(@types/node@24.19.4)(vitest@4.1.12(@types/node@24.19.4)(vite@7.3.8(@types/node@24.19.4)))
+
 packages:
 
   '@chat-adapter/catalog@4.45.0':

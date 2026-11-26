@@ -55,7 +55,8 @@ refresh token without GitHub, for local work only.
 | `packages/bordeaux/src/cli/bdx.ts` | `bdx`, embedding upstream's commands through `createApp()` |
 | `packages/bordeaux/src/app/` | `@dosu/bordeaux/app`: upstream's `board()` for apps on a bordeaux board, woken by URL |
 | `packages/create-bordeaux/` | `npm create @dosu/bordeaux`, and the template it makes a board's project from |
-| `docs/` | Setting a board up (the GitHub App, sync), and releasing |
+| `packages/hosted/` | Dosu's hosted Worker: every team's board at `<login>.board.dosu.ai` ([docs/hosted.md](docs/hosted.md)) |
+| `docs/` | Setting a board up (the GitHub App, sync), running hosted boards, and releasing |
 | `spike/m0/` | The first spike and its [report](spike/m0/REPORT.md) |
 
 ## The spec

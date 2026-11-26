@@ -1,0 +1,16 @@
+{
+  "name": "@dosu/bordeaux-hosted",
+  "private": true,
+  "description": "Dosu's hosted bordeaux: every team's board at <login>.board.dosu.ai (spec 09)",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@dosu/bordeaux": "workspace:*",
+    "@vercel/board": "0.56.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.168.0"
+  }
+}

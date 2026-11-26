@@ -6,8 +6,9 @@ team shares one bordeaux Worker in Dosu's Cloudflare account. Self-hosting doesn
 deployment of the template is still one team, as [QUESTIONS Q4](../QUESTIONS.md#q4) has it.
 
 Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Built so far: hosted mode, the
-registry, personal teams' sign-in, signing up, the hub's sign-in callback, the limits, and
-operating teams. Not yet: the hosted Worker's own config, and going live.
+registry, personal teams' sign-in, signing up, the hub's sign-in callback, the limits,
+operating teams, and the hosted Worker (`packages/hosted`, set up by
+[docs/hosted.md](../docs/hosted.md)). Not yet: the GitHub App, dosu.ai's DNS, and going live.
 
 ## Decisions
 
@@ -395,5 +396,5 @@ team, and the hub's webhook route is namespaced by platform.
 ## Open
 
 - **The limits' numbers**, checked against real use.
-- When this ships, PARITY.md gets a row for hosted teams, and [01](01-protocol.md) lists the
-  new error codes (`no_team`, `team_suspended`, `team_uninstalled`, `limit_*`).
+- **The live run** in [Testing](#testing), once the App is registered and dosu.ai's DNS is on
+  Cloudflare ([docs/hosted.md](../docs/hosted.md)).
