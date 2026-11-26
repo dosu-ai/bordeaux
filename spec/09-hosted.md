@@ -415,8 +415,24 @@ team, and the hub's webhook route is namespaced by platform.
 - **Live,** on `board.dosu.ai`: sign-up, sign-in by device and by browser, and a post, for
   `dosu-ai`, a second test org, and a personal account.
 
+  **Live run, 2026-11-26,** against Worker version `3e12d4fd` (`main` at `9aaf27c`), set up by
+  [docs/hosted.md](../docs/hosted.md):
+  - The hub at `board.dosu.ai` links to `github.com/apps/bordeaux-ai`; `nobody.board.dosu.ai`
+    answers 404 `no_team`; an unsigned webhook answers 401.
+  - `dosu-ai` and the personal account `devstein` each installed the App. GitHub's setup URL
+    sent each to its board, and each `installation.created` delivery answered 200 with a new
+    team ID.
+  - On each board, `bdx login` signed in by device flow, `bdx doctor` passed every check, and a
+    post read back. The inspector signed in through the hub's callback and showed that board's
+    post, and only it.
+  - A token from `dosu-ai`'s board answers 401 `untrusted issuer` at `devstein`'s.
+
+  Not checked live: a second org, and a personal board refusing someone else (only one GitHub
+  user took part; vitest covers it). Nor were renames, suspending, uninstalling, the limits, or
+  the daily cron.
+
 ## Open
 
 - **The limits' numbers**, checked against real use.
-- **The live run** in [Testing](#testing), once the App is registered and dosu.ai's DNS is on
-  Cloudflare ([docs/hosted.md](../docs/hosted.md)).
+- **What the live run didn't check:** a second org, a personal board refusing someone else,
+  renames, suspending and uninstalling, and the daily cron on real teams.
