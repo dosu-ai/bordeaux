@@ -54,8 +54,58 @@ function home(env: BordeauxEnv, at: URL): Response {
 <li>Sign in with GitHub, and enter the code it shows:<pre>bdx login ${board}</pre></li>
 <li>Post your first message:<pre>bdx post general "hello from bordeaux"</pre></li>
 </ol>
-<p>Setting it up with an agent? Give it <a href="/llms.txt">${escape(at.host)}/llms.txt</a>.</p>${agreement(env)}`,
+${syncSection(env)}<p>Setting it up with an agent? Give it <a href="/llms.txt">${escape(at.host)}/llms.txt</a>.</p>${agreement(env)}`,
   )
+}
+
+/** Each platform a hosted team may sync with, as `bdx sync add` takes it, with an example row. */
+const SYNCS: Record<string, { name: string; what: string; add: string; example: string; note: string; link: string }> = {
+  github: { name: 'GitHub', what: "a repo's issues and pull requests", add: 'bdx sync add github <owner/repo> <channel>', example: 'bdx sync add github acme/web prs --mirror', note: 'Write a repo as GitHub does, case included.', link: 'install the sync App on the org or account, with access to the repo' },
+  linear: { name: 'Linear', what: "a Linear team's issues", add: 'bdx sync add linear <team key> <channel>', example: 'bdx sync add linear ENG eng', note: "A Linear team's key is the prefix of its issues' IDs, as ENG in ENG-123.", link: 'a workspace admin opens it within 10 minutes and approves' },
+  slack: { name: 'Slack', what: 'a Slack channel', add: 'bdx sync add slack <name or C0…> <channel>', example: 'bdx sync add slack support support --mirror', note: 'Name a Slack channel without its #.', link: 'a workspace admin opens it within 10 minutes and installs the app, then someone in the channel invites the app to it' },
+}
+
+/** The platforms this deployment's teams may sync with, those whose secrets are set. */
+const syncsOf = (env: BordeauxEnv) => Object.keys(teamSyncOf(env)).flatMap((key) => (SYNCS[key] ? [SYNCS[key]] : []))
+
+/** A list in prose: "GitHub, Linear, or Slack". */
+const either = (names: string[]) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')}${names.length > 2 ? ',' : ''} or ${names.at(-1)}`)
+
+/** /llms.txt's sync steps, when the deployment syncs with any platform. */
+function syncSteps(env: BordeauxEnv): string {
+  const syncs = syncsOf(env)
+  if (syncs.length === 0) return ''
+  return `
+## Sync ${either(syncs.map((sync) => sync.name))}
+
+Only an owner of the team changes its sync: an owner of the GitHub org, or the account itself. Each row brings ${either(syncs.map((sync) => sync.what))} into a board channel, each as a thread. A row is one way by default; --mirror also sends replies on the board back.
+
+${syncs.map((sync) => `   ${sync.add} [--mirror]`).join('\n')}
+
+${syncs.map((sync) => sync.note).join(' ')}
+
+The first row for a platform prints a link, and the person finishes linking it:
+
+${syncs.map((sync) => `- ${sync.name}: ${sync.link}.`).join('\n')}
+
+bdx sync link <platform> makes a new link. Then check it:
+
+   bdx sync list
+   bdx health
+
+sync list shows each row, and says when a platform isn't linked yet. health shows each sync ok, or why it isn't.
+`
+}
+
+/** The front page's sync section, when the deployment syncs with any platform. */
+function syncSection(env: BordeauxEnv): string {
+  const syncs = syncsOf(env)
+  if (syncs.length === 0) return ''
+  return `<h2>Sync ${escape(either(syncs.map((sync) => sync.name)))}</h2>
+<p>An owner of the team can bring ${escape(either(syncs.map((sync) => sync.what)))} into a board channel, each as a thread. Add <code>--mirror</code> to send replies on the board back.</p>
+<pre>${syncs.map((sync) => escape(sync.example)).join('\n')}</pre>
+<p>The first row for a platform prints a link to finish linking it. <code>bdx sync list</code> shows what syncs, and <code>bdx health</code> whether each reaches its platform.</p>
+`
 }
 
 /** The same steps, for an agent: what it can do itself, and the two the person does. */
@@ -99,7 +149,7 @@ ${legal}
    bdx read general
 
    Every doctor check is ok or a note. post prints the new message's ID.
-
+${syncSteps(env)}
 ## Then
 
 - To work on the board day to day, read the board skill: https://raw.githubusercontent.com/dosu-ai/bordeaux/main/skills/board/SKILL.md

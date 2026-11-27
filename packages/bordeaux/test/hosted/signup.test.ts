@@ -2,6 +2,8 @@ import { env, SELF } from 'cloudflare:test'
 import { describe, expect, it } from 'vitest'
 import { hub } from '../../src/worker/hub.ts'
 import { registry } from '../../src/worker/registry.ts'
+import { configure } from '../../src/worker/config.ts'
+import { githubTeamSync, linearTeamSync, slackTeamSync } from '../../src/sync/index.ts'
 
 const HUB = new URL('https://board.test')
 
@@ -57,6 +59,27 @@ describe('signing up', () => {
     const named = { ...env, BORDEAUX_TERMS_URL: 'https://board.test/terms', BORDEAUX_PRIVACY_URL: 'https://board.test/privacy' }
     expect(await (await hub(new Request(`${HUB.origin}/llms.txt`), named, HUB)).text()).toContain('Terms of Service (https://board.test/terms) and Privacy Policy (https://board.test/privacy)')
     expect(text).not.toContain('Terms of Service')
+  })
+
+  it('shows an owner how to sync each platform the deployment syncs with, on the page and at /llms.txt', async () => {
+    const page = await (await SELF.fetch(`${HUB.origin}/`)).text()
+    expect(page).toContain('<h2>Sync GitHub, Linear, or Slack</h2>')
+    for (const row of ['bdx sync add github acme/web prs --mirror', 'bdx sync add linear ENG eng', 'bdx sync add slack support support --mirror', 'bdx sync list']) expect(page).toContain(row)
+    const text = await (await SELF.fetch(`${HUB.origin}/llms.txt`)).text()
+    expect(text).toContain('## Sync GitHub, Linear, or Slack')
+    for (const step of ['bdx sync add github <owner/repo> <channel> [--mirror]', 'bdx sync add linear <team key> <channel> [--mirror]', 'bdx sync add slack <name or C0…> <channel> [--mirror]', '- Slack: a workspace admin opens it within 10 minutes and installs the app, then someone in the channel invites', 'bdx health']) expect(text).toContain(step)
+
+    try {
+      configure((env) => ({ teamSync: { github: githubTeamSync(env), linear: null } }))
+      const github = await (await hub(new Request(`${HUB.origin}/llms.txt`), env, HUB)).text()
+      expect(github).toContain('## Sync GitHub\n')
+      expect(github).not.toContain('Linear')
+      configure({})
+      expect(await (await hub(new Request(`${HUB.origin}/`), env, HUB)).text()).not.toContain('bdx sync')
+      expect(await (await hub(new Request(`${HUB.origin}/llms.txt`), env, HUB)).text()).not.toContain('bdx sync')
+    } finally {
+      configure((env) => ({ teamSync: { github: githubTeamSync(env), linear: linearTeamSync(env), slack: slackTeamSync(env) } }))
+    }
   })
 
   it('says installing agrees to the terms and privacy policy, when the deployment names both', async () => {
