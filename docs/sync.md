@@ -5,6 +5,11 @@ providers, same routing (`channels`, `repos`, `teams`), same behavior both ways.
 is credentials. Vercel Connect isn't available, so each platform's app is yours, and its
 secrets live in the Worker (spec 06, "Credentials without Vercel Connect").
 
+A hosted board (`<login>.board.dosu.ai`) has no code of its own: its owners map repos to
+channels with `bdx sync add github <owner/repo> <channel> [--mirror]` (`bdx sync list`, `bdx
+sync rm`), after installing Dosu's sync App on their account. GitHub only, for now (spec 09).
+The rest of this page is for a board you deploy yourself.
+
 Sync runs on the default board, inside its Durable Object: a platform's webhook lands in the
 board's inbox, the board brings it on, and a reply on the board goes back out. Each step is
 retried up to 10 times.
