@@ -77,6 +77,39 @@ export async function installationToken(app: NonNullable<ReturnType<typeof appOf
   return token
 }
 
+/**
+ * How installation `installation` of the App sees each of `repos` (`owner/name`): the repo as
+ * GitHub writes it, or false for one it can't see; null when GitHub didn't say. Asked with a
+ * token minted for it, not a cached one, since an owner may have just given the App a repo. An
+ * installation given only some repos is asked for its list, since a public repo answers anyone.
+ */
+export async function installationRepos(app: { id: string; key: string }, installation: string, repos: string[], send: Fetch = fetch): Promise<Record<string, string | false> | null> {
+  const headers = (authorization: string) => ({ authorization, accept: 'application/vnd.github+json', 'user-agent': 'bordeaux' })
+  const minted = await send(`https://api.github.com/app/installations/${encodeURIComponent(installation)}/access_tokens`, { method: 'POST', headers: headers(`Bearer ${await appJwt(app)}`) })
+  if (!minted.ok) return null
+  const { token, repository_selection } = (await minted.json()) as { token: string; repository_selection?: string }
+  const seen: Record<string, string | false> = {}
+  if (repository_selection === 'selected') {
+    const given: string[] = []
+    for (let page = 1; page <= 50; page++) {
+      const listed = await send(`https://api.github.com/installation/repositories?per_page=100&page=${page}`, { headers: headers(`token ${token}`) })
+      if (!listed.ok) return null
+      const { repositories } = (await listed.json()) as { repositories: { full_name: string }[] }
+      given.push(...repositories.map((repo) => repo.full_name))
+      if (repositories.length < 100) break
+    }
+    for (const repo of repos) seen[repo] = given.find((name) => name.toLowerCase() === repo.toLowerCase()) ?? false
+    return seen
+  }
+  for (const repo of repos) {
+    const found = await send(`https://api.github.com/repos/${repo.split('/').map(encodeURIComponent).join('/')}`, { headers: headers(`token ${token}`) })
+    if (found.status === 404) seen[repo] = false
+    else if (!found.ok) return null
+    else seen[repo] = ((await found.json()) as { full_name: string }).full_name
+  }
+  return seen
+}
+
 /** `login`'s membership of `org`, as the App sees it: active with a role, or null for none. */
 export async function membershipOf(env: BordeauxEnv, team: Team, org: string, login: string, send: Fetch = fetch): Promise<{ role: string } | null | 'unknown'> {
   const app = appOf(env, team)

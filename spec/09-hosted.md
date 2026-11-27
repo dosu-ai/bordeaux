@@ -470,7 +470,16 @@ team, and the hub's webhook route is namespaced by platform.
   answer, since linking again wouldn't help. Each fits `bdx health`'s 80 columns.
   `bdx redact --everywhere`
   deletes the original through the team's provider, built from its rows as its board's is.
-- **Not yet:** `bdx sync add` doesn't check that the App can see the repo.
+- **A repo the App can't see is refused.** When an owner adds a row to a team the sync App is
+  installed for, the hub mints an installation token and asks GitHub. An installation with all
+  its account's repos is asked for the repo, and one given only some is asked for its list,
+  since a public repo answers any token. A repo it can't see (a typo, or one the App wasn't
+  given) refuses the row and says where to give it. One GitHub writes in another case refuses
+  it too, naming GitHub's, since upstream matches a repo exactly. Any other answer takes the
+  row. A row added before the App is installed isn't checked: there's no installation to ask.
+  The token is a fresh one, not the cached one, since an owner may have just given the App
+  the repo. `bdx health` asks the same for every GitHub row, so a repo taken out of the App's
+  selection later shows there.
 
 **As built (Linear):**
 

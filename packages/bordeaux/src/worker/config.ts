@@ -22,11 +22,18 @@ export type TeamSync = {
    */
   build(rows: SyncRow[], link: string | undefined, token: () => Promise<SyncAccess>): SyncProvider | null
   /**
-   * Asks the platform, as the team's link, whether it still answers (`bdx health`): one call that
-   * throws, saying why, when the app was removed or its token revoked. A provider's own first
-   * sign-in can't tell: upstream's adapters log a refused one and go on.
+   * Asks the platform, as the team's link, whether it still answers (`bdx health`), and still
+   * sees `rows` where it can tell: throws, saying why, when the app was removed or its token
+   * revoked. A provider's own first sign-in can't tell: upstream's adapters log a refused one
+   * and go on.
    */
-  check(link: string, token: () => Promise<SyncAccess>): Promise<void>
+  check(link: string, token: () => Promise<SyncAccess>, rows: SyncRow[]): Promise<void>
+  /**
+   * Why the team's link can't see `external` on the platform (a repo the sync App wasn't given),
+   * or null when it can, or when the platform didn't say. Asked when an owner adds a row to a
+   * linked team: a row the link can't see would sync nothing, and say nothing.
+   */
+  unseen?(external: string, link: string): Promise<string | null>
   /** Where an owner turns the platform on for their account, such as the sync App's install page. */
   install?: string
   /** A platform a team links to by OAuth, whose tokens its directory keeps sealed (Linear). */

@@ -11,6 +11,9 @@ const sent: { method: string; url: string; token: string; body: string }[] = []
  */
 const revoked = new Set<string>()
 
+/** Installations given only some repos, and which: every other installation has all its account's. */
+const picked: Record<string, string[]> = { '7352': ['sync-picked/web'] }
+
 /**
  * GitHub's API as the sync App sees it: an installation token for each installation, named by
  * it, its bot from GraphQL's `viewer`, and comments taken and recorded.
@@ -25,7 +28,22 @@ async function syncApp(request: Request): Promise<Response | null> {
     return revoked.has(`installation:${installation[1]}`) ? Response.json({ message: 'Not Found' }, { status: 404 }) : Response.json({ id: Number(installation[1]), account: { id: 1, login: 'acme', type: 'Organization' } })
   const minting = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(url.pathname)
   if (url.hostname === 'api.github.com' && minting && request.method === 'POST')
-    return Response.json({ token: `ghs_installation_${minting[1]}`, expires_at: new Date(Date.now() + 3_600_000).toISOString(), permissions: {}, repository_selection: 'selected' }, { status: 201 })
+    return Response.json({ token: `ghs_installation_${minting[1]}`, expires_at: new Date(Date.now() + 3_600_000).toISOString(), permissions: {}, repository_selection: picked[minting[1]!] ? 'selected' : 'all' }, { status: 201 })
+  // Every repo, as an installation token sees it, but one named `unseen…`, which the App wasn't
+  // given. GitHub finds a repo whatever its case, and answers with its name as it writes it,
+  // here in lowercase. An installation given only some repos lists them (`picked`).
+  const installed = /^token ghs_installation_(\d+)$/.exec(request.headers.get('authorization') ?? '')?.[1]
+  const repo = /^\/repos\/([^/]+)\/([^/]+)$/.exec(url.pathname)
+  if (url.hostname === 'api.github.com' && repo && request.method === 'GET') {
+    if (!installed) return Response.json({ message: 'Bad credentials' }, { status: 401 })
+    return repo[2]!.startsWith('unseen') ? Response.json({ message: 'Not Found' }, { status: 404 }) : Response.json({ full_name: `${repo[1]}/${repo[2]!.toLowerCase()}`, private: false })
+  }
+  if (url.href.startsWith('https://api.github.com/installation/repositories') && installed)
+  {
+    // A repo a test took out of the App's selection (`repo:<owner/name>`) isn't listed.
+    const given = (picked[installed] ?? []).filter((full_name) => !revoked.has(`repo:${full_name}`))
+    return Response.json({ total_count: given.length, repositories: given.map((full_name) => ({ full_name })) })
+  }
   if (url.href === 'https://api.github.com/graphql') return Response.json({ data: { viewer: { databaseId: 4242, login: 'bordeaux-ai-sync[bot]' } } })
   if (url.hostname === 'api.github.com' && /^\/repos\/[^/]+\/[^/]+\/issues\/\d+\/comments$/.test(url.pathname) && request.method === 'POST') {
     const body = await request.text()

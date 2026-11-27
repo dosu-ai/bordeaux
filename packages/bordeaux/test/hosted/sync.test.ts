@@ -141,6 +141,33 @@ describe('hosted GitHub sync', () => {
     expect((await roots(b.url, ownerB, 'prs')).map((m) => m.text).join('\n')).not.toMatch(/A is broken|B names A/)
   })
 
+  it("refuses a repo the team's sync App can't see, and takes any of its repos before the App is installed", async () => {
+    const at = await team('sync-seen', 6351)
+    const owner = await person(at, 76, true)
+    // Not installed yet: nothing to ask, so the row waits for the install.
+    expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-seen/unseen-early', channel: 'prs' })).status).toBe(201)
+    await deliver('installation', { action: 'created', installation: { id: 7351, account: { id: 6351, login: 'sync-seen', type: 'Organization' } } })
+    const unseen = await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-seen/unseen-docs', channel: 'prs' })
+    expect(unseen).toMatchObject({ status: 400, body: { error: { code: 'invalid_request', message: expect.stringContaining("the sync App can't see sync-seen/unseen-docs") } } })
+    // GitHub finds a repo whatever its case, and upstream matches it only as GitHub writes it.
+    expect(await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-seen/Web', channel: 'prs' })).toMatchObject({ status: 400, body: { error: { message: 'external: GitHub writes it sync-seen/web, so add that' } } })
+    expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-seen/web', channel: 'prs' })).status).toBe(201)
+    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.sync.map((row: { external: string }) => row.external).sort()).toEqual(['sync-seen/unseen-early', 'sync-seen/web'])
+  })
+
+  it("refuses a public repo an App given only some repos wasn't given, and says in bdx health when one is taken away", async () => {
+    const at = await team('sync-picked', 6352)
+    const owner = await person(at, 77, true)
+    await deliver('installation', { action: 'created', installation: { id: 7352, account: { id: 6352, login: 'sync-picked', type: 'Organization' } } })
+    // sync-picked/docs is public, so GitHub shows it to any token; the App was given only web.
+    expect(await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-picked/docs', channel: 'prs' })).toMatchObject({ status: 400, body: { error: { message: expect.stringContaining("the sync App can't see sync-picked/docs") } } })
+    expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-picked/web', channel: 'prs' })).status).toBe(201)
+    expect((await call(at.url, owner, 'GET', '/admin/health')).body.sync).toEqual([{ key: 'github', platform: 'github', ok: true }])
+    // An admin takes web out of the App's repositories.
+    await fetch('https://outbound.test/revoke', { method: 'POST', body: 'repo:sync-picked/web' })
+    expect((await call(at.url, owner, 'GET', '/admin/health')).body.sync).toEqual([{ key: 'github', platform: 'github', ok: false, error: "the sync App can't see sync-picked/web: give it the repo" }])
+  })
+
   it("mirrors a board reply back as the team's own installation", async () => {
     const at = await team('sync-mirror', 6201)
     const owner = await person(at, 73, true)

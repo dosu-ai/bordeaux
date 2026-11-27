@@ -17,7 +17,7 @@ import { into, mirror } from '@vercel/board/sync'
 import { teams } from '@vercel/board/sync-linear'
 import { SYNC_REFRESH_BEFORE_MS, SyncLinkRefused, type SyncAccess, type SyncTokens, type TeamSync } from '../worker/config.ts'
 import type { BordeauxEnv } from '../worker/env.ts'
-import { installationOf, toPkcs8 } from '../worker/github-app.ts'
+import { installationOf, installationRepos, toPkcs8 } from '../worker/github-app.ts'
 
 export { channels } from '@vercel/board/sync-slack'
 export { repos } from '@vercel/board/sync-github'
@@ -123,9 +123,21 @@ export function githubTeamSync(env: Env): TeamSync | null {
       const routing = repos(Object.fromEntries(rows.map((row) => [row.external, row.direction === 'mirror' ? mirror(row.channel) : row.channel])))
       return githubApp({ appId: appId!, privateKey: privateKey!, installationId: Number(link), webhookSecret: webhookSecret!, userName: `${slug}[bot]` }, routing)
     },
-    async check(link) {
+    async check(link, _token, rows) {
       const found = await installationOf({ id: appId, key: privateKey, names: 'GITHUB_SYNC_APP_ID and GITHUB_SYNC_PRIVATE_KEY' }, link)
       if (!found) throw new Error('the sync App isn\'t installed: bdx sync link github')
+      // A repo taken out of the App's selection since its row was added syncs nothing.
+      const external = rows.map((row) => row.external)
+      const seen = await installationRepos({ id: appId!, key: privateKey! }, link, external)
+      const lost = seen ? external.filter((repo) => seen[repo] !== repo) : []
+      if (lost.length > 0) throw new Error(`the sync App can't see ${lost.join(', ')}: give it the repo`)
+    },
+    async unseen(external, link) {
+      const seen = (await installationRepos({ id: appId!, key: privateKey! }, link, [external]))?.[external]
+      if (seen === false) return `external: the sync App can't see ${external}. Check its name, or give the App the repo at https://github.com/apps/${slug}/installations/new, then add it again`
+      // Upstream matches a repo as GitHub writes it, case included.
+      if (seen && seen !== external) return `external: GitHub writes it ${seen}, so add that`
+      return null
     },
   }
 }
