@@ -239,6 +239,77 @@ Then check, on `dosu-ai`'s board, with a test repo (`dosu-ai/bordeaux-sync-test`
 
 Record the date and what passed in spec 09's Testing section.
 
+## 8. Linear sync: the Linear app
+
+A team syncs its Linear workspace with its board through Dosu's Linear OAuth app. Nothing ties a
+Linear workspace to a GitHub account, so an owner asks for a link and a workspace admin approves
+it in Linear. The team's directory keeps the workspace's tokens, sealed, and refreshes them
+(spec 09, "Sync, later").
+
+In Dosu's Linear workspace, open **Settings → API → OAuth applications → New**.
+
+| Field | Value |
+| --- | --- |
+| Application name | `bordeaux-ai`: admins see it when they approve a link |
+| Developer name | Dosu |
+| Developer URL | `https://board.dosu.ai` |
+| Description | links to `https://board.dosu.ai/terms` and `/privacy` |
+| Callback URLs | `https://board.dosu.ai/sync/linear/callback` |
+| Public | **on**, so other workspaces can approve it |
+| Client credentials | off: each workspace links by OAuth |
+| Webhooks | **on** |
+| Webhook URL | `https://board.dosu.ai/__bordeaux/linear/events` |
+| Webhook events | **Issues** and **Comments** |
+
+Linear sends every linked workspace's events to that one URL, and the app's removal from a
+workspace too. After creating it, note its **client ID**, **client secret**, and the webhook's
+**signing secret**.
+
+In `packages/hosted/wrangler.jsonc`'s `vars`, add the client ID, which isn't secret:
+
+```jsonc
+"LINEAR_SYNC_CLIENT_ID": "<its client ID>",
+```
+
+From `packages/hosted`, put its secrets, and the key that seals each team's tokens:
+
+```bash
+npx wrangler secret put LINEAR_SYNC_CLIENT_SECRET
+```
+
+```bash
+npx wrangler secret put LINEAR_SYNC_WEBHOOK_SECRET
+```
+
+```bash
+openssl rand -base64 32 | npx wrangler secret put BORDEAUX_SYNC_KEY
+```
+
+Nobody needs to see `BORDEAUX_SYNC_KEY`, so it goes straight from `openssl` to the Worker. A new
+key leaves every team's sealed tokens unreadable, and each team links again. Deploy (step 4).
+As with GitHub, none of the four set is off quietly, and some set logs which are missing.
+
+Then check, on `dosu-ai`'s board, with a test team in Linear (`BXT`):
+
+1. As an owner of `dosu-ai`:
+
+   ```bash
+   bdx sync add linear BXT linear-test --mirror
+   ```
+
+   It prints a link to Linear, good for 10 minutes, once. `bdx sync link linear` makes another.
+2. A Linear workspace admin opens it and approves. The hub says the workspace syncs with
+   `https://dosu-ai.board.dosu.ai` now, and `bdx sync list` shows it linked.
+3. Open an issue in `BXT`. Within a few seconds it's a thread in channel `linear-test`
+   (`BXT-1: …`).
+4. Reply to that thread on the board. The reply appears on the issue as a comment by the app,
+   with your name first.
+5. Comment on the issue. The comment comes back into the board thread.
+6. A day later, reply on the board again. Linear's tokens last 24 hours, so the reply shows the
+   directory refreshed them.
+
+Record the date and what passed in spec 09's Testing section.
+
 ## Terms and privacy
 
 The hub serves Dosu's terms at `/terms` and privacy policy at `/privacy`, from
