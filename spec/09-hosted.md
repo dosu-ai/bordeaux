@@ -9,8 +9,8 @@ Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Built so far: hosted 
 registry, personal teams' sign-in, signing up, the hub's sign-in callback, the limits,
 operating teams, the hosted Worker (`packages/hosted`, set up by
 [docs/hosted.md](../docs/hosted.md)), and GitHub sync as data (see [Sync, later](#sync-later)).
-Live since 2026-11-26 (see [Testing](#testing)). Not yet: the sync App and the Linear app
-registered, and Slack sync.
+Live since 2026-11-26 (see [Testing](#testing)). Not yet: the sync App, the Linear app, and the
+Slack app registered.
 
 ## Decisions
 
@@ -23,7 +23,7 @@ registered, and Slack sync.
 | How do hostnames reach the Worker? | **dosu.ai moves to Dosu's Cloudflare account**, and two Worker routes and one wildcard certificate serve every team. Cloudflare for SaaS was the alternative, with dosu.ai's DNS left at GoDaddy and a custom hostname per team. It stays the way to a team's own domain later. |
 | Who can sign up? | **Any GitHub org or user**, by installing Dosu's GitHub App, `bordeaux-ai`. Free for now, with per-team limits. Paid plans come later. |
 | What can a hosted team configure? | **No code.** A hosted team gets the protocol, the inspector, `bdx` and `vb`, named boards, registered watchers woken by URL, and sync as data. Config watchers, middleware, and custom sync functions are a deployment's code, so they stay self-hosted. |
-| Sync? | **Later, as data.** GitHub and Linear first, then Slack (see [Sync, later](#sync-later)). |
+| Sync? | **Later, as data.** GitHub, Linear, and Slack (see [Sync, later](#sync-later)). |
 | Dosu's own board | `dosu-ai` signs up like any org, as the first team, at `https://dosu-ai.board.dosu.ai`. Nothing moves from the workers.dev board. |
 
 ## Hostnames
@@ -253,7 +253,7 @@ The flows are spec 03's. What changes is which account and App they check.
 | Registered watchers, woken by URL | yes | The team's app runs anywhere and pulls its matches ([04](04-watchers.md)). |
 | Wake by service binding | no | Only a caller verified through a service binding may register one ([04](04-watchers.md#wake-ups-without-vercel-δ)), and a binding names one of Dosu's own Workers. |
 | Config watchers, middleware | no | A deployment's code in `configure()`. The hosted Worker's `configure()` is Dosu's: its middleware runs on every team's boards, and it sets no `watch` or `sync`. |
-| Sync | GitHub and Linear, as rows (`bdx sync add`); Slack later | [Sync, later](#sync-later) |
+| Sync | GitHub, Linear, and Slack, as rows (`bdx sync add`) | [Sync, later](#sync-later) |
 
 ## Limits
 
@@ -509,9 +509,66 @@ team, and the hub's webhook route is namespaced by platform.
   until an owner links again. Refreshing one at a time and writing over only the refreshed
   tokens have no test: no route can make two calls meet inside one refresh.
 
-**Slack, later,** needs the same OAuth link and sealed tokens, a `teamSync.slack` builder, and
-the hub's `/__bordeaux/slack/events` answering Slack's `url_verification` itself. Slack's
-history limits for commercially distributed apps outside its Marketplace come first (see above).
+**As built (Slack):**
+
+- **The app.** Dosu's distributed Slack app, `bordeaux-ai`, with `SLACK_SYNC_CLIENT_ID` (a var),
+  and the secrets `SLACK_SYNC_CLIENT_SECRET` and `SLACK_SYNC_SIGNING_SECRET`. Its redirect URL
+  is `<hub>/sync/slack/callback` and its events request URL `<hub>/__bordeaux/slack/events`,
+  for the bot events `message.channels`, `message.groups`, `reaction_added`,
+  `reaction_removed`, `app_uninstalled`, and `tokens_revoked`. It asks for the bot scopes
+  self-hosted Slack sync needs ([docs/sync.md](../docs/sync.md)), and token rotation stays off.
+  `BORDEAUX_SYNC_KEY` seals its bot tokens as it does Linear's. `configure()` names it beside
+  the others: `slack: slackTeamSync(env)`. None of its settings set is off quietly, and some set
+  is logged.
+- **The rows.** A Slack row's `external` is a channel's ID (`C0…`, or `G0…` for an older private
+  channel), which survives a rename, or `#name`, which the board looks up in the workspace's
+  channels as self-hosted sync does. A shell reads `#` as a comment, so `bdx sync add slack
+  support help` maps `#support`. Rows are `into` by default; `mirror` sends board replies into
+  the Slack thread and posts each board root in the channel to Slack. Upstream's `channels()`
+  mirrors a bare channel, so each row names its direction. The app reads only channels it's
+  invited to (`/invite @bordeaux-ai`), and never joins one itself.
+- **Linking** is Slack's OAuth v2 install, with Linear's ticket and state. The hub trades the
+  code at `oauth.v2.access`, which names the workspace (`team.id`) and gives its bot token. A
+  workspace links to one team, and linking it again moves it, as for Linear. The hub refuses
+  two installs, and its page tells the admin what to do instead of asking for a new link: an
+  Enterprise Grid org-wide install, which names no one workspace, and a token that expires,
+  which means the app's token rotation is on.
+- **Tokens.** A bot token doesn't expire, so the DirectoryDO keeps it sealed and never refreshes
+  it. The board asks the DirectoryDO for it through the Slack adapter's token function, and asks
+  again after 5 minutes at most: a new install of a workspace still linked can bring a new
+  token, and the board takes it within 5 minutes. Calls that find it due at once share one
+  ask. Linear's board does the same, as well as asking a minute before a refresh.
+- **Webhooks.** Slack signs every request with the app's signing secret (`X-Slack-Signature`,
+  HMAC-SHA256 of `v0:<timestamp>:<body>`). The hub takes one sent within 5 minutes, by
+  `X-Slack-Request-Timestamp`, and answers Slack's `url_verification` itself, with its
+  challenge: it names no workspace. Otherwise `authorizations[0].team_id`, or else `team_id`,
+  finds the team, and the hub hands the event as Slack sent it to the team's default board at
+  `/webhooks/slack`, where the adapter checks the signature again. `app_uninstalled`, and
+  `tokens_revoked` naming a bot token, unlink the team and drop its token. A person's token
+  revoked leaves the link.
+- **Slack's history limits,** checked on 2026-11-27 in Slack's changelog (2025-05-29, clarified
+  2025-06-03) and its method docs: an app distributed commercially outside the Slack Marketplace
+  gets `conversations.history` and `conversations.replies` once a minute per workspace, 15
+  messages per call. Internal apps and Marketplace apps keep 50 or more calls a minute. Hosted
+  sync never backfills a channel, and messages and thread replies arrive as events, so neither
+  uses them. Slack answers a call over the limit with a minute's `Retry-After`. The hosted
+  adapter's Slack client doesn't wait it out (`rejectRateLimitedCalls`): waiting pauses every
+  call the client makes, and outlives the background work a webhook gets. A rate-limited call
+  fails at once instead, and the board's queue retries a post. These read history:
+  - **A reaction made in Slack.** The adapter asks `conversations.replies` for the reacted
+    message's thread. Over the limit, it uses the message itself as the thread, at once: a
+    reaction to a root lands, and a reaction to a thread reply is lost.
+  - **Reading on demand** (upstream's `read`, `bdx sync <id> <target>`): 15 messages, once a
+    minute. A second read in the minute fails with Slack's `ratelimited`.
+  - **A link to a Slack message** in a board message, and upstream's check that a post went out
+    under its author's name.
+
+  A Marketplace listing lifts the limits. Slack reviews an app once it's installed on 10
+  active workspaces (as of July 2026). Whether to list is Dosu's call.
+- **Not yet:** Enterprise Grid org-wide installs, Slack token rotation, and Slack Connect
+  channels shared with another workspace (untested). Asking for the token again every 5 minutes
+  has no test, since a test can't wait 5 minutes. Neither has sharing one ask, since the
+  DirectoryDO's calls aren't something a user can observe.
 
 ## Testing
 
@@ -541,6 +598,14 @@ history limits for commercially distributed apps outside its Marketplace come fi
   sync a board's DO keeps is tested on its own, not through the DO: in one test isolate the board
   takes an event before a stale view could reach it. Not checked live: the sync App isn't
   registered yet ([docs/hosted.md](../docs/hosted.md), step 7).
+- **Hosted Linear and Slack sync, in vitest:** each linked by its OAuth flow against a fake of
+  the platform's API in `vitest.hosted.config.ts`, with two teams in one Worker. A link's ticket
+  works once; a workspace's events land only on its own team's board, by that team's rows; a
+  `mirror` reply goes back with that team's own token, and an `into` reply doesn't; removing
+  the app unlinks the team; linking a workspace again moves it; an event that isn't signed, is
+  too old, or is sent straight to a team is refused. Slack's URL check is answered by the hub; a
+  Grid org-wide install and an expiring token link nothing; a reaction lands at once while
+  Slack rate-limits the channel's history reads. Not checked live: neither app is registered yet (steps 8 and 9).
 - **Live,** on `board.dosu.ai`: sign-up, sign-in by device and by browser, and a post, for
   `dosu-ai`, a second test org, and a personal account.
 

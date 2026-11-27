@@ -310,6 +310,78 @@ Then check, on `dosu-ai`'s board, with a test team in Linear (`BXT`):
 
 Record the date and what passed in spec 09's Testing section.
 
+## 9. Slack sync: the Slack app
+
+A team syncs its Slack workspace with its board through Dosu's distributed Slack app. As with
+Linear, an owner asks for a link and a workspace admin installs the app from it. The team's
+directory keeps the workspace's bot token, sealed (spec 09, "Sync, later").
+
+At `api.slack.com/apps`, **Create New App → From scratch**, in Dosu's workspace, named
+`bordeaux-ai`. Then:
+
+| Page | Setting |
+| --- | --- |
+| Basic Information | the app's icon and description, linking `https://board.dosu.ai/terms` and `/privacy` |
+| OAuth & Permissions → Redirect URLs | `https://board.dosu.ai/sync/slack/callback` |
+| OAuth & Permissions → Bot Token Scopes | `channels:history`, `groups:history`, `channels:read`, `groups:read`, `chat:write`, `chat:write.customize`, `reactions:read`, `reactions:write`, `users:read`, `users:read.email`, `files:read`, `files:write` |
+| OAuth & Permissions → Token rotation | off: a bot token that never expires |
+| Event Subscriptions | on, request URL `https://board.dosu.ai/__bordeaux/slack/events` |
+| Event Subscriptions → bot events | `message.channels`, `message.groups`, `reaction_added`, `reaction_removed`, `app_uninstalled`, `tokens_revoked` |
+| Manage Distribution | **Activate Public Distribution**, so other workspaces can install it |
+
+Slack checks the request URL as you enter it: deploy the secrets below first, and the hub
+answers. The authorize URL lists the scopes itself, so a scope added here and not in
+`slackTeamSync` isn't asked for. After creating it, note its **client ID**, **client secret**,
+and **signing secret**, from Basic Information.
+
+In `packages/hosted/wrangler.jsonc`'s `vars`, add the client ID, which isn't secret:
+
+```jsonc
+"SLACK_SYNC_CLIENT_ID": "<its client ID>",
+```
+
+From `packages/hosted`, put its secrets:
+
+```bash
+npx wrangler secret put SLACK_SYNC_CLIENT_SECRET
+```
+
+```bash
+npx wrangler secret put SLACK_SYNC_SIGNING_SECRET
+```
+
+`BORDEAUX_SYNC_KEY` is set already (step 8); if not, set it as step 8 does. Deploy (step 4). None
+of the four set is off quietly, and some set logs which are missing.
+
+Outside Slack's Marketplace, a distributed app reads channel history once a minute per
+workspace, 15 messages at a time. Messages and replies arrive as events, so sync doesn't need
+it. Reactions made in Slack and on-demand reads do: over the limit, a reaction to a thread
+reply is lost, and a second read in the minute fails (spec 09). A Marketplace listing lifts the
+limit, and Slack reviews an app once 10 active workspaces have installed it.
+
+Keep **token rotation** off. With it on, the hub refuses the install and tells the admin to ask
+you to turn it off.
+
+Then check, on `dosu-ai`'s board, with a test channel in a Slack workspace:
+
+1. In Slack, invite the app to the channel: `/invite @bordeaux-ai`.
+2. As an owner of `dosu-ai`:
+
+   ```bash
+   bdx sync add slack slack-test slack-test --mirror
+   ```
+
+   It maps `#slack-test`, and prints a link to Slack, good for 10 minutes, once. `bdx sync link
+   slack` makes another.
+3. A workspace admin opens it and installs the app. The hub says the workspace syncs with
+   `https://dosu-ai.board.dosu.ai` now, and `bdx sync list` shows it linked.
+4. Post in `#slack-test`. Within a few seconds it's a thread in board channel `slack-test`.
+5. Reply to that thread on the board. The reply appears in the Slack thread, under your name.
+6. Reply in the Slack thread, and react to it. Both come back to the board thread.
+7. Uninstall the app from the workspace. `bdx sync list` says Slack isn't linked.
+
+Record the date and what passed in spec 09's Testing section.
+
 ## Terms and privacy
 
 The hub serves Dosu's terms at `/terms` and privacy policy at `/privacy`, from
