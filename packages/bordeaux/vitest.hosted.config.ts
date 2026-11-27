@@ -115,7 +115,8 @@ const installs = new Map<string, number>()
  * `xoxb-<team>-<n>`, the workspace's `n`th install (`code-<team>-rotating` for one that expires,
  * `code-grid` for a Grid org's). Every call with a token is recorded with it; every workspace has
  * channel `#support`, `C0NAMED001`, person `UADA`, and `C0LIMITED1`, whose history reads are over
- * Slack's rate limit.
+ * Slack's rate limit. The bot is in every channel but `#outside`, `C0OUTSIDE1`; `C0ARCHIVE1` is
+ * archived, and Slack has no `C0MISSING1`.
  */
 async function slackApi(request: Request): Promise<Response | null> {
   const url = new URL(request.url)
@@ -145,8 +146,12 @@ async function slackApi(request: Request): Promise<Response | null> {
   if (method === 'auth.test') return Response.json({ ok: true, user_id: 'UBOT', bot_id: 'BBOT', team_id: team, user: 'bordeaux' })
   if (method === 'chat.postMessage') return Response.json({ ok: true, channel: form.channel, ts: `${Math.floor(Date.now() / 1000)}.${String(sent.length).padStart(6, '0')}`, message: { text: form.text, user: 'UBOT', bot_id: 'BBOT' } })
   if (method === 'users.info') return Response.json({ ok: true, user: { id: form.user, name: 'ada', real_name: 'Ada', team_id: team, profile: { display_name: 'ada', real_name: 'Ada', image_72: 'https://avatars.test/ada' } } })
-  if (method === 'conversations.list') return Response.json({ ok: true, channels: [{ id: 'C0NAMED001', name: 'support', is_member: true }], response_metadata: { next_cursor: '' } })
-  if (method === 'conversations.info') return Response.json({ ok: true, channel: { id: form.channel, name: form.channel === 'C0NAMED001' ? 'support' : 'other', is_member: true } })
+  if (method === 'conversations.list') return Response.json({ ok: true, channels: [{ id: 'C0NAMED001', name: 'support', is_member: true }, { id: 'C0OUTSIDE1', name: 'outside', is_member: false }], response_metadata: { next_cursor: '' } })
+  if (method === 'conversations.info' && form.channel === 'C0MISSING1') return Response.json({ ok: false, error: 'channel_not_found' })
+  if (method === 'conversations.info') {
+    const name = ({ C0NAMED001: 'support', C0OUTSIDE1: 'outside' } as Record<string, string>)[form.channel ?? ''] ?? 'other'
+    return Response.json({ ok: true, channel: { id: form.channel, name, is_member: name !== 'outside', is_archived: form.channel === 'C0ARCHIVE1' } })
+  }
   // A channel whose history reads are over Slack's limit for an app outside its Marketplace.
   if (method === 'conversations.replies' && form.channel === 'C0LIMITED1') return Response.json({ ok: false, error: 'ratelimited' }, { status: 429, headers: { 'retry-after': '60' } })
   // A bot deletes only its own messages, and every message in these workspaces is a person's.

@@ -559,6 +559,15 @@ team, and the hub's webhook route is namespaced by platform.
   the Slack thread and posts each board root in the channel to Slack. Upstream's `channels()`
   mirrors a bare channel, so each row names its direction. The app reads only channels it's
   invited to (`/invite @bordeaux-ai`), and never joins one itself.
+- **A channel the app can't see, or isn't in, is refused.** When an owner adds a row to a team
+  linked to Slack, the hub asks Slack with the team's bot token: `conversations.info` for an ID,
+  and for `#name` the workspace's unarchived channels, public and private, matched exactly as
+  upstream's lookup does. A channel Slack has none of, or an archived one, refuses the row; so
+  does one the bot isn't in, saying to `/invite` it, by the bot's name from `auth.test`. Either
+  would sync nothing and say nothing. Any other answer takes the row, as does a row added before
+  the app is linked. `bdx health` asks the same for every Slack row, with one listing for all
+  the `#name` rows. A workspace with more than 20,000 channels isn't searched past that, and
+  its `#name` rows pass.
 - **Linking** is Slack's OAuth v2 install, with Linear's ticket and state. The hub trades the
   code at `oauth.v2.access`, which names the workspace (`team.id`) and gives its bot token. A
   workspace links to one team, and linking it again moves it, as for Linear. The hub refuses
@@ -638,7 +647,8 @@ team, and the hub's webhook route is namespaced by platform.
   the app unlinks the team; linking a workspace again moves it; an event that isn't signed, is
   too old, or is sent straight to a team is refused. Slack's URL check is answered by the hub; a
   Grid org-wide install and an expiring token link nothing; a reaction lands at once while
-  Slack rate-limits the channel's history reads. Not checked live: neither app is registered yet (steps 8 and 9).
+  Slack rate-limits the channel's history reads; a channel Slack has none of, an archived one,
+  and one the bot isn't in are refused once linked, and shown by `bdx health` when added before. Not checked live: neither app is registered yet (steps 8 and 9).
 - **Live,** on `board.dosu.ai`: sign-up, sign-in by device and by browser, and a post, for
   `dosu-ai`, a second test org, and a personal account.
 
