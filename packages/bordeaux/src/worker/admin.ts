@@ -3,12 +3,12 @@
 import { retried } from '../engine/reload.ts'
 import type { Me } from '@vercel/board'
 import { directory } from './auth.ts'
-import { BOARD_NAME, boardUrl, forget } from './boards.ts'
+import { BOARD_NAME, boardUrl, forget, syncOf } from './boards.ts'
 import { boardKey } from './backend.ts'
 import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
-import { checkSync } from './health.ts'
-import { configOf, syncRedirect, teamSyncOf, type TeamSync } from './config.ts'
+import { checkSync, checkTeamSync } from './health.ts'
+import { syncRedirect, teamSyncOf, type TeamSync } from './config.ts'
 import { REASON_MAX, type Redacted } from '../engine/redact.ts'
 import { ChannelPath } from '../upstream/contract/schemas.ts'
 import { forgetHost, type Team } from './team.ts'
@@ -64,11 +64,12 @@ export async function admin(request: Request, env: BordeauxEnv, team: Team, me: 
   }
 
   // How a board stands (spec 08, "Health"): its queues, dead letters, failures, and timers, and
-  // for the default board whether its sync reaches each platform, which signs each one in.
+  // for the default board whether its sync reaches each platform: a deployment's own, signed in,
+  // or a hosted team's, each link asked of its platform.
   if (pathname === '/admin/health' && request.method === 'GET') {
     const stub = await named()
     if (stub instanceof Response) return stub
-    const [health, sync] = await Promise.all([stub.health(), name === null ? checkSync(env) : Promise.resolve([])])
+    const [health, sync] = await Promise.all([stub.health(), name !== null ? Promise.resolve([]) : team.sync ? checkTeamSync(env, team) : checkSync(env)])
     return Response.json({ board: name?.toLowerCase() ?? null, ...health, worker: env.CF_VERSION_METADATA?.id ?? null, sync })
   }
 
@@ -110,7 +111,7 @@ export async function admin(request: Request, env: BordeauxEnv, team: Team, me: 
     const redacted = answer.value as Redacted
     // The TailDO keeps the newest events and what it read: it forgets them, as the board did.
     if (env.TAIL) await retried(() => env.TAIL!.get(env.TAIL!.idFromName(boardKey(team.id, name)))).forget().catch((thrown: unknown) => console.error('[bordeaux] redact: the TailDO did not forget:', (thrown as Error)?.message ?? thrown))
-    return Response.json({ board: name?.toLowerCase() ?? null, redacted, ...(everywhere === true ? { everywhere: await deleteOrigin(env, name, redacted) } : {}) })
+    return Response.json({ board: name?.toLowerCase() ?? null, redacted, ...(everywhere === true ? { everywhere: await deleteOrigin(env, team, name, redacted) } : {}) })
   }
   if (pathname === '/admin/redactions' && request.method === 'GET') {
     const stub = await named()
@@ -245,13 +246,14 @@ export type Everywhere = { deleted: boolean; target: string | null; error?: stri
  * deleted; it never deletes the original a platform sent, so this tries. A platform may refuse:
  * a Slack app deletes only its own messages (`cant_delete_message`), and the answer says so.
  */
-async function deleteOrigin(env: BordeauxEnv, name: string | null, redacted: Redacted): Promise<Everywhere> {
+async function deleteOrigin(env: BordeauxEnv, team: Team, name: string | null, redacted: Redacted): Promise<Everywhere> {
   const { origin, importedBy } = redacted
   if (!origin) return { deleted: false, target: null, error: 'it was written on the board, so there is no original elsewhere' }
   const thread = origin.subthread ?? origin.thread
   if (importedBy) return { deleted: false, target: thread, error: `a sync elsewhere (${importedBy}) brought it here: delete it there` }
   const key = thread.slice(0, thread.indexOf(':'))
-  const provider = name === null ? (configOf(env).sync?.[key] as { delete?: (thread: string, message: string) => Promise<void> } | null | undefined) : undefined
+  // The default board's sync: a hosted team's is built from its rows, as its board() is.
+  const provider = name === null ? (syncOf(env, team)[key] as { delete?: (thread: string, message: string) => Promise<void> } | undefined) : undefined
   if (!provider?.delete) return { deleted: false, target: thread, error: `this board has no ${key} sync that deletes` }
   try {
     await provider.delete(thread.slice(key.length + 1), origin.message)

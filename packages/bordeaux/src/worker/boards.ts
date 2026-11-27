@@ -45,6 +45,17 @@ function teamProviders(env: BordeauxEnv, team: Team): Record<string, SyncProvide
 }
 
 /**
+ * The default board's sync: a deployment's own (`configure({ sync })`), or a hosted team's,
+ * built from its rows, never both (hosted refuses `sync`). A team's is built again on each call,
+ * so a provider readied here signs in to its platform afresh.
+ */
+export function syncOf(env: BordeauxEnv, team: Team): Record<string, SyncProvider> {
+  if (team.sync) return teamProviders(env, team)
+  const own = configOf(env).sync ?? {}
+  return Object.fromEntries(Object.entries(own).filter((entry): entry is [string, SyncProvider] => entry[1] !== null))
+}
+
+/**
  * board() for the team's board named `name`, or its default board for null: one per isolate. The
  * handle keeps the team as the latest request found it, which its backend sends the board's DO.
  * A hosted team's default board is built again when its sync rows or links change.
@@ -60,16 +71,14 @@ export function boardOf(env: BordeauxEnv, team: Team, name: string | null) {
   // Upstream's verifier: GitHub Actions, any issuer a grant names, and the board's own service tokens.
   const tokens = oidcTokens({ oidc: { [team.url]: issuerKeys(env, team) } })
   const config = configOf(env)
-  // A deployment's own sync, or a hosted team's, built from its rows: never both (hosted refuses `sync`).
-  const own = config.sync && Object.fromEntries(Object.entries(config.sync).filter((entry): entry is [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
-  const sync = name === null && team.sync ? teamProviders(env, team) : own
+  const sync = name === null ? syncOf(env, team) : null
   const entry = { team, synced } as { board: ReturnType<typeof board>; team: Team; synced: string }
   entry.board = board({
     backend: durable(env, () => entry.team, name),
     ...(config.middleware ? { middleware: config.middleware } : {}),
     // A deployment's own watchers and sync are its default board's.
     ...(name === null && config.watch ? { watch: config.watch } : {}),
-    ...(name === null && sync && Object.keys(sync).length > 0 ? { sync } : {}),
+    ...(sync && Object.keys(sync).length > 0 ? { sync } : {}),
     url: boardUrl(team, name),
     ...(name !== null ? { basePath: `/b/${key}` } : {}),
     // The verifier chain (spec 03): the board's own tokens, then upstream's.

@@ -461,8 +461,16 @@ team, and the hub's webhook route is namespaced by platform.
   through the hub, which picked the team by installation.
 - **Tokens.** The provider is Chat SDK's GitHub adapter with the sync App's ID and key and the
   team's installation ID, so the Worker mints each team's installation tokens and keeps none.
-- **Not yet:** `bdx health`'s sync check and `bdx redact --everywhere` read `configure()`'s
-  sync, not a team's rows; `bdx sync add` doesn't check that the App can see the repo.
+- **Health and redaction.** A hosted team's `bdx health` asks each platform it has rows for
+  whether the team's link still answers, with one call: the App's installation from GitHub,
+  `viewer` from Linear, `auth.test` from Slack. It can't ready the provider instead, as a
+  self-hosted board's check does: upstream's adapters log a refused first sign-in and go on, so a
+  revoked token would pass. A platform with rows and no link says so. A refused token or a
+  missing App says to link again; an outage or a rate limit only says the platform didn't
+  answer, since linking again wouldn't help. Each fits `bdx health`'s 80 columns.
+  `bdx redact --everywhere`
+  deletes the original through the team's provider, built from its rows as its board's is.
+- **Not yet:** `bdx sync add` doesn't check that the App can see the repo.
 
 **As built (Linear):**
 
