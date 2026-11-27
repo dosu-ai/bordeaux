@@ -9,8 +9,7 @@ Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Built so far: hosted 
 registry, personal teams' sign-in, signing up, the hub's sign-in callback, the limits,
 operating teams, the hosted Worker (`packages/hosted`, set up by
 [docs/hosted.md](../docs/hosted.md)), and GitHub sync as data (see [Sync, later](#sync-later)).
-Live since 2026-11-26 (see [Testing](#testing)). Not yet: the sync App, the Linear app, and the
-Slack app registered.
+Live since 2026-11-26, and its sync since 2026-11-27 (see [Testing](#testing)).
 
 ## Decisions
 
@@ -566,8 +565,9 @@ team, and the hub's webhook route is namespaced by platform.
   does one the bot isn't in, saying to `/invite` it, by the bot's name from `auth.test`. Either
   would sync nothing and say nothing. Any other answer takes the row, as does a row added before
   the app is linked. `bdx health` asks the same for every Slack row, with one listing for all
-  the `#name` rows. A workspace with more than 20,000 channels isn't searched past that, and
-  its `#name` rows pass.
+  the `#name` rows, and names each row as `bdx sync list` does. A `#name` is looked for in at
+  most 10,000 channels, since Slack allows about 20 listings a minute and the board's own lookups
+  need some, and for at most 6 seconds, within health's 10. One not found by then passes.
 - **Linking** is Slack's OAuth v2 install, with Linear's ticket and state. The hub trades the
   code at `oauth.v2.access`, which names the workspace (`team.id`) and gives its bot token. A
   workspace links to one team, and linking it again moves it, as for Linear. The hub refuses
@@ -638,8 +638,8 @@ team, and the hub's webhook route is namespaced by platform.
   the next event, and a link or an unlink for the owner's next `bdx sync add`, `link`, and `list`,
   and `bdx health`; an event for a team with no rows answers 200. Which of two views of a team's
   sync a board's DO keeps is tested on its own, not through the DO: in one test isolate the board
-  takes an event before a stale view could reach it. Not checked live: the sync App isn't
-  registered yet ([docs/hosted.md](../docs/hosted.md), step 7).
+  takes an event before a stale view could reach it. Checked live on 2026-11-27 (see
+  "Live sync," below).
 - **Hosted Linear and Slack sync, in vitest:** each linked by its OAuth flow against a fake of
   the platform's API in `vitest.hosted.config.ts`, with two teams in one Worker. A link's ticket
   works once; a workspace's events land only on its own team's board, by that team's rows; a
@@ -648,7 +648,7 @@ team, and the hub's webhook route is namespaced by platform.
   too old, or is sent straight to a team is refused. Slack's URL check is answered by the hub; a
   Grid org-wide install and an expiring token link nothing; a reaction lands at once while
   Slack rate-limits the channel's history reads; a channel Slack has none of, an archived one,
-  and one the bot isn't in are refused once linked, and shown by `bdx health` when added before. Not checked live: neither app is registered yet (steps 8 and 9).
+  and one the bot isn't in are refused once linked, and shown by `bdx health` when added before.
 - **Live,** on `board.dosu.ai`: sign-up, sign-in by device and by browser, and a post, for
   `dosu-ai`, a second test org, and a personal account.
 
@@ -667,6 +667,19 @@ team, and the hub's webhook route is namespaced by platform.
   Not checked live: a second org, and a personal board refusing someone else (only one GitHub
   user took part; vitest covers it). Nor were renames, suspending, uninstalling, the limits, or
   the daily cron.
+
+  **Live sync, 2026-11-27,** against Worker version `71b11afd` (`main` at `ef76f19`), with the
+  sync App, the Linear app, and the Slack app registered by [docs/hosted.md](../docs/hosted.md)
+  steps 7 to 9, on `dosu-ai`'s board:
+  - GitHub (7.3 to 7.5): an issue became a thread, a board reply landed on the issue from the
+    sync App under the author's name, and a reply on the issue came back.
+  - Linear (8.3 to 8.5): the same round trip, with an issue and its comments.
+  - Slack (9.4 to 9.7): the same round trip in a test channel, a reaction came back, and
+    uninstalling the app left Slack not linked.
+
+  Not checked live: Linear's refresh a day later (8.6), and refusing a Slack channel the app
+  can't see or isn't in. The live run found the need for it: a post in a channel the bot wasn't
+  in synced nothing, and said nothing.
 
 ## Open
 
