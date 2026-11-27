@@ -44,7 +44,7 @@ export async function checkTeamSync(env: BordeauxEnv, team: Team): Promise<SyncH
     given.map(async ([key, sync]) => {
       const link = team.sync?.links[key]
       if (link === undefined) return { key, platform: key, ok: false, error: `not linked: bdx sync link ${key}` }
-      return within(key, key, sync.check(link, () => directory(env, team).syncToken(key, link)))
+      return within(key, key, sync.check(link, () => directory(env, team).syncToken(key, link), rows.filter((row) => row.provider === key)))
     }),
   )
 }

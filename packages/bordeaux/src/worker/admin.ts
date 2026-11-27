@@ -211,6 +211,10 @@ async function sync(request: Request, env: BordeauxEnv, team: Team, who: Me): Pr
     if (typeof body.external !== 'string' || body.external.length === 0) return error(400, 'invalid_request', `external: what to sync on ${provider}`)
     const refused = built.refuse(body.external, team.org)
     if (refused) return error(400, 'invalid_request', refused)
+    // A linked team's link is asked whether it can see the row's repo; an unlinked one can't be yet.
+    const link = team.sync?.links[provider]
+    const unseen = link !== undefined && built.unseen ? await built.unseen(body.external, link).catch(() => null) : null
+    if (unseen) return error(400, 'invalid_request', unseen)
     // A board channel as upstream names one, or every import into it would fail.
     if (typeof body.channel !== 'string' || !ChannelPath.safeParse(body.channel).success) return error(400, 'invalid_request', 'channel: a board channel, lowercase letters, numbers, _ and -, in segments joined by /')
     const direction = body.direction ?? 'into'
