@@ -15,6 +15,15 @@ describe("the hub's terms and privacy policy", () => {
     }
   })
 
+  it('covers what sync copies from GitHub, Linear, and Slack, and the tokens it keeps', async () => {
+    const terms = await legal(new Request(`${HUB}/terms`), HUB)!.text()
+    expect(terms).toContain('<h2>4. Syncing GitHub, Linear, and Slack</h2>')
+    const privacy = await legal(new Request(`${HUB}/privacy`), HUB)!.text()
+    expect(privacy).toContain('<strong>From GitHub, Linear, and Slack, when an owner turns on sync:</strong>')
+    expect(privacy).toContain('the tokens it grants, stored encrypted')
+    expect(privacy).toContain("A Linear or Slack workspace's tokens, until it's unlinked")
+  })
+
   it('leaves a team’s host, other paths, and writes to the board', () => {
     expect(legal(new Request('https://acme.board.dosu.ai/terms'), HUB)).toBeNull()
     expect(legal(new Request(`${HUB}/setup`), HUB)).toBeNull()
