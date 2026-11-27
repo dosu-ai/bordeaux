@@ -9,8 +9,8 @@ Decided 2026-11-26 ([QUESTIONS Q14](../QUESTIONS.md#q14)). Built so far: hosted 
 registry, personal teams' sign-in, signing up, the hub's sign-in callback, the limits,
 operating teams, the hosted Worker (`packages/hosted`, set up by
 [docs/hosted.md](../docs/hosted.md)), and GitHub sync as data (see [Sync, later](#sync-later)).
-Live since 2026-11-26 (see [Testing](#testing)). Not yet: the sync App registered, and Slack
-and Linear sync.
+Live since 2026-11-26 (see [Testing](#testing)). Not yet: the sync App and the Linear app
+registered, and Slack sync.
 
 ## Decisions
 
@@ -23,7 +23,7 @@ and Linear sync.
 | How do hostnames reach the Worker? | **dosu.ai moves to Dosu's Cloudflare account**, and two Worker routes and one wildcard certificate serve every team. Cloudflare for SaaS was the alternative, with dosu.ai's DNS left at GoDaddy and a custom hostname per team. It stays the way to a team's own domain later. |
 | Who can sign up? | **Any GitHub org or user**, by installing Dosu's GitHub App, `bordeaux-ai`. Free for now, with per-team limits. Paid plans come later. |
 | What can a hosted team configure? | **No code.** A hosted team gets the protocol, the inspector, `bdx` and `vb`, named boards, registered watchers woken by URL, and sync as data. Config watchers, middleware, and custom sync functions are a deployment's code, so they stay self-hosted. |
-| Sync? | **Later, as data.** GitHub first, then Slack and Linear (see [Sync, later](#sync-later)). |
+| Sync? | **Later, as data.** GitHub and Linear first, then Slack (see [Sync, later](#sync-later)). |
 | Dosu's own board | `dosu-ai` signs up like any org, as the first team, at `https://dosu-ai.board.dosu.ai`. Nothing moves from the workers.dev board. |
 
 ## Hostnames
@@ -253,7 +253,7 @@ The flows are spec 03's. What changes is which account and App they check.
 | Registered watchers, woken by URL | yes | The team's app runs anywhere and pulls its matches ([04](04-watchers.md)). |
 | Wake by service binding | no | Only a caller verified through a service binding may register one ([04](04-watchers.md#wake-ups-without-vercel-δ)), and a binding names one of Dosu's own Workers. |
 | Config watchers, middleware | no | A deployment's code in `configure()`. The hosted Worker's `configure()` is Dosu's: its middleware runs on every team's boards, and it sets no `watch` or `sync`. |
-| Sync | GitHub, as rows (`bdx sync add`); Slack and Linear later | [Sync, later](#sync-later) |
+| Sync | GitHub and Linear, as rows (`bdx sync add`); Slack later | [Sync, later](#sync-later) |
 
 ## Limits
 
@@ -464,12 +464,54 @@ team, and the hub's webhook route is namespaced by platform.
 - **Not yet:** `bdx health`'s sync check and `bdx redact --everywhere` read `configure()`'s
   sync, not a team's rows; `bdx sync add` doesn't check that the App can see the repo.
 
-**Slack and Linear, later,** need what GitHub doesn't: an OAuth install flow on the hub
-(`<hub>/slack/oauth/callback`) that seals each team's bot token with AES-GCM under a Worker
-secret into its DirectoryDO, a registry index by Slack `team_id` or Linear organization ID,
-`teamSync.slack` and `teamSync.linear` builders that unseal the token, and the hub's
-`/__bordeaux/slack/events` answering Slack's `url_verification` itself. Slack's history limits
-for commercially distributed apps outside its Marketplace come first (see above).
+**As built (Linear):**
+
+- **The app.** Dosu's Linear OAuth app, `bordeaux-ai`, with `LINEAR_SYNC_CLIENT_ID` (a var),
+  and the secrets `LINEAR_SYNC_CLIENT_SECRET` and `LINEAR_SYNC_WEBHOOK_SECRET`. Its redirect URI
+  is `<hub>/sync/linear/callback` and its webhook URL `<hub>/__bordeaux/linear/events`, for
+  **Issues**, **Comments**, and **OAuth app revoked**. `BORDEAUX_SYNC_KEY`, 32 random bytes in
+  base64, seals each team's tokens. `configure()` names it beside GitHub:
+  `teamSync: { github: githubTeamSync(env), linear: linearTeamSync(env) }`. As with GitHub, none
+  of its settings set is off quietly, and some set is logged.
+- **The rows.** A Linear row's `external` is a Linear team's key as Linear writes it (`ENG`, the
+  prefix of `ENG-123`). `bdx sync add linear ENG eng [--mirror]` maps it: `into` by default, or
+  `mirror` to send board replies back as comments and open an issue for each board root in the
+  channel. Upstream's `teams()` mirrors a bare channel, so each row names its direction.
+- **Linking is an OAuth install, by an owner.** Nothing ties a Linear workspace to a GitHub
+  account, so the team can't be found from the install the way GitHub's is. An owner asks for a
+  link (`bdx sync link linear`, or `bdx sync add` while there's none) and gets Linear's authorize
+  URL, with `actor=app` and a state of `<team id>.<ticket>`. The ticket is 32 random bytes the
+  team's DirectoryDO keeps for 10 minutes and takes once. Linear sends the workspace admin who
+  approves it to the hub's callback, which takes the ticket, trades the code for tokens, asks
+  Linear for the token's organization, and links that organization to the team. A workspace
+  links to one team: linking it again moves it, and the team it left loses its tokens.
+- **Tokens.** Linear's access tokens last 24 hours, and each refresh gives a new refresh token.
+  The team's DirectoryDO keeps them sealed with AES-GCM under `BORDEAUX_SYNC_KEY` and is the
+  one place that refreshes them, within 5 minutes of expiry, one refresh at a time. A refresh
+  writes over only the tokens it refreshed, so a link made meanwhile keeps its own. The board
+  asks it for an access token through Chat SDK's Linear adapter, which takes a function for its
+  token, and keeps the answer until 6 minutes before it expires, a minute before any refresh
+  could replace it. The DirectoryDO gives a token only for the workspace the registry links the
+  team to: two links approved at once can leave one workspace's tokens under the other's link,
+  and then the board gets none until an owner links again. Nothing else stores a token.
+- **Webhooks.** Linear sends every workspace's events to the one URL, signed with the app's
+  secret (`Linear-Signature`, HMAC-SHA256), with `organizationId`. The hub takes one sent within
+  60 seconds, by `Linear-Timestamp` or else the body's `webhookTimestamp`, and one with neither,
+  as an app's removal may be, on its signature alone, as Linear's SDK does. The organization finds the team, read fresh as for GitHub, and
+  the hub hands the event as Linear sent it to the team's default board at `/webhooks/linear`,
+  where the adapter checks it again. `OAuthApp` `revoked` unlinks the team and drops its tokens.
+  Events for no team, or for a team with no Linear rows, get 200, as GitHub's do.
+- **Not yet:** a ticket proves an owner asked for the link, not who approves it in Linear. A
+  workspace admin sent an owner's link links their workspace to that team. Linear's consent
+  page names the app and the workspace, and only an admin can approve it. A refresh token
+  Linear refuses (revoked, or unused for 30 days) leaves the link in place: the access token is
+  used while it lasts, Linear is asked again every 5 minutes, and calls fail with the refusal
+  until an owner links again. Refreshing one at a time and writing over only the refreshed
+  tokens have no test: no route can make two calls meet inside one refresh.
+
+**Slack, later,** needs the same OAuth link and sealed tokens, a `teamSync.slack` builder, and
+the hub's `/__bordeaux/slack/events` answering Slack's `url_verification` itself. Slack's
+history limits for commercially distributed apps outside its Marketplace come first (see above).
 
 ## Testing
 
