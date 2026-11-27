@@ -28,8 +28,8 @@ export type TeamRecord = {
   limits?: Partial<Limits>
   /** What the daily cron last found it uses. */
   usage?: Usage
-  /** Its links to platforms it syncs with, by provider: the sync App's installation on its account, for `github` (spec 09). */
-  sync?: Record<string, number>
+  /** Its links to platforms it syncs with, by provider: the sync App's installation on its account, for `github`, and the organization, for `linear` (spec 09). */
+  sync?: Record<string, number | string>
   /** When its links last changed, so a board told of older links keeps the newer ones. */
   sync_at?: number
 }
@@ -177,15 +177,32 @@ export class RegistryDO extends DurableObject<BordeauxEnv> {
    */
   async link(provider: string, external: number, account: number): Promise<TeamRecord | null> {
     const found = this.one('account', account)
-    if (!found || found.state === 'deleting') return null
+    return found ? ((await this.linkFound(found, provider, external))?.team ?? null) : null
+  }
+
+  /**
+   * Links team `id` to a platform's `external` ID (a Linear organization), in place of any link it
+   * had for `provider`. A workspace links to one team: `displaced` is the team it was linked to
+   * before, which loses the link. Null when there's no such team, or it's being deleted.
+   */
+  async linkTeam(provider: string, external: string, id: string): Promise<{ team: TeamRecord; displaced: TeamRecord | null } | null> {
+    const found = this.one('id', id)
+    return found ? this.linkFound(found, provider, external) : null
+  }
+
+  private async linkFound(found: TeamRecord, provider: string, external: number | string): Promise<{ team: TeamRecord; displaced: TeamRecord | null } | null> {
+    if (found.state === 'deleting') return null
     const before = found.sync?.[provider]
     if (before !== undefined) this.ctx.storage.sql.exec('delete from bx_sync_links where provider = ? and external = ?', provider, String(before))
+    const [other] = this.ctx.storage.sql.exec<{ id: string }>('select id from bx_sync_links where provider = ? and external = ? and id != ?', provider, String(external), found.id).toArray()
+    const displaced = other ? await this.unlink(provider, external) : null
     this.ctx.storage.sql.exec('insert or replace into bx_sync_links (provider, external, id) values (?, ?, ?)', provider, String(external), found.id)
-    return this.save({ ...found, sync: { ...found.sync, [provider]: external }, sync_at: Math.max(Date.now(), (found.sync_at ?? 0) + 1) })
+    const team = await this.save({ ...found, sync: { ...found.sync, [provider]: external }, sync_at: Math.max(Date.now(), (found.sync_at ?? 0) + 1) })
+    return { team, displaced }
   }
 
   /** Forgets a platform's `external` ID: the team it was linked to, or null for none. */
-  async unlink(provider: string, external: number): Promise<TeamRecord | null> {
+  async unlink(provider: string, external: number | string): Promise<TeamRecord | null> {
     const [row] = this.ctx.storage.sql.exec<{ id: string }>('delete from bx_sync_links where provider = ? and external = ? returning id', provider, String(external)).toArray()
     const found = row ? this.one('id', row.id) : null
     if (!found || found.sync?.[provider] !== external) return found

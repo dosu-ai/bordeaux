@@ -13,8 +13,9 @@ import { github, repos } from '@vercel/board/sync-github'
 import { linear } from '@vercel/board/sync-linear'
 import { slack } from '@vercel/board/sync-slack'
 import { ConsoleLogger } from 'chat'
-import { mirror } from '@vercel/board/sync'
-import type { TeamSync } from '../worker/config.ts'
+import { into, mirror } from '@vercel/board/sync'
+import { teams } from '@vercel/board/sync-linear'
+import { SYNC_REFRESH_BEFORE_MS, type SyncAccess, type SyncTokens, type TeamSync } from '../worker/config.ts'
 import type { BordeauxEnv } from '../worker/env.ts'
 import { toPkcs8 } from '../worker/github-app.ts'
 
@@ -162,4 +163,109 @@ export function linearSync(env: Env, sync: Parameters<typeof linear>[1], options
   const base = { webhookSecret: webhookSecret!, ...(options.userName ? { userName: options.userName } : {}) }
   const adapter = env.LINEAR_API_KEY ? createLinearAdapter({ ...base, apiKey: first! }) : createLinearAdapter({ ...base, clientCredentials: { clientId: first!, clientSecret: second! } })
   return linear({ adapter }, sync)
+}
+
+/** A Linear team's key, as Linear writes it: `ENG`, the prefix of `ENG-123`. */
+const TEAM_KEY = /^[A-Z0-9_]{1,16}$/
+/** What the Linear app asks a workspace for: to read it, and to write issues and comments as itself. */
+const LINEAR_SCOPES = 'read,write,issues:create,comments:create'
+/** How old a Linear webhook may be, by its timestamp: Linear's own advice, and its SDK's check. */
+const LINEAR_WEBHOOK_AGE_MS = 60_000
+
+/**
+ * A Linear webhook's payload, if `Linear-Signature` is the app's HMAC of its body and it's under a
+ * minute old. Its time is `Linear-Timestamp`, or else the body's `webhookTimestamp`; one with
+ * neither, as an app's removal may be, is taken on its signature, as Linear's SDK takes it.
+ */
+async function linearSigned(secret: string, headers: Headers, body: string): Promise<{ type?: string; action?: string; organizationId?: string } | null> {
+  const given = /^[0-9a-f]{64}$/i.exec(headers.get('linear-signature') ?? '')?.[0]
+  if (!given) return null
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body)))
+  const expected = Uint8Array.from(given.match(/../g)!, (pair) => parseInt(pair, 16))
+  if (!crypto.subtle.timingSafeEqual(mac, expected)) return null
+  let payload: { type?: string; action?: string; organizationId?: string; webhookTimestamp?: number }
+  try {
+    payload = JSON.parse(body)
+  } catch {
+    return null
+  }
+  const sent = headers.get('linear-timestamp') ?? payload.webhookTimestamp
+  if (sent !== undefined && sent !== null) {
+    const at = typeof sent === 'number' ? sent : Number.parseInt(String(sent), 10)
+    if (Number.isNaN(at) || Math.abs(Date.now() - at) > LINEAR_WEBHOOK_AGE_MS) return null
+  }
+  return payload
+}
+
+/** Linear's token endpoint, for a code or a refresh token: the tokens, or what Linear said was wrong. */
+async function linearTokens(form: Record<string, string>, kept: string | null = null): Promise<SyncTokens> {
+  const response = await fetch('https://api.linear.app/oauth/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: new URLSearchParams(form) })
+  const answer = (await response.json().catch(() => ({}))) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string; error_description?: string }
+  if (!response.ok || !answer.access_token) throw new Error(`Linear refused the ${form.grant_type}: ${answer.error_description ?? answer.error ?? response.status}`)
+  return { access: answer.access_token, refresh: answer.refresh_token ?? kept, expires_at: typeof answer.expires_in === 'number' ? Date.now() + answer.expires_in * 1000 : null }
+}
+
+/**
+ * Hosted: Linear sync for each team, as data (spec 09, "Sync, later"), through Dosu's Linear
+ * OAuth app: `LINEAR_SYNC_CLIENT_ID`, `LINEAR_SYNC_CLIENT_SECRET`, `LINEAR_SYNC_WEBHOOK_SECRET`,
+ * and `BORDEAUX_SYNC_KEY`, which seals each team's tokens. A team's rows map its Linear teams'
+ * keys to board channels; an owner links its workspace by OAuth, and the team's directory keeps
+ * and refreshes the tokens. Null when a setting isn't set.
+ *
+ *   configure((env) => ({ teamSync: { github: githubTeamSync(env), linear: linearTeamSync(env) } }))
+ */
+export function linearTeamSync(env: Env): TeamSync | null {
+  const names = ['LINEAR_SYNC_CLIENT_ID', 'LINEAR_SYNC_CLIENT_SECRET', 'LINEAR_SYNC_WEBHOOK_SECRET', 'BORDEAUX_SYNC_KEY'] as const
+  // None set is a hosted deployment whose Linear app isn't registered yet: off, and quietly.
+  if (names.every((name) => !env[name])) return null
+  const secrets = need(env, 'Hosted Linear', ...names)
+  if (!secrets) return null
+  const [clientId, clientSecret, webhookSecret] = secrets as [string, string, string, string]
+  return {
+    refuse(external) {
+      return TEAM_KEY.test(external) ? null : `external: a Linear team's key, as Linear writes it (ENG, the prefix of ENG-123), got ${external}`
+    },
+    oauth: {
+      authorize(state, redirect) {
+        const query = new URLSearchParams({ client_id: clientId, redirect_uri: redirect, response_type: 'code', scope: LINEAR_SCOPES, state, actor: 'app' })
+        return `https://linear.app/oauth/authorize?${query}`
+      },
+      async exchange(code, redirect) {
+        const tokens = await linearTokens({ grant_type: 'authorization_code', code, redirect_uri: redirect, client_id: clientId, client_secret: clientSecret })
+        const response = await fetch('https://api.linear.app/graphql', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${tokens.access}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'query BordeauxOrganization { organization { id name } }' }),
+        })
+        const { data } = (await response.json().catch(() => ({}))) as { data?: { organization?: { id?: string; name?: string } } }
+        const external = data?.organization?.id
+        if (!response.ok || !external) throw new Error(`Linear didn't say which workspace the token is for (${response.status})`)
+        return { external, name: data.organization?.name ?? external, tokens }
+      },
+      refresh(tokens) {
+        if (!tokens.refresh) throw new Error('Linear gave no refresh token: an owner links the workspace again')
+        return linearTokens({ grant_type: 'refresh_token', refresh_token: tokens.refresh, client_id: clientId, client_secret: clientSecret }, tokens.refresh)
+      },
+      async event(request, body) {
+        const payload = await linearSigned(webhookSecret, request.headers, body)
+        if (!payload) return null
+        return { external: payload.organizationId ?? null, removed: payload.type === 'OAuthApp' && payload.action === 'revoked' }
+      },
+    },
+    build(rows, link, token) {
+      if (!link) return null
+      // The team's token, kept until a minute before its directory would refresh it, so the board
+      // never holds one a refresh elsewhere replaced: each fresh one is a call to its directory.
+      let kept: SyncAccess | null = null
+      const accessToken = async () => {
+        if (!kept || (kept.expires_at !== null && kept.expires_at - Date.now() < SYNC_REFRESH_BEFORE_MS + 60_000)) kept = await token()
+        return kept.token
+      }
+      // Upstream's teams() mirrors a bare channel, so each row says which way it goes.
+      const routing = teams(Object.fromEntries(rows.map((row) => [row.external, row.direction === 'mirror' ? mirror(row.channel) : into(row.channel)])))
+      const adapter = createLinearAdapter({ accessToken, webhookVerifier: async (request, body) => (await linearSigned(webhookSecret, request.headers, body)) !== null, mode: 'comments' })
+      return linear({ adapter }, routing)
+    },
+  }
 }

@@ -8,7 +8,7 @@ import { boardKey } from './backend.ts'
 import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
 import { checkSync } from './health.ts'
-import { configOf, teamSyncOf } from './config.ts'
+import { configOf, syncRedirect, teamSyncOf, type TeamSync } from './config.ts'
 import { REASON_MAX, type Redacted } from '../engine/redact.ts'
 import { ChannelPath } from '../upstream/contract/schemas.ts'
 import { forgetHost, type Team } from './team.ts'
@@ -52,7 +52,7 @@ export async function admin(request: Request, env: BordeauxEnv, team: Team, me: 
     return Response.json({ deleted })
   }
 
-  if (pathname === '/admin/sync') return sync(request, env, team, who)
+  if (pathname === '/admin/sync' || pathname === '/admin/sync/link') return sync(request, env, team, who)
 
   if (!manages(who)) return error(403, 'forbidden', "this token can't manage tokens: it needs manage at *")
 
@@ -171,24 +171,42 @@ export async function admin(request: Request, env: BordeauxEnv, team: Team, me: 
 
 /**
  * A hosted team's sync, as rows (spec 09, "Sync, later"): `GET` lists them, `POST` maps a
- * platform's repo to a board channel, `DELETE ?provider=&external=` stops it. Anyone the
- * default board lets in reads them; only the team's owners, as their last sign-in found them,
- * change them: no service token, whatever it manages.
+ * platform's repo or team to a board channel, `DELETE ?provider=&external=` stops it, and
+ * `POST /admin/sync/link` is where an owner links the team to a platform. Anyone the default
+ * board lets in reads them; only the team's owners, as their last sign-in found them, change
+ * them: no service token, whatever it manages.
  */
 async function sync(request: Request, env: BordeauxEnv, team: Team, who: Me): Promise<Response> {
   if (!env.BORDEAUX_HOSTED_URL) return error(404, 'not_found', "a self-hosted board's sync is its code: configure({ sync }) (docs/sync.md)")
+  const { pathname } = new URL(request.url)
   const dir = directory(env, team)
   const providers = teamSyncOf(env)
-  const status = () => Object.entries(providers).map(([provider, built]) => ({ provider, linked: team.sync?.links[provider] !== undefined, install: built.install }))
-  if (request.method === 'GET') return Response.json({ sync: await dir.syncRows(), providers: status() })
+  const linked = (provider: string) => team.sync?.links[provider] !== undefined
+  // A platform linked by OAuth gets an install URL for owners only, each with a ticket of its own.
+  const status = () => Object.entries(providers).map(([provider, built]) => ({ provider, linked: linked(provider), ...(built.install ? { install: built.install } : {}) }))
+  if (pathname === '/admin/sync' && request.method === 'GET') return Response.json({ sync: await dir.syncRows(), providers: status() })
   if (!(await dir.isOwner(who.principal))) return error(403, 'forbidden', "only the team's owners change its sync")
+  /** Where an owner links the team to `provider`: the sync App's install page, or the platform's OAuth page with a ticket. */
+  const install = async (provider: string, built: TeamSync) => {
+    if (!built.oauth) return built.install ?? null
+    const ticket = await dir.syncTicket(provider, who.principal)
+    return built.oauth.authorize(`${team.id}.${ticket}`, syncRedirect(env, provider))
+  }
+  const unknown = () => error(400, 'invalid_request', Object.keys(providers).length > 0 ? `provider: one of ${Object.keys(providers).join(', ')}` : 'this deployment syncs nothing yet')
+  if (pathname === '/admin/sync/link' && request.method === 'POST') {
+    const body = (await request.json().catch(() => ({}))) as { provider?: unknown }
+    const provider = typeof body.provider === 'string' ? body.provider : ''
+    const built = providers[provider]
+    if (!built) return unknown()
+    return Response.json({ linked: linked(provider), install: await install(provider, built) })
+  }
   // What's kept of the team in this isolate goes, so its board() is built from the new rows.
   const changed = () => forgetHost(new URL(team.url).host)
-  if (request.method === 'POST') {
+  if (pathname === '/admin/sync' && request.method === 'POST') {
     const body = (await request.json().catch(() => ({}))) as { provider?: unknown; external?: unknown; channel?: unknown; direction?: unknown }
     const provider = typeof body.provider === 'string' ? body.provider : ''
     const built = providers[provider]
-    if (!built) return error(400, 'invalid_request', Object.keys(providers).length > 0 ? `provider: one of ${Object.keys(providers).join(', ')}` : 'this deployment syncs nothing yet')
+    if (!built) return unknown()
     if (typeof body.external !== 'string' || body.external.length === 0) return error(400, 'invalid_request', `external: what to sync on ${provider}`)
     const refused = built.refuse(body.external, team.org)
     if (refused) return error(400, 'invalid_request', refused)
@@ -198,16 +216,15 @@ async function sync(request: Request, env: BordeauxEnv, team: Team, who: Me): Pr
     if (direction !== 'into' && direction !== 'mirror') return error(400, 'invalid_request', 'direction: into or mirror')
     const created = await dir.addSync({ provider, external: body.external, channel: body.channel, direction, by: who.principal })
     changed()
-    const linked = team.sync?.links[provider] !== undefined
-    return Response.json({ created, linked, ...(linked ? {} : { install: built.install }) }, { status: created ? 201 : 200 })
+    return Response.json({ created, linked: linked(provider), ...(linked(provider) ? {} : { install: await install(provider, built) }) }, { status: created ? 201 : 200 })
   }
-  if (request.method === 'DELETE') {
+  if (pathname === '/admin/sync' && request.method === 'DELETE') {
     const query = new URL(request.url).searchParams
     const removed = await dir.removeSync(query.get('provider') ?? '', query.get('external') ?? '')
     changed()
     return Response.json({ removed })
   }
-  return error(404, 'not_found', `no route ${request.method} /admin/sync`)
+  return error(404, 'not_found', `no route ${request.method} ${pathname}`)
 }
 
 /** What `GET /admin/doctor` answers. */

@@ -2,9 +2,16 @@
 // tokens revoked before they ran out (spec 03, "The bordeaux issuer").
 import { DurableObject } from 'cloudflare:workers'
 import { exportJWK, generateKeyPair, importJWK, SignJWT, type JWK, type JWTPayload } from 'jose'
+import { SYNC_REFRESH_BEFORE_MS, teamSyncOf, type SyncAccess, type SyncTokens } from './config.ts'
 import type { BordeauxEnv } from './env.ts'
+import { seal, unseal } from './seal.ts'
 
 const ALG = 'ES256'
+
+/** How long an owner's link to a platform waits for an admin to approve it. */
+const TICKET_TTL_MS = 10 * 60_000
+/** How long after a platform refuses a refresh it's asked again: a dead refresh token isn't sent on every call. */
+const REFRESH_RETRY_MS = 5 * 60_000
 
 /** Why a destroyed Durable Object resets itself: its caller expects this one. */
 export const DESTROYED = 'bordeaux: destroyed'
@@ -23,6 +30,10 @@ const digest = async (text: string) => hex(await crypto.subtle.digest('SHA-256',
 
 export class DirectoryDO extends DurableObject<BordeauxEnv> {
   private signing: Promise<{ key: CryptoKey; kid: string }> | null = null
+  /** A platform's refresh under way: each refresh token works once, so there's one at a time. */
+  private refreshing = new Map<string, Promise<SyncAccess>>()
+  /** A platform's last refused refresh, for the tokens it refused, and until when it isn't asked again. */
+  private refused = new Map<string, { sealed: string; until: number; message: string }>()
 
   constructor(ctx: DurableObjectState, env: BordeauxEnv) {
     super(ctx, env)
@@ -38,6 +49,9 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     ctx.storage.sql.exec('create table if not exists bx_sync (provider text not null, external text not null, channel text not null, direction text not null, by text not null, created_at integer not null, primary key (provider, external))')
     // When the rows last changed, so a board told of older rows keeps the newer ones (spec 09).
     ctx.storage.sql.exec('create table if not exists bx_sync_version (id integer primary key, version integer not null)')
+    // An owner's links to a platform, waiting for its admin to approve them, and the team's tokens there, sealed.
+    ctx.storage.sql.exec('create table if not exists bx_sync_tickets (ticket text primary key, provider text not null, by text not null, expires_at integer not null)')
+    ctx.storage.sql.exec('create table if not exists bx_sync_tokens (provider text primary key, external text not null, sealed text not null)')
   }
 
   /** Marks the rows changed: a version later than any before it. */
@@ -187,6 +201,85 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     const gone = this.ctx.storage.sql.exec('delete from bx_sync where provider = ? and external = ? returning 1 as gone', provider, external).toArray().length > 0
     if (gone) this.syncChanged()
     return gone
+  }
+
+  /** A ticket for an owner's link to a platform: it's good for 10 minutes, once. */
+  async syncTicket(provider: string, by: string): Promise<string> {
+    this.ctx.storage.sql.exec('delete from bx_sync_tickets where expires_at <= ?', Date.now())
+    const ticket = hex(crypto.getRandomValues(new Uint8Array(32)).buffer as ArrayBuffer)
+    this.ctx.storage.sql.exec('insert into bx_sync_tickets (ticket, provider, by, expires_at) values (?, ?, ?, ?)', ticket, provider, by, Date.now() + TICKET_TTL_MS)
+    return ticket
+  }
+
+  /** Takes a ticket: the owner it was made for, or null for one that's unknown, used, or too old. */
+  async takeSyncTicket(provider: string, ticket: string): Promise<string | null> {
+    const [row] = this.ctx.storage.sql.exec<{ by: string; expires_at: number }>('delete from bx_sync_tickets where ticket = ? and provider = ? returning by, expires_at', ticket, provider).toArray()
+    return row && Number(row.expires_at) > Date.now() ? row.by : null
+  }
+
+  private syncKey(): string {
+    if (!this.env.BORDEAUX_SYNC_KEY) throw new Error('BORDEAUX_SYNC_KEY is not set: the team\'s platform tokens are sealed with it')
+    return this.env.BORDEAUX_SYNC_KEY
+  }
+
+  /** Keeps the team's tokens on a platform, for its workspace `external`, in place of any before. */
+  async putSyncTokens(provider: string, external: string, tokens: SyncTokens): Promise<void> {
+    const sealed = await seal(this.syncKey(), JSON.stringify(tokens), `${provider}:${external}`)
+    this.ctx.storage.sql.exec('insert or replace into bx_sync_tokens (provider, external, sealed) values (?, ?, ?)', provider, external, sealed)
+  }
+
+  /** Drops the team's tokens on a platform, only for workspace `external` when it's named: true when there were some. */
+  async dropSyncTokens(provider: string, external?: string): Promise<boolean> {
+    const dropped = external === undefined
+      ? this.ctx.storage.sql.exec('delete from bx_sync_tokens where provider = ? returning 1 as gone', provider)
+      : this.ctx.storage.sql.exec('delete from bx_sync_tokens where provider = ? and external = ? returning 1 as gone', provider, external)
+    return dropped.toArray().length > 0
+  }
+
+  /**
+   * The team's access token on a platform, for workspace `link`, the one the registry links the
+   * team to: tokens for any other are refused. It's refreshed first when it's within 5 minutes of
+   * expiring. A refresh gives a new refresh token and the old one stops working, so this is the
+   * one place that refreshes, one at a time. A refused refresh isn't tried again for 5 minutes,
+   * and the token it was for is used while it lasts.
+   */
+  async syncToken(provider: string, link: string): Promise<SyncAccess> {
+    const [row] = this.ctx.storage.sql.exec<{ external: string; sealed: string }>('select external, sealed from bx_sync_tokens where provider = ?', provider).toArray()
+    if (!row) throw new Error(`this team has no ${provider} link: an owner links it with bdx sync link ${provider}`)
+    // Two links approved at once may leave one workspace's tokens under the other's link.
+    if (row.external !== link) throw new Error(`this team's ${provider} tokens are for another workspace than the one it's linked to: an owner links it again with bdx sync link ${provider}`)
+    const tokens = JSON.parse(await unseal(this.syncKey(), row.sealed, `${provider}:${row.external}`)) as SyncTokens
+    const current = { token: tokens.access, expires_at: tokens.expires_at }
+    if (tokens.expires_at === null || tokens.expires_at - Date.now() > SYNC_REFRESH_BEFORE_MS) return current
+    const lasting = () => tokens.expires_at !== null && tokens.expires_at > Date.now() + 10_000
+    const refused = this.refused.get(provider)
+    if (refused && refused.sealed === row.sealed && refused.until > Date.now()) {
+      if (lasting()) return current
+      throw new Error(refused.message)
+    }
+    let pending = this.refreshing.get(provider)
+    if (!pending) {
+      pending = (async () => {
+        const oauth = teamSyncOf(this.env)[provider]?.oauth
+        if (!oauth) throw new Error(`this deployment doesn't sync ${provider}`)
+        let fresh: SyncTokens
+        try {
+          fresh = await oauth.refresh(tokens)
+        } catch (error) {
+          const until = Date.now() + REFRESH_RETRY_MS
+          const message = `${(error as Error)?.message ?? error} (asked again after ${new Date(until).toISOString()})`
+          this.refused.set(provider, { sealed: row.sealed, until, message })
+          if (lasting()) return current
+          throw new Error(message)
+        }
+        const sealed = await seal(this.syncKey(), JSON.stringify(fresh), `${provider}:${row.external}`)
+        // Only over the tokens it refreshed: a link made while it refreshed keeps its own.
+        this.ctx.storage.sql.exec('update bx_sync_tokens set sealed = ? where provider = ? and sealed = ?', sealed, provider, row.sealed)
+        return { token: fresh.access, expires_at: fresh.expires_at }
+      })().finally(() => this.refreshing.delete(provider))
+      this.refreshing.set(provider, pending)
+    }
+    return pending
   }
 
   /** Keeps a service token's record, to list and revoke it: never the token itself. */
