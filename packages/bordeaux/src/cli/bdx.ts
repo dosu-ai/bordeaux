@@ -416,9 +416,9 @@ async function syncRows(url: string, args: string[]) {
     return
   }
   if (action === 'add' && provider && external && channel) {
-    const made = (await asYou(url, 'POST', '/admin/sync', { provider, external, channel, direction: args.includes('--mirror') ? 'mirror' : 'into' })) as { created: boolean; linked: boolean; install?: string }
+    const made = (await asYou(url, 'POST', '/admin/sync', { provider, external: rowOf(provider, external), channel, direction: args.includes('--mirror') ? 'mirror' : 'into' })) as { created: boolean; linked: boolean; install?: string }
     if (json) return void process.stdout.write(`${JSON.stringify(made)}\n`)
-    process.stderr.write(`${made.created ? 'syncing' : 'now syncing'} ${external} ${args.includes('--mirror') ? 'with' : 'into'} ${channel}\n`)
+    process.stderr.write(`${made.created ? 'syncing' : 'now syncing'} ${rowOf(provider, external)} ${args.includes('--mirror') ? 'with' : 'into'} ${channel}\n`)
     if (!made.linked && made.install) process.stderr.write(`${linkTo(provider)} to start: ${made.install}\n`)
     return
   }
@@ -430,17 +430,26 @@ async function syncRows(url: string, args: string[]) {
     return
   }
   if (action === 'rm' && provider && external) {
-    const { removed } = await asYou(url, 'DELETE', `/admin/sync?provider=${encodeURIComponent(provider)}&external=${encodeURIComponent(external)}`)
+    const row = rowOf(provider, external)
+    const { removed } = await asYou(url, 'DELETE', `/admin/sync?provider=${encodeURIComponent(provider)}&external=${encodeURIComponent(row)}`)
     if (json) return void process.stdout.write(`${JSON.stringify({ removed })}\n`)
-    if (!removed) fail(`this team doesn't sync ${provider} ${external}`)
+    if (!removed) fail(`this team doesn't sync ${provider} ${row}`)
     return
   }
-  fail('usage: bdx sync add github <owner/repo> <channel> [--mirror] | bdx sync add linear <team key> <channel> [--mirror] | bdx sync link github|linear | bdx sync rm <provider> <id> | bdx sync list')
+  fail('usage: bdx sync add github <owner/repo> <channel> [--mirror] | bdx sync add linear <team key> <channel> [--mirror] | bdx sync add slack <C0… | #name> <channel> [--mirror] | bdx sync link github|linear|slack | bdx sync rm <provider> <id> | bdx sync list')
 }
+
+/**
+ * A row's external ID as the board takes it. A Slack channel's name gets its `#`, which a shell
+ * would read as a comment: `bdx sync add slack support support` maps `#support`.
+ */
+const rowOf = (provider: string, external: string) => (provider === 'slack' && !external.startsWith('#') && !/^[CG][A-Z0-9]{8,}$/.test(external) ? `#${external}` : external)
 
 /** What linking the team to a platform takes: the sync App on its account, or a workspace admin's yes. */
 const linkTo = (provider: string) =>
-  provider === 'linear' ? 'a Linear workspace admin opens this within 10 minutes to link it' : `install the ${provider} sync App on your account`
+  provider === 'linear' ? 'a Linear workspace admin opens this within 10 minutes to link it'
+  : provider === 'slack' ? 'a Slack workspace admin opens this within 10 minutes to install the app'
+  : `install the ${provider} sync App on your account`
 
 /**
  * `bdx grants create` with bordeaux's own principals, as upstream's flags: `--service www [--env
@@ -486,8 +495,9 @@ bordeaux:
   tokens list | revoke <id>           the service tokens, and revoking one
   sync add github <repo> <channel>    hosted: sync a repo into a channel [--mirror]
   sync add linear <team> <channel>    hosted: sync a Linear team, as ENG [--mirror]
-  sync link github | linear           hosted: link the team's account or workspace
-  sync rm <provider> <id> | list      stop syncing a repo or team, or list them
+  sync add slack <chan> <channel>     hosted: sync C0… or #name [--mirror]
+  sync link github|linear|slack       hosted: link the team's account or workspace
+  sync rm <provider> <id> | list      stop syncing one, or list them
   grants create --service <name>      let a service's tokens in [--env <env>], or
   grants create --github-user <login> a person by their GitHub login, with --can
 
