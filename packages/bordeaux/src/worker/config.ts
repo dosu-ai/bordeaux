@@ -43,16 +43,26 @@ export type SyncTokens = { access: string; refresh: string | null; expires_at: n
 export type SyncOAuth = {
   /** The platform's page where an admin approves the link, coming back to `redirect` with `state`. */
   authorize(state: string, redirect: string): string
-  /** Trades the code the platform sent back for tokens, and the ID its events name the workspace by. */
+  /**
+   * Trades the code the platform sent back for tokens, and the ID its events name the workspace
+   * by. Throws `SyncLinkRefused` for a link the hub won't keep.
+   */
   exchange(code: string, redirect: string): Promise<{ external: string; name: string; tokens: SyncTokens }>
   /** New tokens for old ones about to expire. */
   refresh(tokens: SyncTokens): Promise<SyncTokens>
   /**
-   * A webhook's workspace, if the platform signed it: the ID a team is linked by, and whether it
-   * says the app was removed. Null for a webhook the platform didn't sign, or too old.
+   * A webhook's workspace, if the platform signed it: the ID a team is linked by, whether it says
+   * the app was removed, and what the hub answers itself instead (Slack's URL check). Null for a
+   * webhook the platform didn't sign, or too old.
    */
-  event(request: Request, body: string): Promise<{ external: string | null; removed: boolean } | null>
+  event(request: Request, body: string): Promise<{ external: string | null; removed: boolean; answer?: Record<string, unknown> } | null>
 }
+
+/**
+ * A link the platform made that the hub won't keep, such as Slack's for a whole Enterprise Grid
+ * org. Its message is for the admin who approved it: what to do instead. Asking again won't help.
+ */
+export class SyncLinkRefused extends Error {}
 
 /** Where a platform's OAuth page sends back an admin who approved an owner's link: the hub's, for every team. */
 export const syncRedirect = (env: BordeauxEnv, provider: string) => new URL(`/sync/${provider}/callback`, env.BORDEAUX_HOSTED_URL).href

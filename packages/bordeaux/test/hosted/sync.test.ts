@@ -1,9 +1,9 @@
 // Hosted sync as data (spec 09, "Sync, later"): two teams on one Worker, each with its own rows,
-// its own installation of the sync App, and its own Linear workspace, GitHub and Linear answered
+// its own installation of the sync App, and its own Linear and Slack workspaces, every platform answered
 // by vitest.hosted.config.ts.
 import { env, runDurableObjectAlarm, SELF } from 'cloudflare:test'
 import { describe, expect, it, vi } from 'vitest'
-import { githubTeamSync, linearTeamSync } from '../../src/sync/index.ts'
+import { githubTeamSync, linearTeamSync, slackTeamSync } from '../../src/sync/index.ts'
 import { directory, personId } from '../../src/worker/auth.ts'
 import { boardKey } from '../../src/worker/backend.ts'
 import { registry } from '../../src/worker/registry.ts'
@@ -105,7 +105,7 @@ describe('hosted sync rows', () => {
     const owner = await person(at, 63, true)
     expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'someone-else/web', channel: 'prs' })).status).toBe(400)
     expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'rows-own', channel: 'prs' })).status).toBe(400)
-    expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external: '#ops', channel: 'ops' })).status).toBe(400)
+    expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'jira', external: 'OPS', channel: 'ops' })).status).toBe(400)
     // Upstream matches the owner as GitHub writes it: another case would never sync.
     expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'Rows-Own/web', channel: 'prs' })).status).toBe(400)
     // Channels as upstream names them: no spaces, capitals, or dots.
@@ -419,5 +419,223 @@ describe('hosted Linear sync', () => {
     expect((await linearEvent(issueCreated('orgf', 'ENG-1', 'Forged'), { secret: 'not-the-secret' })).status).toBe(401)
     expect((await linearEvent(issueCreated('orgf', 'ENG-2', 'Stale'), { age: 120_000 })).status).toBe(401)
     expect((await linearEvent(issueCreated('orgf', 'ENG-3', 'Direct'), { url: `${at.url}/webhooks/linear` })).status).toBe(404)
+  })
+})
+
+/** A request from the Slack app, signed as Slack signs it, `age` seconds old, to the hub or straight to `url`. */
+async function slackEvent(payload: Record<string, unknown>, { secret = 'slack-signing-secret', url = `${HUB}/__bordeaux/slack/events`, age = 0 } = {}) {
+  const body = JSON.stringify(payload)
+  const timestamp = String(Math.floor(Date.now() / 1000) - age)
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const mac = Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`v0:${timestamp}:${body}`))), (b) => b.toString(16).padStart(2, '0')).join('')
+  const headers = { 'x-slack-signature': `v0=${mac}`, 'x-slack-request-timestamp': timestamp, 'content-type': 'application/json' }
+  return SELF.fetch(url, { method: 'POST', headers, body })
+}
+
+let slackTs = 0
+/** Slack's event for workspace `team`: `inner` in the envelope Slack sends it in. */
+const slackEnvelope = (team: string, inner: Record<string, unknown>) => ({
+  token: 'legacy',
+  team_id: team,
+  api_app_id: 'A0SLACK',
+  type: 'event_callback',
+  event_id: `Ev${++slackTs}`,
+  event_time: Math.floor(Date.now() / 1000),
+  authorizations: [{ team_id: team, user_id: 'UBOT', is_bot: true, enterprise_id: null }],
+  event: inner,
+})
+
+/** A message by person UADA in channel `channel` of workspace `team`: the envelope, and the message's ts. */
+function slackMessage(team: string, channel: string, text: string) {
+  const ts = `${Math.floor(Date.now() / 1000)}.${String(++slackTs).padStart(6, '0')}`
+  return { ts, payload: slackEnvelope(team, { type: 'message', channel, channel_type: 'channel', user: 'UADA', text, ts, event_ts: ts, team }) }
+}
+
+/** Links a team to Slack workspace `code-<team>` names, as its owner would: asks for a link, and Slack sends the admin back with `code`. */
+async function linkSlack(at: { url: string }, owner: string, code: string) {
+  const { body } = await call(at.url, owner, 'POST', '/admin/sync/link', { provider: 'slack' })
+  const state = new URL(body.install).searchParams.get('state')!
+  return SELF.fetch(`${HUB}/sync/slack/callback?code=${code}&state=${state}`)
+}
+
+/** What the Slack app sent Slack's Web API. */
+const toSlack = async () => ((await (await fetch('https://outbound.test/sent')).json()) as { url: string; token: string; body: string }[]).filter((one) => one.url.startsWith('https://slack.com/api/'))
+/** The messages the Slack app posted, as Slack's Web API took them: their text is `markdown_text`, or `text`. */
+const slackPosts = async () =>
+  (await toSlack())
+    .filter((one) => one.url.endsWith('/chat.postMessage'))
+    .map((one) => Object.fromEntries(new URLSearchParams(one.body)) as Record<string, string>)
+    .map((form) => ({ ...form, text: form.markdown_text ?? form.text ?? '' }))
+
+describe('hosted Slack sync', () => {
+  it('stays off quietly before the Slack app is set up, and says which setting is missing when some are', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(slackTeamSync({} as never)).toBeNull()
+      expect(errors).not.toHaveBeenCalled()
+      expect(slackTeamSync({ SLACK_SYNC_CLIENT_ID: 'x' } as never)).toBeNull()
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('SLACK_SYNC_CLIENT_SECRET, SLACK_SYNC_SIGNING_SECRET, BORDEAUX_SYNC_KEY'))
+    } finally {
+      errors.mockRestore()
+    }
+  })
+
+  it("takes Slack channels by ID or #name, and gives owners alone a link to install the app with", async () => {
+    const at = await team('slack-rows', 9001)
+    const member = await person(at, 101, false)
+    const owner = await person(at, 102, true)
+    for (const external of ['support', '#Support', 'c0abcdefgh', 'acme/web', '#has space']) expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external, channel: 'support' })).status, external).toBe(400)
+    expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external: 'C0ABCDEFGH', channel: 'support' })).status).toBe(201)
+    const added = await call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external: '#support', channel: 'support' })
+    expect(added).toMatchObject({ status: 201, body: { created: true, linked: false } })
+    const install = new URL(added.body.install)
+    expect(install.origin + install.pathname).toBe('https://slack.com/oauth/v2/authorize')
+    expect(Object.fromEntries(install.searchParams)).toMatchObject({ client_id: 'slack-test-client', redirect_uri: 'https://board.test/sync/slack/callback' })
+    expect(install.searchParams.get('scope')!.split(',')).toEqual(expect.arrayContaining(['channels:history', 'chat:write', 'reactions:read']))
+    expect(install.searchParams.get('state')).toMatch(new RegExp(`^${at.id}\\.[0-9a-f]{64}$`))
+    expect(await call(at.url, member, 'POST', '/admin/sync/link', { provider: 'slack' })).toMatchObject({ status: 403 })
+    expect((await call(at.url, member, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'slack', linked: false })
+  })
+
+  it("answers Slack's URL check itself, only when the app signed it", async () => {
+    const check = { token: 'legacy', type: 'url_verification', challenge: 'c-hosted-1' }
+    const answer = await slackEvent(check)
+    expect(answer.status).toBe(200)
+    expect(await answer.json()).toEqual({ challenge: 'c-hosted-1' })
+    expect((await slackEvent(check, { secret: 'not-the-secret' })).status).toBe(401)
+  })
+
+  it("links the workspace that installed the app from an owner's link, once per link", async () => {
+    const at = await team('slack-link', 9002)
+    const owner = await person(at, 103, true)
+    const { body } = await call(at.url, owner, 'POST', '/admin/sync/link', { provider: 'slack' })
+    const state = new URL(body.install).searchParams.get('state')!
+    expect((await SELF.fetch(`${HUB}/sync/slack/callback?code=code-TLINK&state=${at.id}.${'0'.repeat(64)}`)).status).toBe(400)
+    // An admin who cancels comes back with Slack's error.
+    expect((await SELF.fetch(`${HUB}/sync/slack/callback?error=access_denied&state=${state}`)).status).toBe(400)
+    const linked = await SELF.fetch(`${HUB}/sync/slack/callback?code=code-TLINK&state=${state}`)
+    expect(linked.status).toBe(200)
+    expect(await linked.text()).toContain('Workspace TLINK')
+    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'slack', linked: true })
+    expect((await SELF.fetch(`${HUB}/sync/slack/callback?code=code-TLINK&state=${state}`)).status).toBe(400)
+  })
+
+  it('refuses an install on a whole Grid org, and a token that expires, saying what to do instead of asking again', async () => {
+    const at = await team('slack-refused', 9003)
+    const owner = await person(at, 111, true)
+    const grid = await linkSlack(at, owner, 'code-grid')
+    expect(grid.status).toBe(400)
+    expect(await grid.text()).toContain('install it on one workspace')
+    const rotating = await linkSlack(at, owner, 'code-TROT-rotating')
+    expect(rotating.status).toBe(400)
+    expect(await rotating.text()).toContain('token rotation is on')
+    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'slack', linked: false })
+  })
+
+  it("lands a workspace's message on its own team's board only, by that team's rows, by ID or #name", async () => {
+    const a = await team('slack-a', 9101)
+    const b = await team('slack-b', 9102)
+    const ownerA = await person(a, 104, true)
+    const ownerB = await person(b, 105, true)
+    expect((await linkSlack(a, ownerA, 'code-TA')).status).toBe(200)
+    expect((await linkSlack(b, ownerB, 'code-TB')).status).toBe(200)
+    // A maps a channel by its ID, B by its name; the same channel ID in each workspace.
+    await call(a.url, ownerA, 'POST', '/admin/sync', { provider: 'slack', external: 'C0NAMED001', channel: 'support' })
+    await call(b.url, ownerB, 'POST', '/admin/sync', { provider: 'slack', external: '#support', channel: 'support' })
+
+    expect((await slackEvent(slackMessage('TA', 'C0NAMED001', 'A needs help').payload)).status).toBe(200)
+    expect((await slackEvent(slackMessage('TB', 'C0NAMED001', 'B needs help').payload)).status).toBe(200)
+    // A channel A has no row for lands nowhere.
+    expect((await slackEvent(slackMessage('TA', 'C0OTHER0001', 'A elsewhere').payload)).status).toBe(200)
+    const root = await until(a.id, async () => (await roots(a.url, ownerA, 'support')).find((m) => m.text.includes('A needs help')))
+    // A row is `into` unless it says `mirror`: a reply on the board stays there.
+    await call(a.url, ownerA, 'POST', '/messages', { re: root.id, text: 'into only' })
+    await until(b.id, async () => (await roots(b.url, ownerB, 'support')).find((m) => m.text.includes('B needs help')))
+    await until(a.id, async () => true)
+    expect((await roots(a.url, ownerA, 'support')).map((m) => m.text).join('\n')).not.toMatch(/B needs help|A elsewhere/)
+    expect((await roots(b.url, ownerB, 'support')).map((m) => m.text).join('\n')).not.toMatch(/A needs help|A elsewhere/)
+    expect((await slackPosts()).some((post) => post.text.includes('into only'))).toBe(false)
+  })
+
+  it("mirrors a board reply into the Slack thread with the team's own bot token", async () => {
+    const at = await team('slack-mirror', 9201)
+    const owner = await person(at, 106, true)
+    await linkSlack(at, owner, 'code-TM')
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external: 'C0MIRROR01', channel: 'mir', direction: 'mirror' })
+    const { ts, payload } = slackMessage('TM', 'C0MIRROR01', 'Mirror me')
+    await slackEvent(payload)
+    const root = await until(at.id, async () => (await roots(at.url, owner, 'mir')).find((m) => m.text.includes('Mirror me')))
+    await call(at.url, owner, 'POST', '/messages', { re: root.id, text: 'looking into it' })
+    const post = await until(at.id, async () => (await slackPosts()).find((one) => one.text.includes('looking into it')))
+    expect(post).toMatchObject({ token: 'xoxb-TM-1', channel: 'C0MIRROR01', thread_ts: ts })
+    expect(post.text).toContain('looking into it')
+  })
+
+  it("lands a Slack reaction on the board at once while Slack limits the channel's history reads", async () => {
+    const at = await team('slack-react', 9202)
+    const owner = await person(at, 112, true)
+    await linkSlack(at, owner, 'code-TR')
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external: 'C0LIMITED1', channel: 'busy' })
+    const { ts, payload } = slackMessage('TR', 'C0LIMITED1', 'React to me')
+    await slackEvent(payload)
+    const root = await until(at.id, async () => (await roots(at.url, owner, 'busy')).find((m) => m.text.includes('React to me')))
+    // The adapter asks conversations.replies for the reacted message's thread; Slack says wait a minute.
+    await slackEvent(slackEnvelope('TR', { type: 'reaction_added', user: 'UADA', reaction: 'eyes', item: { type: 'message', channel: 'C0LIMITED1', ts }, item_user: 'UADA', event_ts: ts }))
+    const reacted = await until(at.id, async () => {
+      const found = (await roots(at.url, owner, 'busy')).find((m) => m.id === root.id) as { reactions?: Record<string, string[]> } | undefined
+      return found?.reactions?.eyes?.length ? found : null
+    })
+    expect(Object.keys(reacted.reactions!)).toEqual(['eyes'])
+  })
+
+  it("unlinks a workspace that uninstalls the app or revokes its bot token, and moves one installed again to the team that linked it", async () => {
+    const a = await team('slack-left', 9301)
+    const b = await team('slack-took', 9302)
+    const ownerA = await person(a, 107, true)
+    const ownerB = await person(b, 108, true)
+    await call(a.url, ownerA, 'POST', '/admin/sync', { provider: 'slack', external: 'C0MOVED001', channel: 'moved' })
+    await call(b.url, ownerB, 'POST', '/admin/sync', { provider: 'slack', external: 'C0MOVED001', channel: 'moved' })
+    await linkSlack(a, ownerA, 'code-TX')
+    await linkSlack(b, ownerB, 'code-TX')
+    expect((await call(a.url, ownerA, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'slack', linked: false })
+    expect((await slackEvent(slackMessage('TX', 'C0MOVED001', 'Moved').payload)).status).toBe(200)
+    await until(b.id, async () => (await roots(b.url, ownerB, 'moved')).find((m) => m.text.includes('Moved')))
+    await until(a.id, async () => true)
+    expect((await roots(a.url, ownerA, 'moved')).map((m) => m.text).join('\n')).not.toContain('Moved')
+
+    // A person's token revoked leaves the link; the app's bot token revoked ends it.
+    expect((await slackEvent(slackEnvelope('TX', { type: 'tokens_revoked', tokens: { oauth: ['UADA'], bot: [] } }))).status).toBe(200)
+    expect((await call(b.url, ownerB, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'slack', linked: true })
+    expect(await (await slackEvent(slackEnvelope('TX', { type: 'tokens_revoked', tokens: { bot: ['UBOT'] } }))).json()).toEqual({ ok: true, team: b.id })
+    expect((await call(b.url, ownerB, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'slack', linked: false })
+    expect(await (await slackEvent(slackMessage('TX', 'C0MOVED001', 'Too late').payload)).json()).toEqual({ ok: true, team: null })
+
+    // Installed again, then uninstalled.
+    await linkSlack(b, ownerB, 'code-TX')
+    expect(await (await slackEvent(slackEnvelope('TX', { type: 'app_uninstalled' }))).json()).toEqual({ ok: true, team: b.id })
+    expect((await call(b.url, ownerB, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'slack', linked: false })
+  })
+
+  it('answers 200 to an event for a team that maps none of its Slack channels yet', async () => {
+    const at = await team('slack-none', 9401)
+    const owner = await person(at, 109, true)
+    await linkSlack(at, owner, 'code-TN')
+    expect(await (await slackEvent(slackMessage('TN', 'C0NOWHERE1', 'Nowhere').payload)).json()).toEqual({ ok: true, team: at.id, synced: false })
+  })
+
+  it("refuses a Slack event that isn't signed with the app's secret, one over 5 minutes old, and one sent straight to a team", async () => {
+    const at = await team('slack-forged', 9501)
+    const owner = await person(at, 110, true)
+    await linkSlack(at, owner, 'code-TF')
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external: 'C0FORGED01', channel: 'forged' })
+    // An uninstall the hub acts on itself: forged, or replayed after 5 minutes, it unlinks nothing.
+    expect((await slackEvent(slackEnvelope('TF', { type: 'app_uninstalled' }), { secret: 'not-the-secret' })).status).toBe(401)
+    expect((await slackEvent(slackEnvelope('TF', { type: 'app_uninstalled' }), { age: 360 })).status).toBe(401)
+    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'slack', linked: true })
+    expect((await slackEvent(slackMessage('TF', 'C0FORGED01', 'Forged').payload, { secret: 'not-the-secret' })).status).toBe(401)
+    expect((await slackEvent(slackMessage('TF', 'C0FORGED01', 'Stale').payload, { age: 360 })).status).toBe(401)
+    expect((await slackEvent(slackMessage('TF', 'C0FORGED01', 'Direct').payload, { url: `${at.url}/webhooks/slack` })).status).toBe(404)
+    await until(at.id, async () => true)
+    expect(await roots(at.url, owner, 'forged')).toEqual([])
   })
 })
