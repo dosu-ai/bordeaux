@@ -8,7 +8,7 @@ import { devSignIn } from './dev.ts'
 import type { BordeauxEnv } from './env.ts'
 import { installationOf, signInApp, syncApp } from './github-app.ts'
 import { boardOf } from './boards.ts'
-import { syncRedirect, teamSyncOf, type SyncOAuth } from './config.ts'
+import { SyncLinkRefused, syncRedirect, teamSyncOf, type SyncOAuth } from './config.ts'
 import type { Limits } from './limits.ts'
 import { deleteTeam } from './operate.ts'
 import { registry, type GitHubLink, type TeamRecord } from './registry.ts'
@@ -122,7 +122,7 @@ export async function hub(request: Request, env: BordeauxEnv, at: URL, send: Fet
     return env.GITHUB_SYNC_APP_ID && app === env.GITHUB_SYNC_APP_ID ? syncEvents(request, env, at) : events(request, env, at)
   }
   if (pathname === '/sync/setup' && request.method === 'GET') return syncSetup(url, env, at, send)
-  // A platform a team links to by OAuth (Linear): its admin comes back here, and its events come here.
+  // A platform a team links to by OAuth (Linear, Slack): its admin comes back here, and its events come here.
   const linking = /^\/sync\/([a-z]+)\/callback$/.exec(pathname)
   const linkedBy = linking && request.method === 'GET' ? teamSyncOf(env)[linking[1]!]?.oauth : undefined
   if (linking && linkedBy) return syncCallback(url, env, at, linking[1]!, linkedBy)
@@ -389,13 +389,14 @@ async function syncCallback(url: URL, env: BordeauxEnv, at: URL, provider: strin
     console.log(`[bordeaux] ${provider} workspace ${external} linked to team ${record.id} by ${by}${linked.displaced ? `, from team ${linked.displaced.id}` : ''}`)
     return page('🍷 linked', `<h1>🍷 linked</h1><p>${escape(workspace)} syncs with <a href="${escape(team.url)}/">${escape(team.url)}</a> now, by its rows: <code>bdx sync list</code>.</p>`)
   } catch (error) {
+    if (error instanceof SyncLinkRefused) return page('🍷 not linked', `<h1>🍷 not linked</h1><p>${escape(error.message)}.</p>`, 400)
     console.error(`[bordeaux] ${provider} link failed:`, (error as Error)?.message ?? error)
     return page('🍷 almost', `<h1>🍷 almost</h1><p>${escape(name)} didn't answer just now. Ask for a new link with <code>bdx sync link ${escape(provider)}</code> and try again.</p>`, 502)
   }
 }
 
 /**
- * A platform's events, for every workspace linked by OAuth (Linear). The platform signs them with
+ * A platform's events, for every workspace linked by OAuth (Linear, Slack). The platform signs them with
  * its app's secret and names the workspace, which finds the team: the event goes, as the platform
  * sent it, to that team's default board, whose provider checks it again. The app's removal from
  * a workspace unlinks it and drops the team's tokens.
@@ -403,7 +404,8 @@ async function syncCallback(url: URL, env: BordeauxEnv, at: URL, provider: strin
 async function oauthEvents(request: Request, env: BordeauxEnv, at: URL, provider: string, oauth: SyncOAuth): Promise<Response> {
   const body = await request.text()
   const event = await oauth.event(request, body)
-  if (!event) return refuse(401, 'invalid_signature', `that event isn't signed with the ${provider} app's webhook secret, or is over a minute old`)
+  if (!event) return refuse(401, 'invalid_signature', `that event isn't signed with the ${provider} app's secret, or is too old`)
+  if (event.answer) return Response.json(event.answer)
   if (!event.external) return Response.json({ ok: true, team: null })
   const record = await registry(env).byLink(provider, event.external)
   if (event.removed) {

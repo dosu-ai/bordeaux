@@ -36,7 +36,7 @@ function teamProviders(env: BordeauxEnv, team: Team): Record<string, SyncProvide
   const built: Record<string, SyncProvider> = {}
   for (const [key, given] of Object.entries(teamSyncOf(env))) {
     const rows = team.sync.rows.filter((row) => row.provider === key)
-    // The team's access token on the platform, as its directory keeps it (Linear's): asked for on each call to the platform.
+    // The team's access token on the platform, as its directory keeps it (Linear's, Slack's).
     const link = team.sync.links[key]
     const provider = rows.length > 0 ? given.build(rows, link, () => directory(env, team).syncToken(key, link ?? '')) : null
     if (provider) built[key] = provider

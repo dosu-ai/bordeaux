@@ -2,7 +2,7 @@
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers'
 import { defineConfig } from 'vitest/config'
 
-/** What the sync App sent GitHub, by installation token, for a test to read at `https://outbound.test/sent`. */
+/** What each platform was sent, with the token it came with, for a test to read at `https://outbound.test/sent`. */
 const sent: { method: string; url: string; token: string; body: string }[] = []
 
 /**
@@ -75,12 +75,57 @@ async function linearApi(request: Request): Promise<Response | null> {
   return Response.json({ errors: [{ message: `the test's Linear doesn't answer ${query.slice(0, 80)}` }] })
 }
 
+/** How many times each Slack workspace has installed the app: each install's bot token is the next. */
+const installs = new Map<string, number>()
+
+/**
+ * Slack's Web API as the hosted Slack app sees it. A code `code-<team>` installs the app on
+ * workspace `<team>` (`T…`), traded only for the hub's redirect URI, for bot token
+ * `xoxb-<team>-<n>`, the workspace's `n`th install (`code-<team>-rotating` for one that expires,
+ * `code-grid` for a Grid org's). Every call with a token is recorded with it; every workspace has
+ * channel `#support`, `C0NAMED001`, person `UADA`, and `C0LIMITED1`, whose history reads are over
+ * Slack's rate limit.
+ */
+async function slackApi(request: Request): Promise<Response | null> {
+  const url = new URL(request.url)
+  if (url.hostname !== 'slack.com' || !url.pathname.startsWith('/api/')) return null
+  const method = url.pathname.slice('/api/'.length)
+  const text = await request.text()
+  const form: Record<string, string> = (request.headers.get('content-type') ?? '').includes('json') ? JSON.parse(text || '{}') : Object.fromEntries(new URLSearchParams(text))
+  if (method === 'oauth.v2.access') {
+    sent.push({ method: 'POST', url: url.href, token: form.code ?? '', body: text })
+    if (form.client_id !== 'slack-test-client' || form.client_secret !== 'slack-test-secret') return Response.json({ ok: false, error: 'invalid_client_id' })
+    const code = /^code-(T[A-Z0-9]+|grid)(-rotating)?$/.exec(form.code ?? '')
+    if (!code || form.redirect_uri !== 'https://board.test/sync/slack/callback') return Response.json({ ok: false, error: 'invalid_code' })
+    // An Enterprise Grid org-wide install names the org, and no workspace.
+    if (code[1] === 'grid') return Response.json({ ok: true, access_token: 'xoxb-EGRID-1', token_type: 'bot', bot_user_id: 'UBOT', app_id: 'A0SLACK', team: null, enterprise: { id: 'EGRID', name: 'Grid' }, is_enterprise_install: true })
+    const n = (installs.get(code[1]!) ?? 0) + 1
+    installs.set(code[1]!, n)
+    // With the app's token rotation on, the token expires in 12 hours and comes with a refresh token.
+    const rotating = code[2] ? { expires_in: 43_200, refresh_token: `xoxe-1-${code[1]}` } : {}
+    return Response.json({ ok: true, access_token: `xoxb-${code[1]}-${n}`, token_type: 'bot', scope: 'chat:write', bot_user_id: 'UBOT', app_id: 'A0SLACK', team: { id: code[1], name: `Workspace ${code[1]}` }, enterprise: null, is_enterprise_install: false, ...rotating })
+  }
+  const token = (request.headers.get('authorization') ?? '').replace(/^bearer\s+/i, '') || form.token || ''
+  const team = /^xoxb-(T[A-Z0-9]+)-\d+$/.exec(token)?.[1]
+  if (!team) return Response.json({ ok: false, error: 'invalid_auth' })
+  sent.push({ method: 'POST', url: url.href, token, body: text })
+  if (method === 'auth.test') return Response.json({ ok: true, user_id: 'UBOT', bot_id: 'BBOT', team_id: team, user: 'bordeaux' })
+  if (method === 'chat.postMessage') return Response.json({ ok: true, channel: form.channel, ts: `${Math.floor(Date.now() / 1000)}.${String(sent.length).padStart(6, '0')}`, message: { text: form.text, user: 'UBOT', bot_id: 'BBOT' } })
+  if (method === 'users.info') return Response.json({ ok: true, user: { id: form.user, name: 'ada', real_name: 'Ada', team_id: team, profile: { display_name: 'ada', real_name: 'Ada', image_72: 'https://avatars.test/ada' } } })
+  if (method === 'conversations.list') return Response.json({ ok: true, channels: [{ id: 'C0NAMED001', name: 'support', is_member: true }], response_metadata: { next_cursor: '' } })
+  if (method === 'conversations.info') return Response.json({ ok: true, channel: { id: form.channel, name: form.channel === 'C0NAMED001' ? 'support' : 'other', is_member: true } })
+  // A channel whose history reads are over Slack's limit for an app outside its Marketplace.
+  if (method === 'conversations.replies' && form.channel === 'C0LIMITED1') return Response.json({ ok: false, error: 'ratelimited' }, { status: 429, headers: { 'retry-after': '60' } })
+  if (method === 'chat.getPermalink') return Response.json({ ok: true, permalink: `https://${team.toLowerCase()}.slack.com/archives/${form.channel}/p${(form.message_ts ?? '').replace('.', '')}` })
+  return Response.json({ ok: true, messages: [] })
+}
+
 /**
  * GitHub's web sign-in, as the hub's shared callback uses it: the code is exchanged only with
  * the redirect URI it was issued for, the hub's, and whoever signs in is a member of every org.
  */
 async function github(request: Request): Promise<Response> {
-  const synced = (await syncApp(request)) ?? (await linearApi(request))
+  const synced = (await syncApp(request)) ?? (await linearApi(request)) ?? (await slackApi(request))
   if (synced) return synced
   const url = new URL(request.url)
   if (url.href === 'https://github.com/login/oauth/access_token') {
@@ -97,7 +142,7 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: './test/hosted/wrangler.jsonc' },
-      // Nothing leaves the test runner: GitHub and a registrant's wake URL are answered here.
+      // Nothing leaves the test runner: GitHub, Linear, Slack, and a registrant's wake URL are answered here.
       miniflare: { outboundService: github },
     }),
   ],

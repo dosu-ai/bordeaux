@@ -11,11 +11,11 @@ import { createLinearAdapter } from '@chat-adapter/linear'
 import { createSlackAdapter } from '@chat-adapter/slack'
 import { github, repos } from '@vercel/board/sync-github'
 import { linear } from '@vercel/board/sync-linear'
-import { slack } from '@vercel/board/sync-slack'
+import { channels, slack } from '@vercel/board/sync-slack'
 import { ConsoleLogger } from 'chat'
 import { into, mirror } from '@vercel/board/sync'
 import { teams } from '@vercel/board/sync-linear'
-import { SYNC_REFRESH_BEFORE_MS, type SyncAccess, type SyncTokens, type TeamSync } from '../worker/config.ts'
+import { SYNC_REFRESH_BEFORE_MS, SyncLinkRefused, type SyncAccess, type SyncTokens, type TeamSync } from '../worker/config.ts'
 import type { BordeauxEnv } from '../worker/env.ts'
 import { toPkcs8 } from '../worker/github-app.ts'
 
@@ -165,6 +165,25 @@ export function linearSync(env: Env, sync: Parameters<typeof linear>[1], options
   return linear({ adapter }, sync)
 }
 
+/**
+ * A team's token, as its directory keeps it, held by the board's adapter: asked for again a minute
+ * before the directory would refresh it, so the board never holds one a refresh elsewhere replaced,
+ * and every 5 minutes at most, so one that never expires (Slack's) gives way to a new link's.
+ */
+function held(token: () => Promise<SyncAccess>): () => Promise<string> {
+  let kept: (SyncAccess & { at: number }) | null = null
+  // One ask at a time: calls that find the token stale together share it.
+  let asking: Promise<SyncAccess & { at: number }> | null = null
+  return async () => {
+    const now = Date.now()
+    if (kept && now - kept.at <= SYNC_REFRESH_BEFORE_MS && (kept.expires_at === null || kept.expires_at - now >= SYNC_REFRESH_BEFORE_MS + 60_000)) return kept.token
+    asking ??= token()
+      .then((given) => (kept = { ...given, at: now }))
+      .finally(() => (asking = null))
+    return (await asking).token
+  }
+}
+
 /** A Linear team's key, as Linear writes it: `ENG`, the prefix of `ENG-123`. */
 const TEAM_KEY = /^[A-Z0-9_]{1,16}$/
 /** What the Linear app asks a workspace for: to read it, and to write issues and comments as itself. */
@@ -255,17 +274,114 @@ export function linearTeamSync(env: Env): TeamSync | null {
     },
     build(rows, link, token) {
       if (!link) return null
-      // The team's token, kept until a minute before its directory would refresh it, so the board
-      // never holds one a refresh elsewhere replaced: each fresh one is a call to its directory.
-      let kept: SyncAccess | null = null
-      const accessToken = async () => {
-        if (!kept || (kept.expires_at !== null && kept.expires_at - Date.now() < SYNC_REFRESH_BEFORE_MS + 60_000)) kept = await token()
-        return kept.token
-      }
       // Upstream's teams() mirrors a bare channel, so each row says which way it goes.
       const routing = teams(Object.fromEntries(rows.map((row) => [row.external, row.direction === 'mirror' ? mirror(row.channel) : into(row.channel)])))
-      const adapter = createLinearAdapter({ accessToken, webhookVerifier: async (request, body) => (await linearSigned(webhookSecret, request.headers, body)) !== null, mode: 'comments' })
+      const adapter = createLinearAdapter({ accessToken: held(token), webhookVerifier: async (request, body) => (await linearSigned(webhookSecret, request.headers, body)) !== null, mode: 'comments' })
       return linear({ adapter }, routing)
+    },
+  }
+}
+
+/**
+ * A Slack channel a row maps: its ID (`C0…`, or `G0…` for an older private one), which survives a
+ * rename, or `#name`, which the board looks up in the workspace's channels.
+ */
+const SLACK_CHANNEL = /^(?:[CG][A-Z0-9]{8,}|#[\p{Ll}\p{Lo}\p{N}_-]{1,80})$/u
+/** What the Slack app asks a workspace for: the bot scopes self-hosted sync needs (docs/sync.md), less joining channels. */
+const SLACK_SCOPES = 'channels:history,groups:history,channels:read,groups:read,chat:write,chat:write.customize,reactions:read,reactions:write,users:read,users:read.email,files:read,files:write'
+/** How old a Slack request may be, by `X-Slack-Request-Timestamp`: Slack's own advice. */
+const SLACK_REQUEST_AGE_S = 300
+
+type SlackEnvelope = { type?: string; challenge?: string; team_id?: string; authorizations?: { team_id?: string | null }[]; event?: { type?: string; tokens?: { bot?: string[] } } }
+
+/**
+ * A Slack request's payload, if `X-Slack-Signature` is the app's v0 HMAC of
+ * `v0:<timestamp>:<body>` and the timestamp is under 5 minutes old.
+ */
+async function slackSigned(secret: string, headers: Headers, body: string): Promise<SlackEnvelope | null> {
+  const given = /^v0=([0-9a-f]{64})$/i.exec(headers.get('x-slack-signature') ?? '')?.[1]
+  const timestamp = headers.get('x-slack-request-timestamp') ?? ''
+  if (!given || !/^\d{1,12}$/.test(timestamp) || Math.abs(Date.now() / 1000 - Number(timestamp)) > SLACK_REQUEST_AGE_S) return null
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`v0:${timestamp}:${body}`)))
+  const expected = Uint8Array.from(given.match(/../g)!, (pair) => parseInt(pair, 16))
+  if (!crypto.subtle.timingSafeEqual(mac, expected)) return null
+  try {
+    return JSON.parse(body) as SlackEnvelope
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Hosted: Slack sync for each team, as data (spec 09, "Sync, later"), through Dosu's Slack app:
+ * `SLACK_SYNC_CLIENT_ID`, `SLACK_SYNC_CLIENT_SECRET`, `SLACK_SYNC_SIGNING_SECRET`, and
+ * `BORDEAUX_SYNC_KEY`, which seals each team's bot token. A team's rows map its Slack channels to
+ * board channels; an owner links its workspace by installing the app there, and the team's
+ * directory keeps the bot token. Null when a setting isn't set.
+ *
+ *   configure((env) => ({ teamSync: { github: githubTeamSync(env), linear: linearTeamSync(env), slack: slackTeamSync(env) } }))
+ */
+export function slackTeamSync(env: Env): TeamSync | null {
+  const names = ['SLACK_SYNC_CLIENT_ID', 'SLACK_SYNC_CLIENT_SECRET', 'SLACK_SYNC_SIGNING_SECRET', 'BORDEAUX_SYNC_KEY'] as const
+  // None set is a hosted deployment whose Slack app isn't registered yet: off, and quietly.
+  if (names.every((name) => !env[name])) return null
+  const secrets = need(env, 'Hosted Slack', ...names)
+  if (!secrets) return null
+  const [clientId, clientSecret, signingSecret] = secrets as [string, string, string, string]
+  return {
+    refuse(external) {
+      return SLACK_CHANNEL.test(external) ? null : `external: a Slack channel, by its ID (C0…, in the channel's details) or as #name, got ${external}`
+    },
+    oauth: {
+      authorize(state, redirect) {
+        const query = new URLSearchParams({ client_id: clientId, scope: SLACK_SCOPES, redirect_uri: redirect, state })
+        return `https://slack.com/oauth/v2/authorize?${query}`
+      },
+      async exchange(code, redirect) {
+        const response = await fetch('https://slack.com/api/oauth.v2.access', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ code, redirect_uri: redirect, client_id: clientId, client_secret: clientSecret }),
+        })
+        const answer = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; access_token?: string; refresh_token?: string; expires_in?: number; team?: { id?: string; name?: string } | null }
+        if (!answer.ok || !answer.access_token) throw new Error(`Slack refused the code: ${answer.error ?? response.status}`)
+        // An Enterprise Grid org-wide install names no one workspace: not yet (spec 09).
+        const external = answer.team?.id
+        if (!external) throw new SyncLinkRefused('Slack installed the app on a whole Enterprise Grid org, which bordeaux doesn\'t sync yet. Remove it from the org, then install it on one workspace with a new link')
+        // A bot token never expires while the app leaves token rotation off. One that expires
+        // would stop syncing within 12 hours: refused now, while the admin is here.
+        if (answer.expires_in !== undefined || answer.refresh_token) throw new SyncLinkRefused("Slack gave a token that expires, because the app's token rotation is on. Ask the board's operators to turn it off, then link again")
+        return { external, name: answer.team?.name ?? external, tokens: { access: answer.access_token, refresh: null, expires_at: null } }
+      },
+      refresh() {
+        throw new Error("a Slack bot token doesn't expire: there's nothing to refresh")
+      },
+      async event(request, body) {
+        const payload = await slackSigned(signingSecret, request.headers, body)
+        if (!payload) return null
+        // Slack checks the events URL with a challenge, answered here: it names no workspace.
+        if (payload.type === 'url_verification') return { external: null, removed: false, answer: { challenge: payload.challenge ?? '' } }
+        const external = payload.authorizations?.[0]?.team_id ?? payload.team_id ?? null
+        // The app uninstalled, or its bot token revoked: a user token's revocation leaves it.
+        const removed = payload.event?.type === 'app_uninstalled' || (payload.event?.type === 'tokens_revoked' && (payload.event.tokens?.bot?.length ?? 0) > 0)
+        return { external, removed }
+      },
+    },
+    build(rows, link, token) {
+      if (!link) return null
+      // Upstream's channels() mirrors a bare channel, so each row says which way it goes.
+      const routing = channels(Object.fromEntries(rows.map((row) => [row.external, row.direction === 'mirror' ? mirror(row.channel) : into(row.channel)])))
+      const botToken = held(token)
+      // Outside the Marketplace, Slack answers a second history read in a minute with a minute's
+      // Retry-After. Waiting it out would pause every call the client makes and outlive the
+      // webhook's background work, so a rate-limited call fails at once: a reaction's thread
+      // lookup falls back to the message itself, and the board's queue retries a post.
+      const adapter = createSlackAdapter({ botToken, signingSecret, webClientOptions: { ...SLACK_CLIENT, retryConfig: { ...SLACK_CLIENT.retryConfig }, rejectRateLimitedCalls: true } })
+      // An async token needs a client resolver: upstream's own, for a connector's adapter.
+      type Client = NonNullable<Exclude<Parameters<typeof slack>[0], string>['client']>
+      const client = (async () => adapter.withBotToken(await botToken(), () => adapter.webClient)) as unknown as Client
+      return slack({ adapter, client }, routing)
     },
   }
 }
