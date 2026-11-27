@@ -8,9 +8,10 @@ import { boardKey } from './backend.ts'
 import type { Envelope } from '../engine/do.ts'
 import type { BordeauxEnv } from './env.ts'
 import { checkSync } from './health.ts'
-import { configOf } from './config.ts'
+import { configOf, teamSyncOf } from './config.ts'
 import { REASON_MAX, type Redacted } from '../engine/redact.ts'
-import type { Team } from './team.ts'
+import { ChannelPath } from '../upstream/contract/schemas.ts'
+import { forgetHost, type Team } from './team.ts'
 
 /** The longest a service token lasts (spec 03). */
 const SERVICE_TTL_MAX = 90 * 24 * 3600
@@ -50,6 +51,8 @@ export async function admin(request: Request, env: BordeauxEnv, team: Team, me: 
     forget(team, deleting[1]!)
     return Response.json({ deleted })
   }
+
+  if (pathname === '/admin/sync') return sync(request, env, team, who)
 
   if (!manages(who)) return error(403, 'forbidden', "this token can't manage tokens: it needs manage at *")
 
@@ -163,6 +166,48 @@ export async function admin(request: Request, env: BordeauxEnv, team: Team, me: 
   const revoking = /^\/admin\/tokens\/([0-9a-f-]{36})$/.exec(pathname)
   if (revoking && request.method === 'DELETE') return Response.json({ revoked: await dir.revokeToken(revoking[1]!) })
   return error(404, 'not_found', `no route ${request.method} ${pathname}`)
+}
+
+
+/**
+ * A hosted team's sync, as rows (spec 09, "Sync, later"): `GET` lists them, `POST` maps a
+ * platform's repo to a board channel, `DELETE ?provider=&external=` stops it. Anyone the
+ * default board lets in reads them; only the team's owners, as their last sign-in found them,
+ * change them: no service token, whatever it manages.
+ */
+async function sync(request: Request, env: BordeauxEnv, team: Team, who: Me): Promise<Response> {
+  if (!env.BORDEAUX_HOSTED_URL) return error(404, 'not_found', "a self-hosted board's sync is its code: configure({ sync }) (docs/sync.md)")
+  const dir = directory(env, team)
+  const providers = teamSyncOf(env)
+  const status = () => Object.entries(providers).map(([provider, built]) => ({ provider, linked: team.sync?.links[provider] !== undefined, install: built.install }))
+  if (request.method === 'GET') return Response.json({ sync: await dir.syncRows(), providers: status() })
+  if (!(await dir.isOwner(who.principal))) return error(403, 'forbidden', "only the team's owners change its sync")
+  // What's kept of the team in this isolate goes, so its board() is built from the new rows.
+  const changed = () => forgetHost(new URL(team.url).host)
+  if (request.method === 'POST') {
+    const body = (await request.json().catch(() => ({}))) as { provider?: unknown; external?: unknown; channel?: unknown; direction?: unknown }
+    const provider = typeof body.provider === 'string' ? body.provider : ''
+    const built = providers[provider]
+    if (!built) return error(400, 'invalid_request', Object.keys(providers).length > 0 ? `provider: one of ${Object.keys(providers).join(', ')}` : 'this deployment syncs nothing yet')
+    if (typeof body.external !== 'string' || body.external.length === 0) return error(400, 'invalid_request', `external: what to sync on ${provider}`)
+    const refused = built.refuse(body.external, team.org)
+    if (refused) return error(400, 'invalid_request', refused)
+    // A board channel as upstream names one, or every import into it would fail.
+    if (typeof body.channel !== 'string' || !ChannelPath.safeParse(body.channel).success) return error(400, 'invalid_request', 'channel: a board channel, lowercase letters, numbers, _ and -, in segments joined by /')
+    const direction = body.direction ?? 'into'
+    if (direction !== 'into' && direction !== 'mirror') return error(400, 'invalid_request', 'direction: into or mirror')
+    const created = await dir.addSync({ provider, external: body.external, channel: body.channel, direction, by: who.principal })
+    changed()
+    const linked = team.sync?.links[provider] !== undefined
+    return Response.json({ created, linked, ...(linked ? {} : { install: built.install }) }, { status: created ? 201 : 200 })
+  }
+  if (request.method === 'DELETE') {
+    const query = new URL(request.url).searchParams
+    const removed = await dir.removeSync(query.get('provider') ?? '', query.get('external') ?? '')
+    changed()
+    return Response.json({ removed })
+  }
+  return error(404, 'not_found', `no route ${request.method} /admin/sync`)
 }
 
 /** What `GET /admin/doctor` answers. */

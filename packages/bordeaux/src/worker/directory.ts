@@ -9,6 +9,12 @@ const ALG = 'ES256'
 /** Why a destroyed Durable Object resets itself: its caller expects this one. */
 export const DESTROYED = 'bordeaux: destroyed'
 
+/**
+ * One of a hosted team's sync settings (spec 09, "Sync, later"): a platform's repo, channel, or
+ * team, the board channel it maps to on the team's default board, and which way it goes.
+ */
+export type SyncRow = { provider: string; external: string; channel: string; direction: 'into' | 'mirror'; by: string; created_at: string }
+
 /** A person's sign-in, as a refresh token keeps it. */
 export type Session = { id: string; login: string; owner: boolean; checkedAt: number; expiresAt: number }
 
@@ -29,6 +35,7 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     ctx.storage.sql.exec('create table if not exists bx_deleted_boards (name text primary key, at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_usage (board text primary key, data integer not null, files integer not null, at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_tokens (jti text primary key, sub text not null, by text not null, expires_at integer not null, revoked integer not null default 0)')
+    ctx.storage.sql.exec('create table if not exists bx_sync (provider text not null, external text not null, channel text not null, direction text not null, by text not null, created_at integer not null, primary key (provider, external))')
   }
 
   /** The current signing key, made on first use. */
@@ -136,6 +143,34 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     await this.ctx.storage.deleteAll()
     // What this instance holds in memory goes too: a call after this starts from nothing.
     this.ctx.abort(DESTROYED)
+  }
+
+  /** The team's sync settings, by provider and external ID. */
+  async syncRows(): Promise<SyncRow[]> {
+    return this.ctx.storage.sql
+      .exec<{ provider: string; external: string; channel: string; direction: string; by: string; created_at: number }>('select * from bx_sync order by provider, external')
+      .toArray()
+      .map((row) => ({ provider: row.provider, external: row.external, channel: row.channel, direction: row.direction === 'mirror' ? 'mirror' : 'into', by: row.by, created_at: new Date(Number(row.created_at)).toISOString() }))
+  }
+
+  /** Maps a platform's external ID to a board channel, or changes where it maps: true when it's new. */
+  async addSync(row: { provider: string; external: string; channel: string; direction: 'into' | 'mirror'; by: string }): Promise<boolean> {
+    const known = this.ctx.storage.sql.exec('select 1 from bx_sync where provider = ? and external = ?', row.provider, row.external).toArray().length > 0
+    this.ctx.storage.sql.exec(
+      'insert into bx_sync (provider, external, channel, direction, by, created_at) values (?, ?, ?, ?, ?, ?) on conflict (provider, external) do update set channel = excluded.channel, direction = excluded.direction, by = excluded.by',
+      row.provider,
+      row.external,
+      row.channel,
+      row.direction,
+      row.by,
+      Date.now(),
+    )
+    return !known
+  }
+
+  /** Stops syncing a platform's external ID; false for one that wasn't. */
+  async removeSync(provider: string, external: string): Promise<boolean> {
+    return this.ctx.storage.sql.exec('delete from bx_sync where provider = ? and external = ? returning 1 as gone', provider, external).toArray().length > 0
   }
 
   /** Keeps a service token's record, to list and revoke it: never the token itself. */

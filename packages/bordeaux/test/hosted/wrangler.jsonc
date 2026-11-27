@@ -35,6 +35,11 @@
     // A test value only: what the App's webhook secret would be.
     "GITHUB_WEBHOOK_SECRET": "hub-test-secret",
     "BORDEAUX_OPERATOR_ORG": "dosu-ai",
+    // Test values only, made for this file: the sync App's ID, its webhook secret, and a key no
+    // real App has (spec 09, "Sync, later").
+    "GITHUB_SYNC_APP_ID": "77",
+    "GITHUB_SYNC_WEBHOOK_SECRET": "sync-test-secret",
+    "GITHUB_SYNC_PRIVATE_KEY": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpQIBAAKCAQEA5aoZv0Izglb+8/RUuCnw5QF4eJYrfvh7mghQSM7nOEzv/7TV\n5qhYF+nLkiDw0PJKZcH+d7YYVlfbhUxIrc/zo1X6Xm1imnGM9MnWflfEpOVQz0II\n7NRb5VlACRjP/qQ2gz3mQmt1zMldDi+EIOfEGhiZgy+b+AdIOKzg1MpVJKMQ1ptt\n1G+mxPRe3xDJx6CPFtAS0hx+zBNqrTMdG/V4Y/w6Lm/hKqCknTXK8OCZHKrM+obu\nJlfE4YWg8sGpnR6NjmnpWxJ0VHlea1BttXaPNWlQP5oJUzf055bSme0JEhRE7kjM\ng0TuwF7bnBQUMRlDOblm5FJUnyhWFVaR8jCkpwIDAQABAoIBAAhzMiuamKpJcf36\naBwk1J2/Q/Ys/yT7OzayoZvcLYzYUh8bHOnsq2/yYAwTWejqvvQCp6oN6B1UBDWG\nVf/ylOj62ZGJ2aB5YDYo5mWTWfokVTr2YOH5Q2V0beoDMvvrpfU9XMvmPtkt6THf\nIotAiXxrvm2hpvJuiii4Peu/gy6+Q1VWUS1ZLpdpGpR+gc1N2CavXqQkcV82+6B3\nIscaqurJTnTmUzvWmCl1DtC81NetSJn0WmMK/Gzj6qyuWs1ZtQOMJnTUJUdluB9a\nNw6amiOWAwDeWGAJfUX++Sa4U1N99teKwddUyUkg+Xd0Wu0DxwLe+Moci7w2F8yL\n2oTnU6kCgYEA+xjHcKn23Fk3tNeKZC6T4R+8sS8rUD6ISUYa/L0fEty/rZYgTpte\nA85UjEc3My2TSMwpSR3gpreOK5ONUwHs1gTXPvbbySJxF1B+Q67nUC/MLgASIC6c\nXc8BI0ttnqJ/Cr5qAiy66Nt4WaF6TIB4GfQeNCO37kGnxjtMr7xuR4UCgYEA6iYu\nqXc1OqcaDAjGSxs7sZguvOqcgwXPBMQH9pNfl82teGqbLgwV/ghmNpm+ZzrWJfhc\nm38i1POtw4nlVCpUZR/btVgXkL9jCo0oY6nV812BIk5u49bsOrWMwEfN1pgnTvzQ\n4yQ5mp0HHR6rycJFCRRv9qcaPeFtBqk5KqwbVTsCgYEAoXNGUafHZdkr22i3wEC+\nrwL0Fc1pgTgj81FTauzDfSJZUOj1rvVxVuslK+likdKdIDK93RiL6Uae8F/4f8X+\nHYKRUBf0K/isVLxZ43UjoEiLdYxwGyc9PYgriCEow9Zh72uNyAYwzCbJ1H/iniwA\njVeM0COjUVv/35MjdN+o3O0CgYEArxADHTMCeirLf6njz+25kMtuTlK+1/s0z6Rd\nK879zrq5cumJwkDJBJh1C2ehgv7rc5IgcyX3/e1+wk7MRkQruzu5gfkuDUv6mb32\nL6WgUAdd8C9iGzjqf+6TIIPO8x3pbdX5u4mvA9lZozz2Ra/Y+7PrDifbp95uLGfD\nVRM+kFcCgYEA08Bqot+F2Ue1yt9R2Xm8ZTpcPe4vbR7Yqabby2sNRpq5PGNzK/vz\nzd3G0/TEzv5JiK2yGgLfRebALKDDKPgh5H9C434nzVaZWWfVUa1CqdeJONYSubCF\nrur3e+7uUhpb/4Xzuo9YbSUMBKlnfv9M/lP8BZiHvmir1EkhBt+smI4=\n-----END RSA PRIVATE KEY-----\n",
     "BORDEAUX_DEV": "1"
   }
 }
