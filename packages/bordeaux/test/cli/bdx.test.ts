@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -8,9 +10,13 @@ const BDX = join(import.meta.dirname, '../../src/cli/bdx.ts')
 const CONFIG = mkdtempSync(join(tmpdir(), 'bdx-'))
 afterAll(() => rmSync(CONFIG, { recursive: true, force: true }))
 
-/** Runs bdx with no sign-in and no board, as a person who just installed it. */
+/** Runs bdx with no sign-in and no board, as a person who just installed it, or with the sign-in in `config`. */
 function bdx(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  const env = { ...process.env, XDG_CONFIG_HOME: CONFIG }
+  return bdxIn(CONFIG, ...args)
+}
+
+function bdxIn(config: string, ...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  const env = { ...process.env, XDG_CONFIG_HOME: config }
   delete env.BOARD_URL
   delete env.BOARD_TOKEN
   delete env.BOARD_NAME
@@ -68,6 +74,7 @@ describe('bdx --help on bordeaux’s own commands', () => {
       expect(run, action).toMatchObject({ code: 0, stderr: '' })
       expect(run.stdout, action).toContain('bdx sync add github <repo> <channel>')
       expect(run.stdout, action).toContain('bdx sync add linear <team> <channel>')
+      expect(run.stdout, action).toContain('bdx sync add slack <chan> <channel>')
       for (const line of run.stdout.split('\n')) expect(line.length, `${action}: ${line}`).toBeLessThanOrEqual(80)
     }
     const upstream = await bdx('sync', '--help')
@@ -90,5 +97,42 @@ describe('bdx login', () => {
     const run = await bdx('login', '--url', 'not-a-url')
     expect(run).toMatchObject({ code: 1, stdout: '' })
     expect(run.stderr).toBe("bdx: not-a-url isn't a board's URL: bdx login https://<board>\n")
+  })
+})
+
+describe('bdx sync add slack', () => {
+  it('sends a Slack channel by ID as it is, and by name with the # a shell would take for a comment', async () => {
+    const sent: { method: string; path: string; body: string }[] = []
+    const board = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => (body += chunk))
+      request.on('end', () => {
+        sent.push({ method: request.method!, path: request.url!, body })
+        response.writeHead(request.method === 'POST' ? 201 : 200, { 'content-type': 'application/json' })
+        response.end(JSON.stringify(request.method === 'POST' ? { created: true, linked: true } : { removed: true }))
+      })
+    })
+    await new Promise<void>((resolve) => board.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${(board.address() as AddressInfo).port}`
+    // A sign-in, as bdx login keeps it, with an access token that's good for an hour.
+    const config = mkdtempSync(join(tmpdir(), 'bdx-signed-'))
+    mkdirSync(join(config, 'bordeaux'))
+    const tokens = { [url]: { access_token: 'test-access', expires_at: new Date(Date.now() + 3_600_000).toISOString() } }
+    writeFileSync(join(config, 'bordeaux', 'credentials.json'), JSON.stringify({ current: url, boards: { [url]: { refresh_token: 'test-refresh', tokens } } }))
+    try {
+      const named = await bdxIn(config, 'sync', 'add', 'slack', 'support', 'help')
+      expect(named).toMatchObject({ code: 0, stderr: 'syncing #support into help\n' })
+      const byId = await bdxIn(config, 'sync', 'add', 'slack', 'C0ABCDEFGH', 'help', '--mirror')
+      expect(byId).toMatchObject({ code: 0, stderr: 'syncing C0ABCDEFGH with help\n' })
+      expect((await bdxIn(config, 'sync', 'rm', 'slack', 'support')).code).toBe(0)
+      expect(sent.map(({ method, path, body }) => ({ method, path, body: body && JSON.parse(body) }))).toEqual([
+        { method: 'POST', path: '/admin/sync', body: { provider: 'slack', external: '#support', channel: 'help', direction: 'into' } },
+        { method: 'POST', path: '/admin/sync', body: { provider: 'slack', external: 'C0ABCDEFGH', channel: 'help', direction: 'mirror' } },
+        { method: 'DELETE', path: '/admin/sync?provider=slack&external=%23support', body: '' },
+      ])
+    } finally {
+      board.close()
+      rmSync(config, { recursive: true, force: true })
+    }
   })
 })
