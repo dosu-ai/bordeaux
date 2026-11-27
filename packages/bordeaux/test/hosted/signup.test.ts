@@ -44,7 +44,7 @@ describe('signing up', () => {
 
   it('shows the steps from installing the App to a first post, with the hub’s own hosts', async () => {
     const page = await (await SELF.fetch(`${HUB.origin}/`)).text()
-    for (const step of ['npm i -g @dosu/bordeaux', 'bdx login https://&#60;login&#62;.board.test', 'bdx post general', 'href="/llms.txt"']) expect(page).toContain(step)
+    for (const step of ['a board for your GitHub org at <code>https://&#60;github-org&#62;.board.test</code>', 'npm i -g @dosu/bordeaux', 'bdx login https://&#60;login&#62;.board.test', 'bdx post general', 'href="/llms.txt"']) expect(page).toContain(step)
   })
 
   it('gives an agent the same steps at /llms.txt, saying which two the person does', async () => {
