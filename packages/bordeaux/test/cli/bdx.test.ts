@@ -34,7 +34,7 @@ describe('bdx --help on bordeaux’s own commands', () => {
     const help = (await bdx('--help')).stdout
     const section = help.slice(help.indexOf('bordeaux:\n'), help.indexOf("board commands (upstream's"))
     // grants is upstream's, with bordeaux's flags added, and sync is upstream's but for add, rm,
-    // and list: their help is upstream's, and sync's own is below.
+    // list, and link: their help is upstream's, and sync's own is below.
     const commands = [...new Set([...section.matchAll(/^ {2}([a-z-]+)/gm)].map(([, command]) => command!))].filter((command) => command !== 'grants' && command !== 'sync')
     expect(commands).toContain('tokens')
     for (const command of commands) {
@@ -62,11 +62,12 @@ describe('bdx --help on bordeaux’s own commands', () => {
     expect(run.stdout).toContain("board commands (upstream's, unchanged):")
   })
 
-  it('answers sync add, rm, and list itself, and leaves sync <id> to upstream', async () => {
-    for (const action of ['add', 'rm', 'list']) {
+  it('answers sync add, rm, list, and link itself, and leaves sync <id> to upstream', async () => {
+    for (const action of ['add', 'rm', 'list', 'link']) {
       const run = await bdx('sync', action, '--help')
       expect(run, action).toMatchObject({ code: 0, stderr: '' })
       expect(run.stdout, action).toContain('bdx sync add github <repo> <channel>')
+      expect(run.stdout, action).toContain('bdx sync add linear <team> <channel>')
       for (const line of run.stdout.split('\n')) expect(line.length, `${action}: ${line}`).toBeLessThanOrEqual(80)
     }
     const upstream = await bdx('sync', '--help')
