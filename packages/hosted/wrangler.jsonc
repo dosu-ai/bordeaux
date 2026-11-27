@@ -1,6 +1,8 @@
 // Dosu's hosted bordeaux (spec 09): one Worker for every team, the hub at board.dosu.ai and each
 // team at <login>.board.dosu.ai. Setting it up, and its secrets, are in docs/hosted.md.
-// Secrets (wrangler secret put): GITHUB_PRIVATE_KEY, GITHUB_CLIENT_SECRET, GITHUB_WEBHOOK_SECRET.
+// Secrets (wrangler secret put): GITHUB_PRIVATE_KEY, GITHUB_CLIENT_SECRET, GITHUB_WEBHOOK_SECRET,
+// and for sync GITHUB_SYNC_PRIVATE_KEY, GITHUB_SYNC_WEBHOOK_SECRET, LINEAR_SYNC_CLIENT_SECRET,
+// LINEAR_SYNC_WEBHOOK_SECRET, BORDEAUX_SYNC_KEY, SLACK_SYNC_CLIENT_SECRET, SLACK_SYNC_SIGNING_SECRET.
 // `wrangler dev` sends every request to the first route's host, so hosted mode runs locally from
 // packages/bordeaux/wrangler.hosted.jsonc instead.
 {
@@ -60,6 +62,13 @@
     "GITHUB_APP_SLUG": "bordeaux-ai",
     "GITHUB_APP_ID": "5941167",
     "GITHUB_CLIENT_ID": "Iv23lif0uwX8SeJS8tGh",
+    // The bordeaux-ai-sync App's, for teams that sync their repos (docs/hosted.md, step 7).
+    "GITHUB_SYNC_APP_SLUG": "bordeaux-ai-sync",
+    "GITHUB_SYNC_APP_ID": "5956878",
+    // The bordeaux-ai Linear app's, for teams that sync a Linear workspace (docs/hosted.md, step 8).
+    "LINEAR_SYNC_CLIENT_ID": "e13e90ba5ef36631fb8a6c10ea48a4ad",
+    // The bordeaux-ai Slack app's, for teams that sync a Slack workspace (docs/hosted.md, step 9).
+    "SLACK_SYNC_CLIENT_ID": "5232697622096.12717592683143",
     // Whose owners operate teams at board.dosu.ai/__bordeaux/teams.
     "BORDEAUX_OPERATOR_ORG": "dosu-ai",
     // Dosu's terms and privacy policy for the Service (src/legal.ts), which the hub links to.
