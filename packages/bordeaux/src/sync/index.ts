@@ -17,7 +17,7 @@ import { into, mirror } from '@vercel/board/sync'
 import { teams } from '@vercel/board/sync-linear'
 import { SYNC_REFRESH_BEFORE_MS, SyncLinkRefused, type SyncAccess, type SyncTokens, type TeamSync } from '../worker/config.ts'
 import type { BordeauxEnv } from '../worker/env.ts'
-import { toPkcs8 } from '../worker/github-app.ts'
+import { installationOf, toPkcs8 } from '../worker/github-app.ts'
 
 export { channels } from '@vercel/board/sync-slack'
 export { repos } from '@vercel/board/sync-github'
@@ -122,6 +122,10 @@ export function githubTeamSync(env: Env): TeamSync | null {
       // A row maps every PR and issue of its repo: imported `into` its channel, or `mirror`ed back.
       const routing = repos(Object.fromEntries(rows.map((row) => [row.external, row.direction === 'mirror' ? mirror(row.channel) : row.channel])))
       return githubApp({ appId: appId!, privateKey: privateKey!, installationId: Number(link), webhookSecret: webhookSecret!, userName: `${slug}[bot]` }, routing)
+    },
+    async check(link) {
+      const found = await installationOf({ id: appId, key: privateKey, names: 'GITHUB_SYNC_APP_ID and GITHUB_SYNC_PRIVATE_KEY' }, link)
+      if (!found) throw new Error('the sync App isn\'t installed: bdx sync link github')
     },
   }
 }
@@ -279,6 +283,15 @@ export function linearTeamSync(env: Env): TeamSync | null {
       const adapter = createLinearAdapter({ accessToken: held(token), webhookVerifier: async (request, body) => (await linearSigned(webhookSecret, request.headers, body)) !== null, mode: 'comments' })
       return linear({ adapter }, routing)
     },
+    async check(_link, token) {
+      const response = await fetch('https://api.linear.app/graphql', { method: 'POST', headers: { authorization: `Bearer ${(await token()).token}`, 'content-type': 'application/json' }, body: JSON.stringify({ query: 'query BordeauxCheck { viewer { id } }' }) })
+      const answer = (await response.json().catch(() => ({}))) as { data?: { viewer?: { id?: string } }; errors?: { message?: string }[] }
+      if (answer.data?.viewer?.id) return
+      // Only a refused token is the link's to fix: an outage passes.
+      const said = answer.errors?.[0]?.message ?? ''
+      if (response.status === 401 || /authenticat/i.test(said)) throw new Error('Linear refused the token: bdx sync link linear')
+      throw new Error(`Linear didn't answer: ${said.slice(0, 40) || response.status}`)
+    },
   }
 }
 
@@ -289,6 +302,8 @@ export function linearTeamSync(env: Env): TeamSync | null {
 const SLACK_CHANNEL = /^(?:[CG][A-Z0-9]{8,}|#[\p{Ll}\p{Lo}\p{N}_-]{1,80})$/u
 /** What the Slack app asks a workspace for: the bot scopes self-hosted sync needs (docs/sync.md), less joining channels. */
 const SLACK_SCOPES = 'channels:history,groups:history,channels:read,groups:read,chat:write,chat:write.customize,reactions:read,reactions:write,users:read,users:read.email,files:read,files:write'
+/** What Slack answers for a token it won't take: the app removed, the token revoked, or the workspace gone. */
+const SLACK_REFUSED = new Set(['invalid_auth', 'not_authed', 'token_revoked', 'token_expired', 'account_inactive', 'team_access_not_granted'])
 /** How old a Slack request may be, by `X-Slack-Request-Timestamp`: Slack's own advice. */
 const SLACK_REQUEST_AGE_S = 300
 
@@ -382,6 +397,14 @@ export function slackTeamSync(env: Env): TeamSync | null {
       type Client = NonNullable<Exclude<Parameters<typeof slack>[0], string>['client']>
       const client = (async () => adapter.withBotToken(await botToken(), () => adapter.webClient)) as unknown as Client
       return slack({ adapter, client }, routing)
+    },
+    async check(_link, token) {
+      const response = await fetch('https://slack.com/api/auth.test', { method: 'POST', headers: { authorization: `Bearer ${(await token()).token}` } })
+      const answer = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+      if (answer.ok) return
+      // Only a refused token is the link's to fix: an outage or a rate limit passes.
+      if (SLACK_REFUSED.has(answer.error ?? '')) throw new Error('Slack refused the token: bdx sync link slack')
+      throw new Error(`Slack didn't answer: ${answer.error ?? response.status}`)
     },
   }
 }

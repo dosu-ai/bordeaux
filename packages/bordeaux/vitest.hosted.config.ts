@@ -6,12 +6,23 @@ import { defineConfig } from 'vitest/config'
 const sent: { method: string; url: string; token: string; body: string }[] = []
 
 /**
+ * Tokens a test revoked, as an admin would on the platform: `POST https://outbound.test/revoke`
+ * with the token. `down:<token>` makes the platform fail that token's calls as in an outage.
+ */
+const revoked = new Set<string>()
+
+/**
  * GitHub's API as the sync App sees it: an installation token for each installation, named by
  * it, its bot from GraphQL's `viewer`, and comments taken and recorded.
  */
 async function syncApp(request: Request): Promise<Response | null> {
   const url = new URL(request.url)
   if (url.href === 'https://outbound.test/sent') return Response.json(sent)
+  if (url.href === 'https://outbound.test/revoke' && request.method === 'POST') return revoked.add(await request.text()), new Response(null, { status: 204 })
+  // An installation, as the App asks about it; one a test revoked (`installation:<id>`) was uninstalled.
+  const installation = /^\/app\/installations\/(\d+)$/.exec(url.pathname)
+  if (url.hostname === 'api.github.com' && installation && request.method === 'GET')
+    return revoked.has(`installation:${installation[1]}`) ? Response.json({ message: 'Not Found' }, { status: 404 }) : Response.json({ id: Number(installation[1]), account: { id: 1, login: 'acme', type: 'Organization' } })
   const minting = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(url.pathname)
   if (url.hostname === 'api.github.com' && minting && request.method === 'POST')
     return Response.json({ token: `ghs_installation_${minting[1]}`, expires_at: new Date(Date.now() + 3_600_000).toISOString(), permissions: {}, repository_selection: 'selected' }, { status: 201 })
@@ -57,11 +68,13 @@ async function linearApi(request: Request): Promise<Response | null> {
   if (url.href !== 'https://api.linear.app/graphql') return null
   const token = (request.headers.get('authorization') ?? '').replace(/^bearer\s+/i, '')
   const org = /^lin_([a-z0-9]+)_\d+$/.exec(token)?.[1]
-  if (!org) return Response.json({ errors: [{ message: 'authentication required' }] }, { status: 401 })
+  if (!org || revoked.has(token)) return Response.json({ errors: [{ message: 'authentication required' }] }, { status: 401 })
+  if (revoked.has(`down:${token}`)) return Response.json({ errors: [{ message: 'Service unavailable' }] }, { status: 503 })
   const { query, variables } = (await request.json()) as { query: string; variables?: { id?: string; input?: { body?: string; issueId?: string } } }
   // Every call, by the token it came with: which workspace's token the app used, and when.
   if (!query.includes('commentCreate')) sent.push({ method: 'POST', url: `${url.href}#query`, token, body: query.slice(0, 200) })
   if (query.includes('BordeauxOrganization')) return Response.json({ data: { organization: { id: org, name: `Workspace ${org}` } } })
+  if (query.includes('BordeauxCheck')) return Response.json({ data: { viewer: { id: `bot-${org}` } } })
   if (query.includes('LinearAdapterViewerOrganization')) return Response.json({ data: { viewer: { id: `bot-${org}`, displayName: 'bordeaux', organization: { id: org } } } })
   const now = new Date().toISOString()
   // Every workspace has whatever team a test names, by its key.
@@ -108,6 +121,8 @@ async function slackApi(request: Request): Promise<Response | null> {
   const token = (request.headers.get('authorization') ?? '').replace(/^bearer\s+/i, '') || form.token || ''
   const team = /^xoxb-(T[A-Z0-9]+)-\d+$/.exec(token)?.[1]
   if (!team) return Response.json({ ok: false, error: 'invalid_auth' })
+  if (revoked.has(token)) return Response.json({ ok: false, error: 'token_revoked' })
+  if (revoked.has(`down:${token}`)) return Response.json({ ok: false, error: 'ratelimited' }, { status: 429, headers: { 'retry-after': '60' } })
   sent.push({ method: 'POST', url: url.href, token, body: text })
   if (method === 'auth.test') return Response.json({ ok: true, user_id: 'UBOT', bot_id: 'BBOT', team_id: team, user: 'bordeaux' })
   if (method === 'chat.postMessage') return Response.json({ ok: true, channel: form.channel, ts: `${Math.floor(Date.now() / 1000)}.${String(sent.length).padStart(6, '0')}`, message: { text: form.text, user: 'UBOT', bot_id: 'BBOT' } })
@@ -116,6 +131,8 @@ async function slackApi(request: Request): Promise<Response | null> {
   if (method === 'conversations.info') return Response.json({ ok: true, channel: { id: form.channel, name: form.channel === 'C0NAMED001' ? 'support' : 'other', is_member: true } })
   // A channel whose history reads are over Slack's limit for an app outside its Marketplace.
   if (method === 'conversations.replies' && form.channel === 'C0LIMITED1') return Response.json({ ok: false, error: 'ratelimited' }, { status: 429, headers: { 'retry-after': '60' } })
+  // A bot deletes only its own messages, and every message in these workspaces is a person's.
+  if (method === 'chat.delete') return Response.json({ ok: false, error: 'cant_delete_message' })
   if (method === 'chat.getPermalink') return Response.json({ ok: true, permalink: `https://${team.toLowerCase()}.slack.com/archives/${form.channel}/p${(form.message_ts ?? '').replace('.', '')}` })
   return Response.json({ ok: true, messages: [] })
 }

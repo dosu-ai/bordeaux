@@ -21,6 +21,12 @@ export type TeamSync = {
    * platform whose tokens the team's directory keeps (`oauth`), for that link only.
    */
   build(rows: SyncRow[], link: string | undefined, token: () => Promise<SyncAccess>): SyncProvider | null
+  /**
+   * Asks the platform, as the team's link, whether it still answers (`bdx health`): one call that
+   * throws, saying why, when the app was removed or its token revoked. A provider's own first
+   * sign-in can't tell: upstream's adapters log a refused one and go on.
+   */
+  check(link: string, token: () => Promise<SyncAccess>): Promise<void>
   /** Where an owner turns the platform on for their account, such as the sync App's install page. */
   install?: string
   /** A platform a team links to by OAuth, whose tokens its directory keeps sealed (Linear). */

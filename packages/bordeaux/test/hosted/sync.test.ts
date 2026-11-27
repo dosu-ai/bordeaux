@@ -461,11 +461,11 @@ async function linkSlack(at: { url: string }, owner: string, code: string) {
 /** What the Slack app sent Slack's Web API. */
 const toSlack = async () => ((await (await fetch('https://outbound.test/sent')).json()) as { url: string; token: string; body: string }[]).filter((one) => one.url.startsWith('https://slack.com/api/'))
 /** The messages the Slack app posted, as Slack's Web API took them: their text is `markdown_text`, or `text`. */
-const slackPosts = async () =>
+const slackPosts = async (method = 'chat.postMessage') =>
   (await toSlack())
-    .filter((one) => one.url.endsWith('/chat.postMessage'))
+    .filter((one) => one.url.endsWith(`/${method}`))
     .map((one) => Object.fromEntries(new URLSearchParams(one.body)) as Record<string, string>)
-    .map((form) => ({ ...form, text: form.markdown_text ?? form.text ?? '' }))
+    .map((form) => ({ ...form, text: form.markdown_text ?? form.text ?? '' }) as Record<string, string> & { text: string })
 
 describe('hosted Slack sync', () => {
   it('stays off quietly before the Slack app is set up, and says which setting is missing when some are', () => {
@@ -637,5 +637,51 @@ describe('hosted Slack sync', () => {
     expect((await slackEvent(slackMessage('TF', 'C0FORGED01', 'Direct').payload, { url: `${at.url}/webhooks/slack` })).status).toBe(404)
     await until(at.id, async () => true)
     expect(await roots(at.url, owner, 'forged')).toEqual([])
+  })
+})
+
+describe("a hosted team's health and redaction, by its own sync", () => {
+  it("shows an owner whether each platform the team syncs still answers its link, and says which doesn't and why", async () => {
+    const at = await team('health-rows', 9601)
+    const owner = await person(at, 120, true)
+    const checked = async () => ((await call(at.url, owner, 'GET', '/admin/health')).body.sync as { key: string; ok: boolean; error?: string }[]).sort((a, b) => a.key.localeCompare(b.key))
+    // A row on a platform the team hasn't linked reaches nothing yet.
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'linear', external: 'HLT', channel: 'hlt' })
+    expect(await checked()).toEqual([{ key: 'linear', platform: 'linear', ok: false, error: 'not linked: bdx sync link linear' }])
+    await deliver('installation', { action: 'created', installation: { id: 7601, account: { id: 9601, login: 'health-rows', type: 'Organization' } } })
+    await linkLinear(at, owner, 'code-orgh')
+    await linkSlack(at, owner, 'code-TH')
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'health-rows/web', channel: 'hlt' })
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external: 'C0HEALTH01', channel: 'hlt' })
+    expect((await checked()).map(({ key, ok }) => ({ key, ok }))).toEqual([{ key: 'github', ok: true }, { key: 'linear', ok: true }, { key: 'slack', ok: true }])
+    // Linear down, Slack rate-limiting: nothing for an owner to link again.
+    for (const token of ['down:lin_orgh_1', 'down:xoxb-TH-1']) await fetch('https://outbound.test/revoke', { method: 'POST', body: token })
+    expect((await checked()).filter((one) => !one.ok)).toEqual([
+      { key: 'linear', platform: 'linear', ok: false, error: "Linear didn't answer: Service unavailable" },
+      { key: 'slack', platform: 'slack', ok: false, error: "Slack didn't answer: ratelimited" },
+    ])
+    // Each platform's admin takes the app away: the App uninstalled, the tokens revoked.
+    for (const token of ['installation:7601', 'lin_orgh_1', 'xoxb-TH-1']) await fetch('https://outbound.test/revoke', { method: 'POST', body: token })
+    expect(await checked()).toEqual([
+      { key: 'github', platform: 'github', ok: false, error: "the sync App isn't installed: bdx sync link github" },
+      { key: 'linear', platform: 'linear', ok: false, error: 'Linear refused the token: bdx sync link linear' },
+      { key: 'slack', platform: 'slack', ok: false, error: 'Slack refused the token: bdx sync link slack' },
+    ])
+    // Each fits bdx health's row in 80 columns.
+    for (const { error } of await checked()) expect(`sync      ${'github'.padEnd(12)} ${error}`.length).toBeLessThanOrEqual(80)
+  })
+
+  it('asks the platform a synced message came from to delete it there, with the team’s own token', async () => {
+    const at = await team('redact-rows', 9602)
+    const owner = await person(at, 121, true)
+    await linkSlack(at, owner, 'code-TD')
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external: 'C0REDACT01', channel: 'leaks' })
+    const { ts, payload } = slackMessage('TD', 'C0REDACT01', 'my key is hunter2')
+    await slackEvent(payload)
+    const leaked = await until(at.id, async () => (await roots(at.url, owner, 'leaks')).find((m) => m.text.includes('hunter2')))
+    const { body } = await call(at.url, owner, 'POST', `/admin/messages/${leaked.id}/redact`, { reason: 'a secret', everywhere: true })
+    // Slack lets a bot delete only its own messages, and says so: the owner deletes it there.
+    expect(body.everywhere).toMatchObject({ deleted: false, target: `slack:C0REDACT01:${ts}`, error: expect.stringContaining('cant_delete_message') })
+    expect((await slackPosts('chat.delete')).find((one) => one.ts === ts)).toMatchObject({ token: 'xoxb-TD-1', channel: 'C0REDACT01' })
   })
 })
