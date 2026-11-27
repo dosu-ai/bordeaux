@@ -440,13 +440,15 @@ team, and the hub's webhook route is namespaced by platform.
   last changed (`version`, from the DirectoryDO) and the links theirs (`sync_at`, on the record),
   and a board's DO keeps the newer of each, so an isolate that kept the team longer can't hand it
   back older rows or links.
-- **The routes that show or check a team's links read it fresh.** `/admin/sync`,
-  `/admin/sync/link`, and `/admin/health` read the team's record and rows again, not as the
-  isolate kept them, and keep what they read. A link is made on whichever isolate took the
-  install or the OAuth callback, so `bdx sync add` right after installing the sync App would
-  otherwise ask the owner to install it, and skip asking it whether it sees the repo. Live on
-  2026-11-27 it did. Each of those requests costs one registry read and one DirectoryDO read
-  more. Reading a kept team again isn't held to `LOOKUP_LIMITER`.
+- **The routes that show or check a team's links read it fresh.** `GET /admin/sync`, `POST
+  /admin/sync` and `/admin/sync/link`, and the default board's `/admin/health` read the team's
+  record and rows again once the caller is verified, not as the isolate kept them, and keep what
+  they read. A link is made on whichever isolate took the install or the OAuth callback, so `bdx
+  sync add` right after installing the sync App would otherwise ask the owner to install it, and
+  skip asking it whether it sees the repo. Live on 2026-11-27 it did. Each of those requests costs
+  one registry read more, and, when the Worker syncs any platform, one DirectoryDO read. A read
+  that started before this isolate forgot the host isn't kept, so it can't put back the team as
+  it was.
 - **The sync App** is `bordeaux-ai-sync` (`GITHUB_SYNC_APP_SLUG`), with `GITHUB_SYNC_APP_ID`,
   and the secrets `GITHUB_SYNC_PRIVATE_KEY` and `GITHUB_SYNC_WEBHOOK_SECRET`. Its setup URL is
   `<hub>/sync/setup`: the hub asks GitHub, as the sync App, whose installation it is, and links
@@ -624,10 +626,10 @@ team, and the hub's webhook route is namespaced by platform.
   back with that installation's token; members can read rows but not change them; an event
   that isn't the sync App's, or is sent straight to a team's host, is refused; an uninstalled
   sync App's or a suspended team's events are dropped; a link made on another isolate counts for
-  the next event, and for the owner's next `bdx sync add`, `link`, and `list`, and `bdx health`;
-  an event for a team with no rows answers 200. Which of two views of a team's sync a board's DO
-  keeps is tested on its own, not through the DO: in one test isolate the board takes an event
-  before a stale view could reach it. Not checked live: the sync App isn't
+  the next event, and a link or an unlink for the owner's next `bdx sync add`, `link`, and `list`,
+  and `bdx health`; an event for a team with no rows answers 200. Which of two views of a team's
+  sync a board's DO keeps is tested on its own, not through the DO: in one test isolate the board
+  takes an event before a stale view could reach it. Not checked live: the sync App isn't
   registered yet ([docs/hosted.md](../docs/hosted.md), step 7).
 - **Hosted Linear and Slack sync, in vitest:** each linked by its OAuth flow against a fake of
   the platform's API in `vitest.hosted.config.ts`, with two teams in one Worker. A link's ticket

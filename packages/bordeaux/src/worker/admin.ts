@@ -11,7 +11,7 @@ import { checkSync, checkTeamSync } from './health.ts'
 import { syncRedirect, teamSyncOf, type TeamSync } from './config.ts'
 import { REASON_MAX, type Redacted } from '../engine/redact.ts'
 import { ChannelPath } from '../upstream/contract/schemas.ts'
-import { forgetHost, type Team } from './team.ts'
+import { forgetHost, teamAgain, type Team } from './team.ts'
 
 /** The longest a service token lasts (spec 03). */
 const SERVICE_TTL_MAX = 90 * 24 * 3600
@@ -69,7 +69,10 @@ export async function admin(request: Request, env: BordeauxEnv, team: Team, me: 
   if (pathname === '/admin/health' && request.method === 'GET') {
     const stub = await named()
     if (stub instanceof Response) return stub
-    const [health, sync] = await Promise.all([stub.health(), name !== null ? Promise.resolve([]) : team.sync ? checkTeamSync(env, team) : checkSync(env)])
+    // The default board's sync is checked by the team's links as they are now, not as this isolate kept them.
+    const now = name === null ? await teamAgain(env, team) : team
+    if (now instanceof Response) return now
+    const [health, sync] = await Promise.all([stub.health(), name !== null ? Promise.resolve([]) : now.sync ? checkTeamSync(env, now) : checkSync(env)])
     return Response.json({ board: name?.toLowerCase() ?? null, ...health, worker: env.CF_VERSION_METADATA?.id ?? null, sync })
   }
 
@@ -182,16 +185,29 @@ async function sync(request: Request, env: BordeauxEnv, team: Team, who: Me): Pr
   const { pathname } = new URL(request.url)
   const dir = directory(env, team)
   const providers = teamSyncOf(env)
+  // A link is made on whichever isolate took the install or the OAuth callback, so what shows or
+  // checks the team's links reads the team again, not as this isolate kept it.
+  const again = async () => {
+    const now = await teamAgain(env, team)
+    if (now instanceof Response) return now
+    team = now
+  }
   const linked = (provider: string) => team.sync?.links[provider] !== undefined
   // A platform linked by OAuth gets an install URL for owners only, each with a ticket of its own.
   // A link whose refresh token the platform refused says so: it syncs nothing until linked again.
   const status = (refused: Record<string, string>) =>
     Object.entries(providers).map(([provider, built]) => ({ provider, linked: linked(provider), ...(built.install ? { install: built.install } : {}), ...(linked(provider) && refused[provider] ? { refused: refused[provider] } : {}) }))
   if (pathname === '/admin/sync' && request.method === 'GET') {
+    const gone = await again()
+    if (gone) return gone
     const [rows, refused] = await Promise.all([dir.syncRows(), dir.syncRefused()])
     return Response.json({ sync: rows, providers: status(refused) })
   }
   if (!(await dir.isOwner(who.principal))) return error(403, 'forbidden', "only the team's owners change its sync")
+  if (request.method === 'POST') {
+    const gone = await again()
+    if (gone) return gone
+  }
   /** Where an owner links the team to `provider`: the sync App's install page, or the platform's OAuth page with a ticket. */
   const install = async (provider: string, built: TeamSync) => {
     if (!built.oauth) return built.install ?? null

@@ -235,6 +235,26 @@ describe('hosted GitHub sync', () => {
     expect((await call(checking.at.url, checking.owner, 'GET', '/admin/health')).body.sync).toEqual([{ key: 'github', platform: 'github', ok: true }])
   })
 
+  it('shows an owner an unlink another isolate made at once: bdx sync add and bdx health', async () => {
+    /** A team with a row, kept by this isolate linked to the sync App, then unlinked by another isolate. */
+    const unlinkedElsewhere = async (login: string, account: number, user: number) => {
+      const at = await team(login, account)
+      const owner = await person(at, user, true)
+      await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: `${login}/web`, channel: 'prs' })
+      await registry(env).link('github', account + 1000, account)
+      // This isolate keeps the team linked...
+      expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toContainEqual(expect.objectContaining({ provider: 'github', linked: true }))
+      // ...and another isolate takes the sync App's uninstall, which forgets the host only there.
+      await registry(env).unlink('github', account + 1000)
+      return { at, owner }
+    }
+
+    const adding = await unlinkedElsewhere('sync-gone-add', 6721, 86)
+    expect(await call(adding.at.url, adding.owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-gone-add/api', channel: 'prs' })).toMatchObject({ status: 201, body: { created: true, linked: false, install: 'https://github.com/apps/bordeaux-ai-sync/installations/new' } })
+    const checking = await unlinkedElsewhere('sync-gone-health', 6722, 87)
+    expect((await call(checking.at.url, checking.owner, 'GET', '/admin/health')).body.sync).toEqual([{ key: 'github', platform: 'github', ok: false, error: 'not linked: bdx sync link github' }])
+  })
+
   it("answers 200 to an event for a team that maps none of its repos yet, and hands it to no board", async () => {
     const at = await team('sync-unmapped', 6801)
     await deliver('installation', { action: 'created', installation: { id: 7801, account: { id: 6801, login: 'sync-unmapped', type: 'Organization' } } })
