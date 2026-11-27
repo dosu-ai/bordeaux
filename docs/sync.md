@@ -5,12 +5,13 @@ providers, same routing (`channels`, `repos`, `teams`), same behavior both ways.
 is credentials. Vercel Connect isn't available, so each platform's app is yours, and its
 secrets live in the Worker (spec 06, "Credentials without Vercel Connect").
 
-A hosted board (`<login>.board.dosu.ai`) has no code of its own: its owners map repos and
-Linear teams to channels with `bdx sync add github <owner/repo> <channel> [--mirror]` or `bdx
-sync add linear <team key> <channel> [--mirror]` (`bdx sync list`, `bdx sync rm`). GitHub syncs
-once Dosu's sync App is on their account; Linear once a workspace admin approves the link `bdx
-sync link linear` prints. Slack isn't hosted yet (spec 09). The rest of this page is for a board
-you deploy yourself.
+A hosted board (`<login>.board.dosu.ai`) has no code of its own: its owners map repos, Linear
+teams, and Slack channels to board channels with `bdx sync add github <owner/repo> <channel>`,
+`bdx sync add linear <team key> <channel>`, or `bdx sync add slack <C0… or #name> <channel>`,
+each with `--mirror` to send board replies back (`bdx sync list`, `bdx sync rm`). GitHub syncs
+once Dosu's sync App is on their account; Linear and Slack once a workspace admin approves the
+link `bdx sync link linear` or `bdx sync link slack` prints, and Slack in the channels the app is
+invited to. The rest of this page is for a board you deploy yourself.
 
 Sync runs on the default board, inside its Durable Object: a platform's webhook lands in the
 board's inbox, the board brings it on, and a reply on the board goes back out. Each step is

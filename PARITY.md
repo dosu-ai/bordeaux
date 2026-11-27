@@ -72,7 +72,7 @@ Status key:
 | Sync running elsewhere (`/sync/*`, `/inbox/*`) | yes | yes | = |
 | Slack, GitHub, Linear, Chat SDK providers | upstream providers + Connect | upstream providers + Worker secrets | Δ |
 | Full GitHub event set | Connect forwards only `pull_request` | full set (own GitHub App) | + |
-| Sync on a hosted board | Connect, set up in Vercel's dashboard | GitHub and Linear, as rows its owners set with `bdx sync add`, through Dosu's sync App and Linear app (spec 09); Slack later | Δ |
+| Sync on a hosted board | Connect, set up in Vercel's dashboard | GitHub, Linear, and Slack, as rows its owners set with `bdx sync add`, through Dosu's sync App, Linear app, and Slack app (spec 09); Slack's history reads are limited until the app is in Slack's Marketplace | Δ |
 | Typing, `readSource`, `joinSource`, link lookup | yes | yes | = |
 
 ## Clients
