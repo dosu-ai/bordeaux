@@ -98,8 +98,23 @@ const found = new Lru<string, { record: TeamRecord | null; rows: Rows | undefine
 const FOUND_MS = 5 * 60_000
 const MISSING_MS = 30_000
 
+/**
+ * When this isolate last forgot each host, by a counter: a read that started before then may have
+ * read the team as it was, so it isn't kept.
+ */
+let tick = 0
+const forgotten = new Lru<string, number>(2000)
+
 /** Drops what this isolate knows of a host, after its team changed here. */
-export const forgetHost = (host: string) => found.delete(host.toLowerCase())
+export const forgetHost = (host: string) => {
+  found.delete(host.toLowerCase())
+  forgotten.set(host.toLowerCase(), ++tick)
+}
+
+/** Keeps what a read that started at `since` found, unless the host was forgotten while it read. */
+const keep = (key: string, since: number, record: TeamRecord | null, rows: Rows | undefined) => {
+  if ((forgotten.get(key) ?? 0) <= since) found.set(key, { record, rows, until: Date.now() + (record ? FOUND_MS : MISSING_MS) })
+}
 
 const refuse = (status: number, code: string, message: string) => Response.json({ error: { code, message } }, { status })
 
@@ -114,9 +129,10 @@ export async function teamAt(env: BordeauxEnv, hub: URL, host: string, request?:
     // to a few a minute, so it can't keep the registry from everyone else.
     const ip = request?.headers.get('cf-connecting-ip')
     if (ip && env.LOOKUP_LIMITER && !(await env.LOOKUP_LIMITER.limit({ key: ip })).success) return refuse(429, 'rate_limited', 'too many hosts looked up from here this minute: wait and try again')
+    const since = tick
     record = await registry(env).byHost(key)
     rows = record ? await rowsOf(env, record) : undefined
-    found.set(key, { record, rows, until: Date.now() + (record ? FOUND_MS : MISSING_MS) })
+    keep(key, since, record, rows)
   }
   if (!record) return refuse(404, 'no_team', `no team is at ${key}: a GitHub org or person makes one at ${hub.origin}`)
   return usable(env, hub, record, rows)
@@ -131,10 +147,24 @@ const rowsOf = async (env: BordeauxEnv, record: TeamRecord): Promise<Rows | unde
  * hub, which found the team by a platform's event, so a link or a row made on another isolate
  * counts at once. This isolate keeps what it read.
  */
-export async function freshTeam(env: BordeauxEnv, hub: URL, record: TeamRecord): Promise<Team | Response> {
+export async function freshTeam(env: BordeauxEnv, hub: URL, record: TeamRecord, since = tick): Promise<Team | Response> {
   const rows = await rowsOf(env, record)
-  found.set(record.host, { record, rows, until: Date.now() + FOUND_MS })
+  keep(record.host, since, record, rows)
   return usable(env, hub, record, rows)
+}
+
+/**
+ * A hosted team read again, record and rows, not as this isolate kept it: for the admin routes
+ * that show or check its links, once the caller is verified, since a link is made on whichever
+ * isolate took the install or the OAuth callback. A self-hosted team is as it was.
+ */
+export async function teamAgain(env: BordeauxEnv, team: Team): Promise<Team | Response> {
+  const hub = hubOf(env)
+  if (!hub) return team
+  const since = tick
+  const record = await registry(env).byHost(new URL(team.url).host)
+  if (!record) return refuse(404, 'no_team', `no team is at ${new URL(team.url).host} any more`)
+  return freshTeam(env, hub, record, since)
 }
 
 /** A hosted team as its requests see it, or why it can't be used: suspended, uninstalled, or being deleted. */

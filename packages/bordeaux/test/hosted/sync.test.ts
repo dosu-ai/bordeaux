@@ -206,6 +206,55 @@ describe('hosted GitHub sync', () => {
     await until(at.id, async () => (await roots(at.url, owner, 'prs')).find((m) => m.text.includes('Right after')))
   })
 
+  it('shows an owner a link another isolate made at once: bdx sync add, link, and list, and bdx health', async () => {
+    /** A team with a row, kept by this isolate with no link, then linked to the sync App by another isolate. */
+    const linkedElsewhere = async (login: string, account: number, user: number) => {
+      const at = await team(login, account)
+      const owner = await person(at, user, true)
+      expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: `${login}/web`, channel: 'prs' })).body).toMatchObject({ created: true, linked: false })
+      // This isolate keeps the team as it is now, with no link...
+      expect((await call(at.url, owner, 'GET', '/admin/boards')).status).toBe(200)
+      // ...and another isolate takes the sync App's installation event, which forgets the host only there.
+      await registry(env).link('github', account + 1000, account)
+      return { at, owner }
+    }
+
+    // bdx sync add asks the App whether it sees the repo, and doesn't ask the owner to install it.
+    const adding = await linkedElsewhere('sync-fresh-add', 6711, 81)
+    expect(await call(adding.at.url, adding.owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-fresh-add/unseen-docs', channel: 'prs' })).toMatchObject({ status: 400, body: { error: { message: expect.stringContaining("the sync App can't see sync-fresh-add/unseen-docs") } } })
+    const added = await linkedElsewhere('sync-fresh-added', 6712, 82)
+    const answer = await call(added.at.url, added.owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-fresh-added/api', channel: 'prs' })
+    expect(answer).toMatchObject({ status: 201, body: { created: true, linked: true } })
+    expect(answer.body.install).toBeUndefined()
+
+    const linking = await linkedElsewhere('sync-fresh-link', 6713, 83)
+    expect((await call(linking.at.url, linking.owner, 'POST', '/admin/sync/link', { provider: 'github' })).body).toMatchObject({ linked: true })
+    const listing = await linkedElsewhere('sync-fresh-list', 6714, 84)
+    expect((await call(listing.at.url, listing.owner, 'GET', '/admin/sync')).body.providers).toContainEqual(expect.objectContaining({ provider: 'github', linked: true }))
+    const checking = await linkedElsewhere('sync-fresh-health', 6715, 85)
+    expect((await call(checking.at.url, checking.owner, 'GET', '/admin/health')).body.sync).toEqual([{ key: 'github', platform: 'github', ok: true }])
+  })
+
+  it('shows an owner an unlink another isolate made at once: bdx sync add and bdx health', async () => {
+    /** A team with a row, kept by this isolate linked to the sync App, then unlinked by another isolate. */
+    const unlinkedElsewhere = async (login: string, account: number, user: number) => {
+      const at = await team(login, account)
+      const owner = await person(at, user, true)
+      await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: `${login}/web`, channel: 'prs' })
+      await registry(env).link('github', account + 1000, account)
+      // This isolate keeps the team linked...
+      expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toContainEqual(expect.objectContaining({ provider: 'github', linked: true }))
+      // ...and another isolate takes the sync App's uninstall, which forgets the host only there.
+      await registry(env).unlink('github', account + 1000)
+      return { at, owner }
+    }
+
+    const adding = await unlinkedElsewhere('sync-gone-add', 6721, 86)
+    expect(await call(adding.at.url, adding.owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-gone-add/api', channel: 'prs' })).toMatchObject({ status: 201, body: { created: true, linked: false, install: 'https://github.com/apps/bordeaux-ai-sync/installations/new' } })
+    const checking = await unlinkedElsewhere('sync-gone-health', 6722, 87)
+    expect((await call(checking.at.url, checking.owner, 'GET', '/admin/health')).body.sync).toEqual([{ key: 'github', platform: 'github', ok: false, error: 'not linked: bdx sync link github' }])
+  })
+
   it("answers 200 to an event for a team that maps none of its repos yet, and hands it to no board", async () => {
     const at = await team('sync-unmapped', 6801)
     await deliver('installation', { action: 'created', installation: { id: 7801, account: { id: 6801, login: 'sync-unmapped', type: 'Organization' } } })
