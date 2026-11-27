@@ -40,10 +40,14 @@ export async function checkSync(env: BordeauxEnv, given: BordeauxConfig['sync'] 
 export async function checkTeamSync(env: BordeauxEnv, team: Team): Promise<SyncHealth[]> {
   const rows = team.sync?.rows ?? []
   const given = Object.entries(teamSyncOf(env)).filter(([key]) => rows.some((row) => row.provider === key))
+  // A link the platform won't refresh again is over, though its last token may still answer.
+  // Not knowing leaves each platform's own check to say.
+  const refused: Record<string, string> = given.length > 0 ? await directory(env, team).syncRefused().catch(() => ({})) : {}
   return Promise.all(
     given.map(async ([key, sync]) => {
       const link = team.sync?.links[key]
       if (link === undefined) return { key, platform: key, ok: false, error: `not linked: bdx sync link ${key}` }
+      if (refused[key]) return { key, platform: key, ok: false, error: refused[key] }
       return within(key, key, sync.check(link, () => directory(env, team).syncToken(key, link), rows.filter((row) => row.provider === key)))
     }),
   )

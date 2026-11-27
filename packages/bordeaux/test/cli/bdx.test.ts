@@ -136,3 +136,34 @@ describe('bdx sync add slack', () => {
     }
   })
 })
+
+describe('bdx sync list', () => {
+  it("says which linked platform stopped syncing, and how to link it again", async () => {
+    const board = createServer((request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({
+        sync: [{ provider: 'linear', external: 'ENG', channel: 'eng', direction: 'mirror' }, { provider: 'github', external: 'acme/web', channel: 'prs', direction: 'into' }],
+        providers: [
+          { provider: 'github', linked: true, install: 'https://github.com/apps/bordeaux-ai-sync/installations/new' },
+          { provider: 'linear', linked: true, refused: 'Linear refused the refresh token: bdx sync link linear' },
+        ],
+      }))
+    })
+    await new Promise<void>((resolve) => board.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${(board.address() as AddressInfo).port}`
+    const config = mkdtempSync(join(tmpdir(), 'bdx-signed-'))
+    mkdirSync(join(config, 'bordeaux'))
+    const tokens = { [url]: { access_token: 'test-access', expires_at: new Date(Date.now() + 3_600_000).toISOString() } }
+    writeFileSync(join(config, 'bordeaux', 'credentials.json'), JSON.stringify({ current: url, boards: { [url]: { refresh_token: 'test-refresh', tokens } } }))
+    try {
+      const run = await bdxIn(config, 'sync', 'list')
+      expect(run.code).toBe(0)
+      expect(run.stdout).toContain('linear  ENG')
+      expect(run.stderr).toBe('linear stopped syncing: Linear refused the refresh token: bdx sync link linear\n')
+      for (const line of run.stderr.split('\n')) expect(line.length).toBeLessThanOrEqual(80)
+    } finally {
+      board.close()
+      rmSync(config, { recursive: true, force: true })
+    }
+  })
+})

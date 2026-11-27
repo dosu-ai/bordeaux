@@ -408,11 +408,15 @@ async function syncRows(url: string, args: string[]) {
   const [, action, provider, external, channel] = positionals(args)
   const json = args.includes('--json')
   if (action === 'list') {
-    const found = (await asYou(url, 'GET', '/admin/sync')) as { sync: { provider: string; external: string; channel: string; direction: string }[]; providers: { provider: string; linked: boolean; install?: string }[] }
+    const found = (await asYou(url, 'GET', '/admin/sync')) as { sync: { provider: string; external: string; channel: string; direction: string }[]; providers: { provider: string; linked: boolean; install?: string; refused?: string }[] }
     if (json) return void process.stdout.write(`${JSON.stringify(found)}\n`)
     const width = Math.max(0, ...found.sync.map((row) => `${row.provider}  ${row.external}`.length))
     for (const row of found.sync) process.stdout.write(`${`${row.provider}  ${row.external}`.padEnd(width)}  ${row.channel.padEnd(16)}  ${row.direction}\n`)
-    for (const given of found.providers) if (!given.linked && found.sync.some((row) => row.provider === given.provider)) process.stderr.write(`${given.provider} isn't linked yet: ${given.install ?? `bdx sync link ${given.provider}`}\n`)
+    for (const given of found.providers) {
+      if (!found.sync.some((row) => row.provider === given.provider)) continue
+      if (!given.linked) process.stderr.write(`${given.provider} isn't linked yet: ${given.install ?? `bdx sync link ${given.provider}`}\n`)
+      else if (given.refused) process.stderr.write(`${given.provider} stopped syncing: ${given.refused}\n`)
+    }
     return
   }
   if (action === 'add' && provider && external && channel) {

@@ -520,11 +520,17 @@ team, and the hub's webhook route is namespaced by platform.
   Events for no team, or for a team with no Linear rows, get 200, as GitHub's do.
 - **Not yet:** a ticket proves an owner asked for the link, not who approves it in Linear. A
   workspace admin sent an owner's link links their workspace to that team. Linear's consent
-  page names the app and the workspace, and only an admin can approve it. A refresh token
-  Linear refuses (revoked, or unused for 30 days) leaves the link in place: the access token is
-  used while it lasts, Linear is asked again every 5 minutes, and calls fail with the refusal
-  until an owner links again. Refreshing one at a time and writing over only the refreshed
-  tokens have no test: no route can make two calls meet inside one refresh.
+  page names the app and the workspace, and only an admin can approve it. Refreshing one at a
+  time and writing over only the refreshed tokens have no test: no route can make two calls
+  meet inside one refresh.
+- **A refused refresh token.** Linear answers `invalid_grant` for a refresh token it won't take
+  (revoked, or unused for 30 days), and it won't take it later either. The DirectoryDO keeps
+  the refusal with the tokens it was for, uses the access token while it lasts, and never asks
+  Linear again. `bdx sync list` says `linear stopped syncing` and how to link it again, and
+  `bdx health` fails Linear's check with the same words, before the access token runs out.
+  Linking again replaces the tokens, and with them the refusal. Any other failed refresh is
+  asked again after 5 minutes. Linear's reason goes to the Worker's log, not the message, so
+  the line fits 80 columns. If the DirectoryDO can't say, health leaves it to Linear's check.
 
 **As built (Slack):**
 

@@ -184,8 +184,13 @@ async function sync(request: Request, env: BordeauxEnv, team: Team, who: Me): Pr
   const providers = teamSyncOf(env)
   const linked = (provider: string) => team.sync?.links[provider] !== undefined
   // A platform linked by OAuth gets an install URL for owners only, each with a ticket of its own.
-  const status = () => Object.entries(providers).map(([provider, built]) => ({ provider, linked: linked(provider), ...(built.install ? { install: built.install } : {}) }))
-  if (pathname === '/admin/sync' && request.method === 'GET') return Response.json({ sync: await dir.syncRows(), providers: status() })
+  // A link whose refresh token the platform refused says so: it syncs nothing until linked again.
+  const status = (refused: Record<string, string>) =>
+    Object.entries(providers).map(([provider, built]) => ({ provider, linked: linked(provider), ...(built.install ? { install: built.install } : {}), ...(linked(provider) && refused[provider] ? { refused: refused[provider] } : {}) }))
+  if (pathname === '/admin/sync' && request.method === 'GET') {
+    const [rows, refused] = await Promise.all([dir.syncRows(), dir.syncRefused()])
+    return Response.json({ sync: rows, providers: status(refused) })
+  }
   if (!(await dir.isOwner(who.principal))) return error(403, 'forbidden', "only the team's owners change its sync")
   /** Where an owner links the team to `provider`: the sync App's install page, or the platform's OAuth page with a ticket. */
   const install = async (provider: string, built: TeamSync) => {
