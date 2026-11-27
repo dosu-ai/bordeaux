@@ -24,6 +24,9 @@ export { RegistryDO } from './registry.ts'
 const requestContext = new AsyncLocalStorage<{ waitUntil(promise: Promise<unknown>): void }>()
 Reflect.set(globalThis, Symbol.for('@vercel/request-context'), { get: () => requestContext.getStore() })
 
+/** The routes that read a hosted team's sync links: `bdx sync add`, `link`, and `list`, and `bdx health`. */
+const FRESH = new Set(['/admin/sync', '/admin/sync/link', '/admin/health'])
+
 /** One request to one of the team's boards, or to its routes beside them. */
 async function route(request: Request, env: BordeauxEnv, team: Team): Promise<Response> {
   const { pathname } = new URL(request.url)
@@ -86,7 +89,8 @@ export default {
       const url = new URL(request.url)
       const host = `${url.hostname.replace(/\.$/, '')}${url.port ? `:${url.port}` : ''}`
       if (host === at.host) return hub(request, env, at)
-      const team = await teamAt(env, at, host, request)
+      // What shows or checks the team's links reads it again: another isolate may have just linked one.
+      const team = await teamAt(env, at, host, request, FRESH.has(url.pathname))
       if (team instanceof Response) return team
       if (env.REQUEST_LIMITER && !(await env.REQUEST_LIMITER.limit({ key: team.id })).success)
         return Response.json({ error: { code: 'rate_limited', message: 'this team has made too many requests this minute: wait and try again' } }, { status: 429, headers: { 'retry-after': '60' } })
