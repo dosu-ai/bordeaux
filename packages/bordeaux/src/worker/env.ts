@@ -75,6 +75,14 @@ export interface BordeauxEnv {
   GITHUB_SYNC_WEBHOOK_SECRET?: string
   /** Hosted: the sync App's slug (`bordeaux-ai-sync` if unset): its install page, and its bot's login, `<slug>[bot]`. */
   GITHUB_SYNC_APP_SLUG?: string
+  /** Hosted: the Linear app's client ID, the OAuth app a team links its Linear workspace with (spec 09, "Sync, later"). */
+  LINEAR_SYNC_CLIENT_ID?: string
+  /** Hosted: the Linear app's client secret. A secret. */
+  LINEAR_SYNC_CLIENT_SECRET?: string
+  /** Hosted: the Linear app's webhook signing secret, which the hub and each team's board check its events by. A secret. */
+  LINEAR_SYNC_WEBHOOK_SECRET?: string
+  /** Hosted: 32 random bytes, base64, that seal each team's platform tokens (Linear's) in its directory. A secret. */
+  BORDEAUX_SYNC_KEY?: string
   /**
    * This Worker version's ID and upload time (`version_metadata` in wrangler.jsonc). A board's
    * Durable Object that a newer version calls resets itself once it's idle, so a deploy reaches

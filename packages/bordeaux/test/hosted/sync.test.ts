@@ -1,8 +1,9 @@
-// Hosted sync as data (spec 09, "Sync, later"): two teams on one Worker, each with its own rows
-// and its own installation of the sync App, GitHub answered by vitest.hosted.config.ts.
+// Hosted sync as data (spec 09, "Sync, later"): two teams on one Worker, each with its own rows,
+// its own installation of the sync App, and its own Linear workspace, GitHub and Linear answered
+// by vitest.hosted.config.ts.
 import { env, runDurableObjectAlarm, SELF } from 'cloudflare:test'
 import { describe, expect, it, vi } from 'vitest'
-import { githubTeamSync } from '../../src/sync/index.ts'
+import { githubTeamSync, linearTeamSync } from '../../src/sync/index.ts'
 import { directory, personId } from '../../src/worker/auth.ts'
 import { boardKey } from '../../src/worker/backend.ts'
 import { registry } from '../../src/worker/registry.ts'
@@ -125,7 +126,7 @@ describe('hosted GitHub sync', () => {
     // Each installs the sync App on its account.
     expect(await (await deliver('installation', { action: 'created', installation: { id: 7101, account: { id: 6101, login: 'sync-a', type: 'Organization' } } })).json()).toEqual({ ok: true, team: a.id })
     expect(await (await deliver('installation', { action: 'created', installation: { id: 7102, account: { id: 6102, login: 'sync-b', type: 'Organization' } } })).json()).toEqual({ ok: true, team: b.id })
-    expect((await call(a.url, ownerA, 'GET', '/admin/sync')).body.providers).toEqual([{ provider: 'github', linked: true, install: 'https://github.com/apps/bordeaux-ai-sync/installations/new' }])
+    expect((await call(a.url, ownerA, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'github', linked: true, install: 'https://github.com/apps/bordeaux-ai-sync/installations/new' })
 
     expect((await deliver('issues', opened(7101, 'sync-a/web', 1, 'A is broken'))).status).toBe(200)
     const root = await until(a.id, async () => (await roots(a.url, ownerA, 'prs')).find((m) => m.text.includes('A is broken')))
@@ -163,7 +164,7 @@ describe('hosted GitHub sync', () => {
     await deliver('installation', { action: 'created', installation: { id: 7301, account: { id: 6301, login: 'sync-gone', type: 'Organization' } } })
     expect(await (await deliver('installation', { action: 'deleted', installation: { id: 7301, account: { id: 6301, login: 'sync-gone', type: 'Organization' } } })).json()).toEqual({ ok: true, team: at.id })
     expect(await (await deliver('issues', opened(7301, 'sync-gone/web', 5, 'Too late'))).json()).toEqual({ ok: true, team: null })
-    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toMatchObject([{ provider: 'github', linked: false }])
+    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toContainEqual(expect.objectContaining({ provider: 'github', linked: false }))
   })
 
   it('takes the first event after a link made on another isolate, which this one never heard of', async () => {
@@ -171,7 +172,7 @@ describe('hosted GitHub sync', () => {
     const owner = await person(at, 77, true)
     await call(at.url, owner, 'POST', '/admin/sync', { provider: 'github', external: 'sync-elsewhere/web', channel: 'prs' })
     // This isolate keeps the team as it is now, with no link...
-    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toMatchObject([{ linked: false }])
+    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toContainEqual(expect.objectContaining({ provider: 'github', linked: false }))
     // ...and another isolate takes the installation event, which forgets the host only there.
     await registry(env).link('github', 7701, 6701)
     expect((await deliver('issues', opened(7701, 'sync-elsewhere/web', 10, 'Right after'))).status).toBe(200)
@@ -221,5 +222,202 @@ describe('hosted GitHub sync', () => {
     expect((await deliver('issues', opened(7501, 'sync-forged/web', 8, 'Direct'), { url: `${at.url}/webhooks/github` })).status).toBe(404)
     await until(at.id, async () => true)
     expect(await roots(at.url, owner, 'prs')).toEqual([])
+  })
+})
+
+/** An event from the Linear app, signed as Linear signs it, `age` milliseconds old (or with no time, unless `stamped`), to the hub or straight to `url`. */
+async function linearEvent(payload: Record<string, unknown>, { secret = 'linear-hook-secret', url = `${HUB}/__bordeaux/linear/events`, age = 0, stamped = true } = {}) {
+  const body = JSON.stringify({ ...(stamped ? { webhookTimestamp: Date.now() - age } : {}), webhookId: 'wh-test', ...payload })
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const mac = Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body))), (b) => b.toString(16).padStart(2, '0')).join('')
+  const headers = { 'linear-signature': mac, 'linear-delivery': crypto.randomUUID(), 'linear-event': String(payload.type), 'content-type': 'application/json' }
+  return SELF.fetch(url, { method: 'POST', headers, body })
+}
+
+/** Linear's `Issue` `create` for issue `identifier` of workspace `org`, made by a person. */
+const issueCreated = (org: string, identifier: string, title: string) => ({
+  type: 'Issue',
+  action: 'create',
+  organizationId: org,
+  url: `https://linear.app/${org}/issue/${identifier}`,
+  actor: { id: 'user-ada', name: 'Ada', type: 'user' },
+  data: { id: crypto.randomUUID(), identifier, title, description: `${title}, in detail`, url: `https://linear.app/${org}/issue/${identifier}`, team: { id: 'team-id', key: identifier.split('-')[0] }, state: { name: 'Todo', type: 'unstarted' }, priority: 0, labels: [], creatorId: 'user-ada' },
+})
+
+/** Links a team to Linear workspace `org` as its owner would: asks for a link, and Linear sends the admin back with `code`. */
+async function linkLinear(at: { url: string }, owner: string, code: string) {
+  const { body } = await call(at.url, owner, 'POST', '/admin/sync/link', { provider: 'linear' })
+  const state = new URL(body.install).searchParams.get('state')!
+  return SELF.fetch(`${HUB}/sync/linear/callback?code=${code}&state=${state}`)
+}
+
+/** What the Linear app sent Linear: comments, and token requests. */
+const toLinear = async () => ((await (await fetch('https://outbound.test/sent')).json()) as { url: string; token: string; body: string }[]).filter((one) => one.url.startsWith('https://api.linear.app/'))
+
+describe('hosted Linear sync', () => {
+  it('stays off quietly before the Linear app is set up, and says which setting is missing when some are', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(linearTeamSync({} as never)).toBeNull()
+      expect(errors).not.toHaveBeenCalled()
+      expect(linearTeamSync({ LINEAR_SYNC_CLIENT_ID: 'x' } as never)).toBeNull()
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('LINEAR_SYNC_CLIENT_SECRET, LINEAR_SYNC_WEBHOOK_SECRET, BORDEAUX_SYNC_KEY'))
+    } finally {
+      errors.mockRestore()
+    }
+  })
+
+  it("takes Linear team keys as Linear writes them, and gives owners alone a link of their own", async () => {
+    const at = await team('linear-rows', 8001)
+    const member = await person(at, 81, false)
+    const owner = await person(at, 82, true)
+    for (const external of ['eng', 'ENG-1', 'acme/eng']) expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'linear', external, channel: 'eng' })).status, external).toBe(400)
+    const added = await call(at.url, owner, 'POST', '/admin/sync', { provider: 'linear', external: 'ENG', channel: 'eng' })
+    expect(added).toMatchObject({ status: 201, body: { created: true, linked: false } })
+    const install = new URL(added.body.install)
+    expect(install.origin + install.pathname).toBe('https://linear.app/oauth/authorize')
+    expect(Object.fromEntries(install.searchParams)).toMatchObject({ client_id: 'linear-test-client', redirect_uri: 'https://board.test/sync/linear/callback', actor: 'app', response_type: 'code' })
+    expect(install.searchParams.get('state')).toMatch(new RegExp(`^${at.id}\\.[0-9a-f]{64}$`))
+    // Each link is its own: one asked for again has another ticket.
+    const again = (await call(at.url, owner, 'POST', '/admin/sync/link', { provider: 'linear' })).body.install
+    expect(new URL(again).searchParams.get('state')).not.toBe(install.searchParams.get('state'))
+    // Anyone on the board sees whether it's linked, and no link to approve.
+    expect(await call(at.url, member, 'POST', '/admin/sync/link', { provider: 'linear' })).toMatchObject({ status: 403 })
+    expect((await call(at.url, member, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'linear', linked: false })
+  })
+
+  it("links the workspace whose admin approved an owner's link, once per link", async () => {
+    const at = await team('linear-link', 8002)
+    const owner = await person(at, 83, true)
+    const { body } = await call(at.url, owner, 'POST', '/admin/sync/link', { provider: 'linear' })
+    const state = new URL(body.install).searchParams.get('state')!
+    // A ticket the team's directory never made links nothing.
+    expect((await SELF.fetch(`${HUB}/sync/linear/callback?code=code-linka&state=${at.id}.${'0'.repeat(64)}`)).status).toBe(400)
+    const linked = await SELF.fetch(`${HUB}/sync/linear/callback?code=code-linka&state=${state}`)
+    expect(linked.status).toBe(200)
+    expect(await linked.text()).toContain('Workspace linka')
+    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'linear', linked: true })
+    // The same link twice is refused: its ticket was taken.
+    expect((await SELF.fetch(`${HUB}/sync/linear/callback?code=code-linka&state=${state}`)).status).toBe(400)
+  })
+
+  it("lands a workspace's issue on its own team's board only, and only by that team's rows", async () => {
+    const a = await team('linear-a', 8101)
+    const b = await team('linear-b', 8102)
+    const ownerA = await person(a, 84, true)
+    const ownerB = await person(b, 85, true)
+    expect((await linkLinear(a, ownerA, 'code-orga')).status).toBe(200)
+    expect((await linkLinear(b, ownerB, 'code-orgb')).status).toBe(200)
+    // Both map their workspace's ENG to channel `eng`.
+    await call(a.url, ownerA, 'POST', '/admin/sync', { provider: 'linear', external: 'ENG', channel: 'eng' })
+    await call(b.url, ownerB, 'POST', '/admin/sync', { provider: 'linear', external: 'ENG', channel: 'eng' })
+
+    expect((await linearEvent(issueCreated('orga', 'ENG-1', 'A is broken'))).status).toBe(200)
+    expect((await linearEvent(issueCreated('orgb', 'ENG-2', 'B is broken'))).status).toBe(200)
+    // A team key A has no row for lands nowhere.
+    expect((await linearEvent(issueCreated('orga', 'OPS-3', 'A ops'))).status).toBe(200)
+    const root = await until(a.id, async () => (await roots(a.url, ownerA, 'eng')).find((m) => m.text.includes('A is broken')))
+    expect(root.text).toContain('ENG-1')
+    // A row is `into` unless it says `mirror`: a reply on the board stays there.
+    await call(a.url, ownerA, 'POST', '/messages', { re: root.id, text: 'into only' })
+    await until(b.id, async () => (await roots(b.url, ownerB, 'eng')).find((m) => m.text.includes('B is broken')))
+    await until(a.id, async () => true)
+    expect((await roots(a.url, ownerA, 'eng')).map((m) => m.text).join('\n')).not.toMatch(/B is broken|A ops/)
+    expect((await roots(b.url, ownerB, 'eng')).map((m) => m.text).join('\n')).not.toMatch(/A is broken|A ops/)
+    expect((await toLinear()).some((one) => one.body.includes('into only'))).toBe(false)
+  })
+
+  it("mirrors a board reply back with the team's own token, refreshed once when it's about to expire", async () => {
+    const at = await team('linear-mirror', 8201)
+    const owner = await person(at, 86, true)
+    // Linked with a token that expires within the minute: the first call to Linear refreshes it.
+    await linkLinear(at, owner, 'code-orgm-expiring')
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'linear', external: 'MIR', channel: 'mir', direction: 'mirror' })
+    await linearEvent(issueCreated('orgm', 'MIR-1', 'Mirror me'))
+    const root = await until(at.id, async () => (await roots(at.url, owner, 'mir')).find((m) => m.text.includes('Mirror me')))
+
+    await call(at.url, owner, 'POST', '/messages', { re: root.id, text: 'looking into it' })
+    const comment = await until(at.id, async () => (await toLinear()).find((one) => one.url.endsWith('#commentCreate') && one.body.includes('looking into it')))
+    expect(comment.token).toBe('lin_orgm_2')
+    // A new row builds the board again, with an adapter that asks the team's directory afresh: it
+    // kept the tokens the refresh gave, so there's no refresh to do.
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'linear', external: 'OPS', channel: 'ops' })
+    await call(at.url, owner, 'POST', '/messages', { re: root.id, text: 'fixed it' })
+    const second = await until(at.id, async () => (await toLinear()).find((one) => one.url.endsWith('#commentCreate') && one.body.includes('fixed it')))
+    expect(second.token).toBe('lin_orgm_2')
+    // One refresh: the refresh token Linear took once was never sent again.
+    expect((await toLinear()).filter((one) => one.url.endsWith('/oauth/token') && one.token.startsWith('ref_orgm_'))).toHaveLength(1)
+  })
+
+  it('uses a token while it lasts once Linear refuses its refresh, and asks Linear again only after 5 minutes', async () => {
+    const at = await team('linear-dead', 8202)
+    const owner = await person(at, 87, true)
+    // Linked with a token about to expire whose refresh token Linear won't take.
+    await linkLinear(at, owner, 'code-orgd-dead')
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'linear', external: 'DED', channel: 'ded', direction: 'mirror' })
+    await linearEvent(issueCreated('orgd', 'DED-1', 'Dead refresh'))
+    const root = await until(at.id, async () => (await roots(at.url, owner, 'ded')).find((m) => m.text.includes('Dead refresh')))
+    for (const text of ['first reply', 'second reply']) {
+      await call(at.url, owner, 'POST', '/messages', { re: root.id, text })
+      const comment = await until(at.id, async () => (await toLinear()).find((one) => one.url.endsWith('#commentCreate') && one.body.includes(text)))
+      expect(comment.token, text).toBe('lin_orgd_1')
+    }
+    // Every call to Linear asked the directory for a token about to expire: Linear was asked to refresh it once.
+    expect((await toLinear()).filter((one) => one.url.endsWith('/oauth/token') && one.token.startsWith('ref_orgd_'))).toHaveLength(1)
+  })
+
+  it("never uses one workspace's tokens for another the team is linked to", async () => {
+    const at = await team('linear-crossed', 8203)
+    const owner = await person(at, 92, true)
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'linear', external: 'ENG', channel: 'eng', direction: 'mirror' })
+    await linkLinear(at, owner, 'code-orgy')
+    // Two links approved at once can leave the registry naming one workspace and the directory
+    // holding the other's tokens: here, the registry links orgz, and the tokens are orgy's.
+    await registry(env).linkTeam('linear', 'orgz', at.id)
+    const before = (await toLinear()).length
+    expect((await linearEvent(issueCreated('orgz', 'ENG-1', 'Crossed'))).status).toBe(200)
+    for (let run = 0; run < 3; run++) await until(at.id, async () => true)
+    // orgz's issue doesn't come in through orgy's token, and nothing goes to Linear as orgy.
+    expect((await toLinear()).slice(before).filter((one) => one.token.startsWith('lin_orgy_'))).toEqual([])
+    expect((await roots(at.url, owner, 'eng')).map((m) => m.text).join('\n')).not.toContain('Crossed')
+  })
+
+  it("unlinks a workspace that removes the app, and moves one linked again to the team that linked it", async () => {
+    const a = await team('linear-left', 8301)
+    const b = await team('linear-took', 8302)
+    const ownerA = await person(a, 88, true)
+    const ownerB = await person(b, 89, true)
+    await call(a.url, ownerA, 'POST', '/admin/sync', { provider: 'linear', external: 'ENG', channel: 'eng' })
+    await call(b.url, ownerB, 'POST', '/admin/sync', { provider: 'linear', external: 'ENG', channel: 'eng' })
+    await linkLinear(a, ownerA, 'code-orgx')
+    // B's owner links the same workspace: it syncs with B now, and A loses it.
+    await linkLinear(b, ownerB, 'code-orgx')
+    expect((await call(a.url, ownerA, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'linear', linked: false })
+    expect((await linearEvent(issueCreated('orgx', 'ENG-7', 'Moved'))).status).toBe(200)
+    await until(b.id, async () => (await roots(b.url, ownerB, 'eng')).find((m) => m.text.includes('Moved')))
+    await until(a.id, async () => true)
+    expect((await roots(a.url, ownerA, 'eng')).map((m) => m.text).join('\n')).not.toContain('Moved')
+
+    // The app removed from the workspace, in an event with no time of its own: B is unlinked, and its events go nowhere.
+    expect(await (await linearEvent({ type: 'OAuthApp', action: 'revoked', organizationId: 'orgx', oauthClientId: 'linear-test-client' }, { stamped: false })).json()).toEqual({ ok: true, team: b.id })
+    expect((await call(b.url, ownerB, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'linear', linked: false })
+    expect(await (await linearEvent(issueCreated('orgx', 'ENG-8', 'Too late'))).json()).toEqual({ ok: true, team: null })
+  })
+
+  it('answers 200 to an event for a team that maps none of its Linear teams yet', async () => {
+    const at = await team('linear-none', 8401)
+    const owner = await person(at, 90, true)
+    await linkLinear(at, owner, 'code-orgn')
+    expect(await (await linearEvent(issueCreated('orgn', 'ENG-1', 'Nowhere'))).json()).toEqual({ ok: true, team: at.id, synced: false })
+  })
+
+  it("refuses a Linear event that isn't signed with the app's secret, one over a minute old, and one sent straight to a team", async () => {
+    const at = await team('linear-forged', 8501)
+    const owner = await person(at, 91, true)
+    await linkLinear(at, owner, 'code-orgf')
+    await call(at.url, owner, 'POST', '/admin/sync', { provider: 'linear', external: 'ENG', channel: 'eng' })
+    expect((await linearEvent(issueCreated('orgf', 'ENG-1', 'Forged'), { secret: 'not-the-secret' })).status).toBe(401)
+    expect((await linearEvent(issueCreated('orgf', 'ENG-2', 'Stale'), { age: 120_000 })).status).toBe(401)
+    expect((await linearEvent(issueCreated('orgf', 'ENG-3', 'Direct'), { url: `${at.url}/webhooks/linear` })).status).toBe(404)
   })
 })

@@ -15,11 +15,47 @@ export type SyncProvider = NonNullable<BoardOptions['sync']>[string]
 export type TeamSync = {
   /** Why a team on the platform account `login` can't sync `external`, or null when it can. */
   refuse(external: string, login: string | undefined): string | null
-  /** The team's provider, from its rows and its link to the platform (the sync App's installation); null without a link. */
-  build(rows: SyncRow[], link: string | undefined): SyncProvider | null
+  /**
+   * The team's provider, from its rows and its link to the platform (the sync App's installation,
+   * or the Linear organization); null without a link. `token` is the team's access token, for a
+   * platform whose tokens the team's directory keeps (`oauth`), for that link only.
+   */
+  build(rows: SyncRow[], link: string | undefined, token: () => Promise<SyncAccess>): SyncProvider | null
   /** Where an owner turns the platform on for their account, such as the sync App's install page. */
-  install: string
+  install?: string
+  /** A platform a team links to by OAuth, whose tokens its directory keeps sealed (Linear). */
+  oauth?: SyncOAuth
 }
+
+/**
+ * How close to expiring a team's platform token is refreshed, by its directory. A board keeps a
+ * token only until a minute before this, so it never holds one a refresh may have replaced.
+ */
+export const SYNC_REFRESH_BEFORE_MS = 5 * 60_000
+
+/** An access token, and when it expires (null for never). */
+export type SyncAccess = { token: string; expires_at: number | null }
+
+/** A team's tokens on a platform, as its directory keeps them, sealed. */
+export type SyncTokens = { access: string; refresh: string | null; expires_at: number | null }
+
+/** How a team links to a platform by OAuth, and how the hub knows the platform's events. */
+export type SyncOAuth = {
+  /** The platform's page where an admin approves the link, coming back to `redirect` with `state`. */
+  authorize(state: string, redirect: string): string
+  /** Trades the code the platform sent back for tokens, and the ID its events name the workspace by. */
+  exchange(code: string, redirect: string): Promise<{ external: string; name: string; tokens: SyncTokens }>
+  /** New tokens for old ones about to expire. */
+  refresh(tokens: SyncTokens): Promise<SyncTokens>
+  /**
+   * A webhook's workspace, if the platform signed it: the ID a team is linked by, and whether it
+   * says the app was removed. Null for a webhook the platform didn't sign, or too old.
+   */
+  event(request: Request, body: string): Promise<{ external: string | null; removed: boolean } | null>
+}
+
+/** Where a platform's OAuth page sends back an admin who approved an owner's link: the hub's, for every team. */
+export const syncRedirect = (env: BordeauxEnv, provider: string) => new URL(`/sync/${provider}/callback`, env.BORDEAUX_HOSTED_URL).href
 
 export type BordeauxConfig = {
   /** Runs on every post and edit on every board, before it lands (upstream `board({ middleware })`). */

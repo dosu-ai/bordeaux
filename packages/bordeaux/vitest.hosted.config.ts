@@ -25,12 +25,62 @@ async function syncApp(request: Request): Promise<Response | null> {
   return null
 }
 
+/** Refresh tokens Linear has taken: each works once. */
+const refreshed = new Set<string>()
+
+/**
+ * Linear's API as the hosted Linear app sees it. A code `code-<org>` is workspace `<org>`'s
+ * (`code-<org>-expiring` for a token that expires within the minute, `code-<org>-dead` for one
+ * whose refresh token Linear refuses), traded only for the hub's redirect URI. Each token names
+ * its workspace and its generation (`lin_<org>_<n>`), and each refresh gives the next, refusing a
+ * refresh token used before. Every call is recorded, with the token it came with.
+ */
+async function linearApi(request: Request): Promise<Response | null> {
+  const url = new URL(request.url)
+  if (url.href === 'https://api.linear.app/oauth/token' && request.method === 'POST') {
+    const form = new URLSearchParams(await request.text())
+    sent.push({ method: 'POST', url: url.href, token: form.get('refresh_token') ?? form.get('code') ?? '', body: form.toString() })
+    if (form.get('client_id') !== 'linear-test-client' || form.get('client_secret') !== 'linear-test-secret') return Response.json({ error: 'invalid_client' }, { status: 401 })
+    const issue = (org: string, n: number, expires: number) => Response.json({ access_token: `lin_${org}_${n}`, token_type: 'Bearer', expires_in: expires, scope: 'read write', refresh_token: `ref_${org}_${n}` })
+    if (form.get('grant_type') === 'authorization_code') {
+      const code = /^code-([a-z0-9]+)(-expiring|-dead)?$/.exec(form.get('code') ?? '')
+      if (!code || form.get('redirect_uri') !== 'https://board.test/sync/linear/callback') return Response.json({ error: 'invalid_grant', error_description: 'not a code for this redirect URI' }, { status: 400 })
+      // A dead code's refresh token is one Linear won't take, as if revoked.
+      if (code[2] === '-dead') refreshed.add(`ref_${code[1]}_1`)
+      return issue(code[1]!, 1, code[2] ? 30 : 86_400)
+    }
+    const given = /^ref_([a-z0-9]+)_(\d+)$/.exec(form.get('refresh_token') ?? '')
+    if (form.get('grant_type') !== 'refresh_token' || !given || refreshed.has(given[0])) return Response.json({ error: 'invalid_grant', error_description: 'refresh token used or unknown' }, { status: 400 })
+    refreshed.add(given[0])
+    return issue(given[1]!, Number(given[2]) + 1, 86_400)
+  }
+  if (url.href !== 'https://api.linear.app/graphql') return null
+  const token = (request.headers.get('authorization') ?? '').replace(/^bearer\s+/i, '')
+  const org = /^lin_([a-z0-9]+)_\d+$/.exec(token)?.[1]
+  if (!org) return Response.json({ errors: [{ message: 'authentication required' }] }, { status: 401 })
+  const { query, variables } = (await request.json()) as { query: string; variables?: { id?: string; input?: { body?: string; issueId?: string } } }
+  // Every call, by the token it came with: which workspace's token the app used, and when.
+  if (!query.includes('commentCreate')) sent.push({ method: 'POST', url: `${url.href}#query`, token, body: query.slice(0, 200) })
+  if (query.includes('BordeauxOrganization')) return Response.json({ data: { organization: { id: org, name: `Workspace ${org}` } } })
+  if (query.includes('LinearAdapterViewerOrganization')) return Response.json({ data: { viewer: { id: `bot-${org}`, displayName: 'bordeaux', organization: { id: org } } } })
+  const now = new Date().toISOString()
+  // Every workspace has whatever team a test names, by its key.
+  const key = (variables as { filter?: { key?: { eq?: string } } } | undefined)?.filter?.key?.eq
+  if (/\bteams\(/.test(query) && key) return Response.json({ data: { teams: { nodes: [{ id: `team-${org}-${key}`, key, name: key }], pageInfo: { hasNextPage: false, endCursor: null } } } })
+  if (query.includes('commentCreate')) {
+    sent.push({ method: 'POST', url: `${url.href}#commentCreate`, token, body: JSON.stringify(variables?.input ?? {}) })
+    return Response.json({ data: { commentCreate: { success: true, lastSyncId: sent.length, comment: { id: `cmt-${sent.length}` } } } })
+  }
+  if (/\bcomment\(/.test(query) && variables?.id) return Response.json({ data: { comment: { id: variables.id, body: 'posted', createdAt: now, updatedAt: now, reactions: [], reactionData: [], url: `https://linear.app/${org}/comment/${variables.id}` } } })
+  return Response.json({ errors: [{ message: `the test's Linear doesn't answer ${query.slice(0, 80)}` }] })
+}
+
 /**
  * GitHub's web sign-in, as the hub's shared callback uses it: the code is exchanged only with
  * the redirect URI it was issued for, the hub's, and whoever signs in is a member of every org.
  */
 async function github(request: Request): Promise<Response> {
-  const synced = await syncApp(request)
+  const synced = (await syncApp(request)) ?? (await linearApi(request))
   if (synced) return synced
   const url = new URL(request.url)
   if (url.href === 'https://github.com/login/oauth/access_token') {

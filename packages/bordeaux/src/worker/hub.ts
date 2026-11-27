@@ -8,6 +8,7 @@ import { devSignIn } from './dev.ts'
 import type { BordeauxEnv } from './env.ts'
 import { installationOf, signInApp, syncApp } from './github-app.ts'
 import { boardOf } from './boards.ts'
+import { syncRedirect, teamSyncOf, type SyncOAuth } from './config.ts'
 import type { Limits } from './limits.ts'
 import { deleteTeam } from './operate.ts'
 import { registry, type GitHubLink, type TeamRecord } from './registry.ts'
@@ -121,6 +122,13 @@ export async function hub(request: Request, env: BordeauxEnv, at: URL, send: Fet
     return env.GITHUB_SYNC_APP_ID && app === env.GITHUB_SYNC_APP_ID ? syncEvents(request, env, at) : events(request, env, at)
   }
   if (pathname === '/sync/setup' && request.method === 'GET') return syncSetup(url, env, at, send)
+  // A platform a team links to by OAuth (Linear): its admin comes back here, and its events come here.
+  const linking = /^\/sync\/([a-z]+)\/callback$/.exec(pathname)
+  const linkedBy = linking && request.method === 'GET' ? teamSyncOf(env)[linking[1]!]?.oauth : undefined
+  if (linking && linkedBy) return syncCallback(url, env, at, linking[1]!, linkedBy)
+  const sent = /^\/__bordeaux\/([a-z]+)\/events$/.exec(pathname)
+  const sentBy = sent && sent[1] !== 'github' && request.method === 'POST' ? teamSyncOf(env)[sent[1]!]?.oauth : undefined
+  if (sent && sentBy) return oauthEvents(request, env, at, sent[1]!, sentBy)
   // The hub's own sign-in, for Dosu's operators.
   const operators = operatorTeam(env, at)
   if (pathname.startsWith('/auth/')) return operators ? broker(request, env, operators, send) : refuse(404, 'not_found', 'this hub has no operators to sign in: set BORDEAUX_OPERATOR_ORG')
@@ -348,4 +356,66 @@ async function syncEvents(request: Request, env: BordeauxEnv, at: URL): Promise<
   // A team that maps none of its repos yet has no provider to take the event: it's dropped, not failed.
   if (!team.sync?.rows.some((row) => row.provider === 'github')) return Response.json({ ok: true, team: team.id, synced: false })
   return boardOf(env, team, null).fetch(new Request(`${team.url}/webhooks/github`, { method: 'POST', headers: request.headers, body }))
+}
+
+/**
+ * Where a platform's admin comes back after approving an owner's link (spec 09, "Sync, later").
+ * The state names the team and a ticket its directory keeps for 10 minutes and takes once; the
+ * hub trades the code for tokens, asks the platform whose workspace they're for, keeps them
+ * sealed in the team's directory, and links the workspace to the team, and to no other.
+ */
+async function syncCallback(url: URL, env: BordeauxEnv, at: URL, provider: string, oauth: SyncOAuth): Promise<Response> {
+  const name = provider[0]!.toUpperCase() + provider.slice(1)
+  if (url.searchParams.get('error')) return page('🍷 not linked', `<h1>🍷 not linked</h1><p>${escape(name)} didn't link the workspace: ${escape(url.searchParams.get('error_description') ?? url.searchParams.get('error')!)}.</p>`, 400)
+  const state = /^([^.]{1,64})\.([0-9a-f]{64})$/.exec(url.searchParams.get('state') ?? '')
+  const code = url.searchParams.get('code')
+  if (!state || !code) return page('🍷 no link', `<h1>🍷 no link</h1><p>${escape(name)} didn't say which board this link is for.</p>`, 400)
+  const record = await registry(env).byId(state[1]!)
+  const team = record && teamOfRecord(record, at)
+  const by = team && (await directory(env, team).takeSyncTicket(provider, state[2]!))
+  if (!record || !team || !by) return page('🍷 link expired', `<h1>🍷 link expired</h1><p>That link was used already, or is over 10 minutes old. Ask for a new one with <code>bdx sync link ${escape(provider)}</code>.</p>`, 400)
+  try {
+    const { external, name: workspace, tokens } = await oauth.exchange(code, syncRedirect(env, provider))
+    // The tokens first, so a board built from the link finds them.
+    await directory(env, team).putSyncTokens(provider, external, tokens)
+    const linked = await registry(env).linkTeam(provider, external, record.id)
+    if (!linked) return page('🍷 no board', `<h1>🍷 no board</h1><p>That board is being deleted.</p>`, 404)
+    // A workspace syncs with one team: the one it leaves loses its tokens.
+    if (linked.displaced) {
+      await directory(env, teamOfRecord(linked.displaced, at)).dropSyncTokens(provider, external)
+      forgetHost(linked.displaced.host)
+    }
+    forgetHost(linked.team.host)
+    console.log(`[bordeaux] ${provider} workspace ${external} linked to team ${record.id} by ${by}${linked.displaced ? `, from team ${linked.displaced.id}` : ''}`)
+    return page('🍷 linked', `<h1>🍷 linked</h1><p>${escape(workspace)} syncs with <a href="${escape(team.url)}/">${escape(team.url)}</a> now, by its rows: <code>bdx sync list</code>.</p>`)
+  } catch (error) {
+    console.error(`[bordeaux] ${provider} link failed:`, (error as Error)?.message ?? error)
+    return page('🍷 almost', `<h1>🍷 almost</h1><p>${escape(name)} didn't answer just now. Ask for a new link with <code>bdx sync link ${escape(provider)}</code> and try again.</p>`, 502)
+  }
+}
+
+/**
+ * A platform's events, for every workspace linked by OAuth (Linear). The platform signs them with
+ * its app's secret and names the workspace, which finds the team: the event goes, as the platform
+ * sent it, to that team's default board, whose provider checks it again. The app's removal from
+ * a workspace unlinks it and drops the team's tokens.
+ */
+async function oauthEvents(request: Request, env: BordeauxEnv, at: URL, provider: string, oauth: SyncOAuth): Promise<Response> {
+  const body = await request.text()
+  const event = await oauth.event(request, body)
+  if (!event) return refuse(401, 'invalid_signature', `that event isn't signed with the ${provider} app's webhook secret, or is over a minute old`)
+  if (!event.external) return Response.json({ ok: true, team: null })
+  const record = await registry(env).byLink(provider, event.external)
+  if (event.removed) {
+    if (!record) return Response.json({ ok: true, team: null })
+    const changed = await registry(env).unlink(provider, event.external)
+    await directory(env, teamOfRecord(record, at)).dropSyncTokens(provider, event.external)
+    forgetHost(record.host)
+    return Response.json({ ok: true, team: changed?.id ?? record.id })
+  }
+  // As fresh as GitHub's: the first events after a link or a new row aren't lost.
+  const team = record && (await freshTeam(env, at, record))
+  if (!team || team instanceof Response) return Response.json({ ok: true, team: null })
+  if (!team.sync?.rows.some((row) => row.provider === provider)) return Response.json({ ok: true, team: team.id, synced: false })
+  return boardOf(env, team, null).fetch(new Request(`${team.url}/webhooks/${provider}`, { method: 'POST', headers: request.headers, body }))
 }
