@@ -372,7 +372,8 @@ Then check, on `dosu-ai`'s board, with a test channel in a Slack workspace:
    ```
 
    It maps `#slack-test`, and prints a link to Slack, good for 10 minutes, once. `bdx sync link
-   slack` makes another.
+   slack` makes another. Once the workspace is linked, `bdx sync add slack` refuses a channel
+   Slack has none of, or one the app isn't in, and `bdx health` names any such row.
 3. A workspace admin opens it and installs the app. The hub says the workspace syncs with
    `https://dosu-ai.board.dosu.ai` now, and `bdx sync list` shows it linked.
 4. Post in `#slack-test`. Within a few seconds it's a thread in board channel `slack-test`.

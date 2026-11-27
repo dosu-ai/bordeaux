@@ -581,6 +581,28 @@ describe('hosted Slack sync', () => {
     expect((await call(at.url, member, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'slack', linked: false })
   })
 
+  it("refuses a channel the linked app can't see or isn't in, saying how to fix it, and takes any before it's linked", async () => {
+    const at = await team('slack-unseen', 9004)
+    const owner = await person(at, 113, true)
+    const add = (external: string) => call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external, channel: 'unseen' })
+    // Before the app is linked there's no token to ask with: the row is taken, and health says it later.
+    expect((await add('C0OUTSIDE1')).status).toBe(201)
+    await call(at.url, owner, 'DELETE', '/admin/sync?provider=slack&external=C0OUTSIDE1')
+    await linkSlack(at, owner, 'code-TU')
+    // No such channel, no such name, or archived: Slack has none the app can see.
+    for (const external of ['C0MISSING1', '#nowhere', 'C0ARCHIVE1']) {
+      expect(await add(external), external).toMatchObject({ status: 400, body: { error: { code: 'invalid_request', message: expect.stringContaining(`Slack has no channel ${external} the app can see`) } } })
+    }
+    // A channel the bot isn't in, by ID or by name: invite it, by the bot's own name.
+    expect(await add('C0OUTSIDE1')).toMatchObject({ status: 400, body: { error: { message: "external: the app isn't in #outside (C0OUTSIDE1). /invite @bordeaux there, then add it again" } } })
+    expect(await add('#outside')).toMatchObject({ status: 400, body: { error: { message: "external: the app isn't in #outside. /invite @bordeaux there, then add it again" } } })
+    expect((await add('C0NAMED001')).status).toBe(201)
+    expect((await add('#support')).status).toBe(201)
+    // Slack not answering takes the row: the owner shouldn't wait out an outage.
+    await fetch('https://outbound.test/revoke', { method: 'POST', body: 'down:xoxb-TU-1' })
+    expect((await add('C0MISSING1')).status).toBe(201)
+  })
+
   it("answers Slack's URL check itself, only when the app signed it", async () => {
     const check = { token: 'legacy', type: 'url_verification', challenge: 'c-hosted-1' }
     const answer = await slackEvent(check)
@@ -753,6 +775,21 @@ describe("a hosted team's health and redaction, by its own sync", () => {
     ])
     // Each fits bdx health's row in 80 columns.
     for (const { error } of await checked()) expect(`sync      ${'github'.padEnd(12)} ${error}`.length).toBeLessThanOrEqual(80)
+  })
+
+  it("shows an owner each Slack channel the app can't see or isn't in, as added before it was linked", async () => {
+    const at = await team('health-slack', 9603)
+    const owner = await person(at, 122, true)
+    const slack = async () => ((await call(at.url, owner, 'GET', '/admin/health')).body.sync as { key: string; error?: string }[]).find((one) => one.key === 'slack')
+    for (const external of ['C0MISSING1', 'C0OUTSIDE1', '#support']) expect((await call(at.url, owner, 'POST', '/admin/sync', { provider: 'slack', external, channel: 'hlt' })).status).toBe(201)
+    await linkSlack(at, owner, 'code-THS')
+    expect(await slack()).toEqual({ key: 'slack', platform: 'slack', ok: false, error: "no Slack channel C0MISSING1 the app can see; the app isn't in C0OUTSIDE1: /invite @bordeaux there" })
+    await call(at.url, owner, 'DELETE', '/admin/sync?provider=slack&external=C0MISSING1')
+    const outside = await slack()
+    expect(outside).toEqual({ key: 'slack', platform: 'slack', ok: false, error: "the app isn't in C0OUTSIDE1: /invite @bordeaux there" })
+    expect(`sync      ${'slack'.padEnd(12)} ${outside?.error}`.length).toBeLessThanOrEqual(80)
+    await call(at.url, owner, 'DELETE', '/admin/sync?provider=slack&external=C0OUTSIDE1')
+    expect(await slack()).toEqual({ key: 'slack', platform: 'slack', ok: true })
   })
 
   it('asks the platform a synced message came from to delete it there, with the team’s own token', async () => {

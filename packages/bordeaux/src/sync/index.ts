@@ -415,13 +415,98 @@ export function slackTeamSync(env: Env): TeamSync | null {
       const client = (async () => adapter.withBotToken(await botToken(), () => adapter.webClient)) as unknown as Client
       return slack({ adapter, client }, routing)
     },
-    async check(_link, token) {
-      const response = await fetch('https://slack.com/api/auth.test', { method: 'POST', headers: { authorization: `Bearer ${(await token()).token}` } })
-      const answer = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string }
-      if (answer.ok) return
+    async check(_link, token, rows) {
+      const bot = (await token()).token
+      const answer = await slackCall<{ user?: string }>(bot, 'auth.test')
       // Only a refused token is the link's to fix: an outage or a rate limit passes.
-      if (SLACK_REFUSED.has(answer.error ?? '')) throw new Error('Slack refused the token: bdx sync link slack')
-      throw new Error(`Slack didn't answer: ${answer.error ?? response.status}`)
+      if (!answer.ok && SLACK_REFUSED.has(answer.error ?? '')) throw new Error('Slack refused the token: bdx sync link slack')
+      if (!answer.ok) throw new Error(`Slack didn't answer: ${answer.error ?? answer.status}`)
+      // A channel the bot isn't in, or one Slack has no channel by, syncs nothing and says nothing.
+      // Each is named as its row is, for bdx sync list and rm, and checked within health's time.
+      const seen = slackChannels(bot, Date.now() + SLACK_LOOKUP_MS)
+      const found = await Promise.all(rows.map(async (row) => [row.external, await seen(row.external)] as const))
+      const missing = found.filter(([, channel]) => channel === null).map(([external]) => external)
+      const outside = found.filter(([, channel]) => channel && !channel.member).map(([external]) => external)
+      // Short, to fit bdx health's row in 80 columns for a channel or two.
+      const said = [
+        ...(missing.length > 0 ? [`no Slack channel ${missing.join(', ')} the app can see`] : []),
+        ...(outside.length > 0 ? [`the app isn't in ${outside.join(', ')}: ${slackInvite(answer.user)}`] : []),
+      ]
+      if (said.length > 0) throw new Error(said.join('; '))
     },
+    async unseen(external, _link, token) {
+      const bot = (await token()).token
+      const channel = await slackChannels(bot, Date.now() + SLACK_LOOKUP_MS)(external)
+      if (channel === undefined || channel?.member) return null
+      const invite = slackInvite((await slackCall<{ user?: string }>(bot, 'auth.test')).user)
+      if (channel === null) return `external: Slack has no channel ${external} the app can see. Check its name or ID (a private channel shows once you ${invite}), then add it again`
+      const named = external.startsWith('#') ? external : `#${channel.name} (${external})`
+      return `external: the app isn't in ${named}. ${invite}, then add it again`
+    },
+  }
+}
+
+/**
+ * One call to Slack's Web API with a bot token: its answer, and the HTTP status. A call that
+ * fails to reach Slack, or outlasts `deadline`, answers `unreachable`, as an outage would.
+ */
+async function slackCall<T>(token: string, method: string, params: Record<string, string> = {}, deadline?: number): Promise<T & { ok?: boolean; error?: string; status: number }> {
+  type Answer = T & { ok?: boolean; error?: string; status: number }
+  try {
+    const signal = deadline === undefined ? undefined : AbortSignal.timeout(Math.max(1, deadline - Date.now()))
+    const response = await fetch(`https://slack.com/api/${method}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(params), signal })
+    return { ...((await response.json().catch(() => ({}))) as T & { ok?: boolean; error?: string }), status: response.status }
+  } catch {
+    return { ok: false, error: 'unreachable', status: 0 } as Answer
+  }
+}
+
+/** How to add the bot to a channel: by its name, from `auth.test`, when Slack said it. */
+const slackInvite = (name: string | undefined) => (name ? `/invite @${name} there` : 'invite the app there')
+
+/** A channel a Slack row maps, as the bot sees it: `#name`, and whether the bot is in it. */
+type SlackChannel = { name: string; member: boolean }
+type SlackListed = { id?: string; name?: string; is_member?: boolean }
+/**
+ * How many pages of a workspace's channels a `#name` is looked for in: 10,000 channels. Slack
+ * allows about 20 listings a minute, and the board's own `#name` lookups need some of them.
+ */
+const SLACK_LIST_PAGES = 10
+/** How long a row's channel is looked for: within `bdx health`'s 10 seconds a platform. */
+const SLACK_LOOKUP_MS = 6_000
+
+/**
+ * Finds a row's channel as the bot sees it: by ID, `conversations.info`; by `#name`, the
+ * workspace's unarchived channels, public and private, matched exactly, as upstream sync-slack's
+ * `find` does. Null when Slack has none the bot can see; undefined when Slack didn't say (an
+ * outage, a rate limit, more channels than it reads, or no answer by `deadline`), which takes
+ * the row. One listing serves every `#name` asked of it.
+ */
+function slackChannels(token: string, deadline: number) {
+  let listing: Promise<SlackListed[] | undefined> | undefined
+  const list = async () => {
+    const all: SlackListed[] = []
+    let cursor = ''
+    for (let page = 0; page < SLACK_LIST_PAGES; page++) {
+      const answer = await slackCall<{ channels?: SlackListed[]; response_metadata?: { next_cursor?: string } }>(token, 'conversations.list', { types: 'public_channel,private_channel', exclude_archived: 'true', limit: '1000', ...(cursor ? { cursor } : {}) }, deadline)
+      if (!answer.ok) return undefined
+      all.push(...(answer.channels ?? []))
+      cursor = answer.response_metadata?.next_cursor ?? ''
+      if (!cursor) return all
+    }
+    return undefined
+  }
+  return async (external: string): Promise<SlackChannel | null | undefined> => {
+    if (external.startsWith('#')) {
+      const all = await (listing ??= list())
+      if (!all) return undefined
+      const found = all.find((channel) => channel.name === external.slice(1) && channel.id)
+      return found ? { name: found.name!, member: !!found.is_member } : null
+    }
+    const answer = await slackCall<{ channel?: SlackListed & { is_archived?: boolean } }>(token, 'conversations.info', { channel: external }, deadline)
+    if (!answer.ok) return answer.error === 'channel_not_found' ? null : undefined
+    // An archived channel sends nothing, and takes no posts.
+    if (answer.channel?.is_archived) return null
+    return { name: answer.channel?.name ?? external, member: !!answer.channel?.is_member }
   }
 }

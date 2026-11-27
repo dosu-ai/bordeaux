@@ -29,11 +29,12 @@ export type TeamSync = {
    */
   check(link: string, token: () => Promise<SyncAccess>, rows: SyncRow[]): Promise<void>
   /**
-   * Why the team's link can't see `external` on the platform (a repo the sync App wasn't given),
-   * or null when it can, or when the platform didn't say. Asked when an owner adds a row to a
-   * linked team: a row the link can't see would sync nothing, and say nothing.
+   * Why the team's link can't see `external` on the platform (a repo the sync App wasn't given,
+   * a Slack channel the app isn't in), or null when it can, or when the platform didn't say.
+   * Asked when an owner adds a row to a linked team: a row the link can't see would sync
+   * nothing, and say nothing. `token` is as for `check`.
    */
-  unseen?(external: string, link: string): Promise<string | null>
+  unseen?(external: string, link: string, token: () => Promise<SyncAccess>): Promise<string | null>
   /** Where an owner turns the platform on for their account, such as the sync App's install page. */
   install?: string
   /** A platform a team links to by OAuth, whose tokens its directory keeps sealed (Linear). */
