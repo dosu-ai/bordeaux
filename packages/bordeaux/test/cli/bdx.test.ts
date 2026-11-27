@@ -33,8 +33,9 @@ describe('bdx --help on bordeaux’s own commands', () => {
   it('answers without a sign-in, in 80 columns, for each command bdx --help lists as bordeaux’s', async () => {
     const help = (await bdx('--help')).stdout
     const section = help.slice(help.indexOf('bordeaux:\n'), help.indexOf("board commands (upstream's"))
-    // grants is upstream's, with bordeaux's flags added: its help is upstream's.
-    const commands = [...new Set([...section.matchAll(/^ {2}([a-z-]+)/gm)].map(([, command]) => command!))].filter((command) => command !== 'grants')
+    // grants is upstream's, with bordeaux's flags added, and sync is upstream's but for add, rm,
+    // and list: their help is upstream's, and sync's own is below.
+    const commands = [...new Set([...section.matchAll(/^ {2}([a-z-]+)/gm)].map(([, command]) => command!))].filter((command) => command !== 'grants' && command !== 'sync')
     expect(commands).toContain('tokens')
     for (const command of commands) {
       const run = await bdx(command, '--help')
@@ -59,6 +60,19 @@ describe('bdx --help on bordeaux’s own commands', () => {
     const run = await bdx('grants', '--help')
     expect(run.code).toBe(0)
     expect(run.stdout).toContain("board commands (upstream's, unchanged):")
+  })
+
+  it('answers sync add, rm, and list itself, and leaves sync <id> to upstream', async () => {
+    for (const action of ['add', 'rm', 'list']) {
+      const run = await bdx('sync', action, '--help')
+      expect(run, action).toMatchObject({ code: 0, stderr: '' })
+      expect(run.stdout, action).toContain('bdx sync add github <repo> <channel>')
+      for (const line of run.stdout.split('\n')) expect(line.length, `${action}: ${line}`).toBeLessThanOrEqual(80)
+    }
+    const upstream = await bdx('sync', '--help')
+    expect(upstream.code).toBe(0)
+    expect(upstream.stdout).not.toContain('bdx sync add github')
+    expect(upstream.stdout).toContain('attach it there')
   })
 })
 
