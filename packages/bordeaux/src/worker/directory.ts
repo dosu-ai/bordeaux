@@ -2,7 +2,7 @@
 // tokens revoked before they ran out (spec 03, "The bordeaux issuer").
 import { DurableObject } from 'cloudflare:workers'
 import { exportJWK, generateKeyPair, importJWK, SignJWT, type JWK, type JWTPayload } from 'jose'
-import { SYNC_REFRESH_BEFORE_MS, teamSyncOf, type SyncAccess, type SyncTokens } from './config.ts'
+import { SYNC_REFRESH_BEFORE_MS, SyncLinkRefused, teamSyncOf, type SyncAccess, type SyncTokens } from './config.ts'
 import type { BordeauxEnv } from './env.ts'
 import { seal, unseal } from './seal.ts'
 
@@ -52,6 +52,8 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     // An owner's links to a platform, waiting for its admin to approve them, and the team's tokens there, sealed.
     ctx.storage.sql.exec('create table if not exists bx_sync_tickets (ticket text primary key, provider text not null, by text not null, expires_at integer not null)')
     ctx.storage.sql.exec('create table if not exists bx_sync_tokens (provider text primary key, external text not null, sealed text not null)')
+    // Tokens a platform won't refresh again, by the sealed tokens it refused: over until linked again.
+    ctx.storage.sql.exec('create table if not exists bx_sync_refused (provider text primary key, sealed text not null, message text not null)')
   }
 
   /** Marks the rows changed: a version later than any before it. */
@@ -228,6 +230,12 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     this.ctx.storage.sql.exec('insert or replace into bx_sync_tokens (provider, external, sealed) values (?, ?, ?)', provider, external, sealed)
   }
 
+  /** The team's links a platform won't refresh again, by provider, with what to do: link again. */
+  async syncRefused(): Promise<Record<string, string>> {
+    const rows = this.ctx.storage.sql.exec<{ provider: string; message: string }>('select r.provider, r.message from bx_sync_refused r join bx_sync_tokens t on t.provider = r.provider and t.sealed = r.sealed').toArray()
+    return Object.fromEntries(rows.map((row) => [row.provider, row.message]))
+  }
+
   /** Drops the team's tokens on a platform, only for workspace `external` when it's named: true when there were some. */
   async dropSyncTokens(provider: string, external?: string): Promise<boolean> {
     const dropped = external === undefined
@@ -241,7 +249,9 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
    * team to: tokens for any other are refused. It's refreshed first when it's within 5 minutes of
    * expiring. A refresh gives a new refresh token and the old one stops working, so this is the
    * one place that refreshes, one at a time. A refused refresh isn't tried again for 5 minutes,
-   * and the token it was for is used while it lasts.
+   * and the token it was for is used while it lasts. One the platform won't ever take again
+   * (`SyncLinkRefused`) isn't tried again at all: it's kept, for `bdx sync list` and `bdx health`,
+   * until an owner links again.
    */
   async syncToken(provider: string, link: string): Promise<SyncAccess> {
     const [row] = this.ctx.storage.sql.exec<{ external: string; sealed: string }>('select external, sealed from bx_sync_tokens where provider = ?', provider).toArray()
@@ -252,6 +262,11 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
     const current = { token: tokens.access, expires_at: tokens.expires_at }
     if (tokens.expires_at === null || tokens.expires_at - Date.now() > SYNC_REFRESH_BEFORE_MS) return current
     const lasting = () => tokens.expires_at !== null && tokens.expires_at > Date.now() + 10_000
+    const [over] = this.ctx.storage.sql.exec<{ message: string }>('select message from bx_sync_refused where provider = ? and sealed = ?', provider, row.sealed).toArray()
+    if (over) {
+      if (lasting()) return current
+      throw new Error(over.message)
+    }
     const refused = this.refused.get(provider)
     if (refused && refused.sealed === row.sealed && refused.until > Date.now()) {
       if (lasting()) return current
@@ -266,6 +281,11 @@ export class DirectoryDO extends DurableObject<BordeauxEnv> {
         try {
           fresh = await oauth.refresh(tokens)
         } catch (error) {
+          if (error instanceof SyncLinkRefused) {
+            this.ctx.storage.sql.exec('insert or replace into bx_sync_refused (provider, sealed, message) values (?, ?, ?)', provider, row.sealed, error.message)
+            if (lasting()) return current
+            throw new Error(error.message)
+          }
           const until = Date.now() + REFRESH_RETRY_MS
           const message = `${(error as Error)?.message ?? error} (asked again after ${new Date(until).toISOString()})`
           this.refused.set(provider, { sealed: row.sealed, until, message })

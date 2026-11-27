@@ -376,7 +376,7 @@ describe('hosted Linear sync', () => {
     expect((await toLinear()).filter((one) => one.url.endsWith('/oauth/token') && one.token.startsWith('ref_orgm_'))).toHaveLength(1)
   })
 
-  it('uses a token while it lasts once Linear refuses its refresh, and asks Linear again only after 5 minutes', async () => {
+  it("uses a token while it lasts once Linear refuses its refresh, never asks again, and tells the team's owners to link again", async () => {
     const at = await team('linear-dead', 8202)
     const owner = await person(at, 87, true)
     // Linked with a token about to expire whose refresh token Linear won't take.
@@ -391,6 +391,14 @@ describe('hosted Linear sync', () => {
     }
     // Every call to Linear asked the directory for a token about to expire: Linear was asked to refresh it once.
     expect((await toLinear()).filter((one) => one.url.endsWith('/oauth/token') && one.token.startsWith('ref_orgd_'))).toHaveLength(1)
+    // The link is over, though its last token still works: bdx sync list and bdx health say so.
+    const relink = 'Linear refused the refresh token: bdx sync link linear'
+    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'linear', linked: true, refused: relink })
+    expect((await call(at.url, owner, 'GET', '/admin/health')).body.sync).toContainEqual({ key: 'linear', platform: 'linear', ok: false, error: relink })
+    // An owner links it again: it syncs, and nothing says otherwise.
+    await linkLinear(at, owner, 'code-orgd')
+    expect((await call(at.url, owner, 'GET', '/admin/sync')).body.providers).toContainEqual({ provider: 'linear', linked: true })
+    expect((await call(at.url, owner, 'GET', '/admin/health')).body.sync).toContainEqual({ key: 'linear', platform: 'linear', ok: true })
   })
 
   it("never uses one workspace's tokens for another the team is linked to", async () => {

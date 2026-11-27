@@ -61,7 +61,11 @@ export type SyncOAuth = {
    * by. Throws `SyncLinkRefused` for a link the hub won't keep.
    */
   exchange(code: string, redirect: string): Promise<{ external: string; name: string; tokens: SyncTokens }>
-  /** New tokens for old ones about to expire. */
+  /**
+   * New tokens for old ones about to expire. Throws `SyncLinkRefused` when the platform won't
+   * refresh them again (a revoked or expired refresh token): the link is over until an owner
+   * links again.
+   */
   refresh(tokens: SyncTokens): Promise<SyncTokens>
   /**
    * A webhook's workspace, if the platform signed it: the ID a team is linked by, whether it says
@@ -72,8 +76,9 @@ export type SyncOAuth = {
 }
 
 /**
- * A link the platform made that the hub won't keep, such as Slack's for a whole Enterprise Grid
- * org. Its message is for the admin who approved it: what to do instead. Asking again won't help.
+ * A link that won't work, and won't by asking again: one the platform made that the hub won't
+ * keep (Slack's for a whole Enterprise Grid org), or one whose refresh token the platform
+ * refused. Its message says what to do instead.
  */
 export class SyncLinkRefused extends Error {}
 

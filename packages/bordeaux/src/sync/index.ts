@@ -237,6 +237,11 @@ async function linearSigned(secret: string, headers: Headers, body: string): Pro
 async function linearTokens(form: Record<string, string>, kept: string | null = null): Promise<SyncTokens> {
   const response = await fetch('https://api.linear.app/oauth/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body: new URLSearchParams(form) })
   const answer = (await response.json().catch(() => ({}))) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string; error_description?: string }
+  // A refresh token Linear won't take (revoked, or unused for 30 days) won't be taken later either.
+  if (form.grant_type === 'refresh_token' && answer.error === 'invalid_grant') {
+    console.error(`[bordeaux] Linear refused a refresh token: ${answer.error_description ?? answer.error}`)
+    throw new SyncLinkRefused('Linear refused the refresh token: bdx sync link linear')
+  }
   if (!response.ok || !answer.access_token) throw new Error(`Linear refused the ${form.grant_type}: ${answer.error_description ?? answer.error ?? response.status}`)
   return { access: answer.access_token, refresh: answer.refresh_token ?? kept, expires_at: typeof answer.expires_in === 'number' ? Date.now() + answer.expires_in * 1000 : null }
 }
@@ -279,7 +284,7 @@ export function linearTeamSync(env: Env): TeamSync | null {
         return { external, name: data.organization?.name ?? external, tokens }
       },
       refresh(tokens) {
-        if (!tokens.refresh) throw new Error('Linear gave no refresh token: an owner links the workspace again')
+        if (!tokens.refresh) throw new SyncLinkRefused('Linear gave no refresh token: bdx sync link linear')
         return linearTokens({ grant_type: 'refresh_token', refresh_token: tokens.refresh, client_id: clientId, client_secret: clientSecret }, tokens.refresh)
       },
       async event(request, body) {
