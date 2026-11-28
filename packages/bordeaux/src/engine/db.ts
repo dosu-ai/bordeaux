@@ -26,5 +26,5 @@ export function doDb(storage: DurableObjectStorage): Db {
 
 /** Creates upstream's tables (`board_messages`, `board_versions`, `board_terms`, …). */
 export function createTables(storage: DurableObjectStorage) {
-  for (const statement of ddl()) storage.sql.exec(statement)
+  for (const statement of ddl('sqlite')) storage.sql.exec(statement)
 }

@@ -3,7 +3,7 @@
 ## Goals
 
 1. **Wire parity.** A bordeaux board answers the whole board protocol of `@vercel/board`
-   0.56.1. That covers every route, status, error code, header, and event shape. Unmodified
+   0.57.0. That covers every route, status, error code, header, and event shape. Unmodified
    upstream clients must work against it, both the `vb` CLI and `board()` with `BOARD_URL`.
 2. **Behavioral parity.** It must pass `@vercel/board/conformance` in every group. Where
    upstream's two engines disagree, bordeaux matches `local()`: upstream calls it the
@@ -129,7 +129,7 @@ on. Our own CLI is not a fork; `bdx` embeds upstream's commands through the publ
 
 ## Tracking upstream
 
-Upstream moves fast: 0.56.1, with daily changesets. bordeaux pins one upstream version per
+Upstream moves fast: 0.57.0, with daily changesets. bordeaux pins one upstream version per
 release and keeps up through two pieces (decided, Q11):
 
 - **An upgrade skill**, [`skills/upstream-upgrade`](../skills/upstream-upgrade/SKILL.md),

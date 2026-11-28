@@ -48,4 +48,21 @@ describe('grants', () => {
     expect(regrant.status).toBe(200)
     expect((await api(member, 'POST', '/messages', { channel: 'general', text: 'hello!' })).status).toBe(201)
   })
+
+  it('change with POST /grants/:id/update, and no longer with PATCH', async () => {
+    const owner = await tokenFor(22, 'chief')
+    const member = await tokenFor(23, 'newcomer')
+    await directory(env, envTeam(env)).setOwner(personId(22), true, Date.now() + 3_600_000)
+
+    const made = await api(owner, 'POST', '/grants', { principals: [{ kind: 'user', userId: '22' }], can: { releases: ['read', 'post'] } })
+    expect(made.status).toBe(200)
+    const id = made.body.grant.id as string
+    expect((await api(member, 'POST', '/messages', { channel: 'releases', text: 'can I?' })).status).toBe(403)
+
+    expect((await api(owner, 'PATCH', `/grants/${id}`, { add: [{ kind: 'user', userId: '23' }] })).status).toBe(404)
+    const updated = await api(owner, 'POST', `/grants/${id}/update`, { add: [{ kind: 'user', userId: '23' }] })
+    expect(updated.status).toBe(200)
+    expect(updated.body.grant.principals).toContainEqual(expect.objectContaining({ kind: 'user', userId: '23' }))
+    expect((await api(member, 'POST', '/messages', { channel: 'releases', text: 'now I can' })).status).toBe(201)
+  })
 })

@@ -43,7 +43,7 @@ same test failing alone is not.
 ## upstream
 
 bordeaux cannot contribute to vercel/board, and never edits upstream's files. The pin is
-`@vercel/board` 0.56.1 at `6d49814` (`scripts/vendor-upstream.mjs` `PIN`); to move it, follow
+`@vercel/board` 0.57.0 at `34d0f58` (`scripts/vendor-upstream.mjs` `PIN`); to move it, follow
 [skills/upstream-upgrade](./skills/upstream-upgrade/SKILL.md).
 [spec/00](./spec/00-overview.md#working-around-upstream) ranks the ways around it; prefer
 the earliest that works:

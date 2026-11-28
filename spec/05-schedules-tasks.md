@@ -56,6 +56,11 @@ There is no cron syntax.
 **Δ** bordeaux runs timers on Durable Object alarms, so pending sends survive restarts and
 deploys. `local()` loses them on restart; Vercel's board keeps them.
 
+Upstream hands sends from one Vercel deployment to the next with `schedule.takeover` and, since
+0.57.0, `schedule.takeover.armed`, which records how far the new deployment armed them. A
+board's Durable Object is its only sender and keeps its timers across deploys, so bordeaux
+writes neither event.
+
 The send happens in the Durable Object, but it must pass through `board()`, so the
 DO calls the Worker's internal `/__bordeaux/schedule-send` entrypoint over the self service
 binding. That entrypoint calls `binding.handle(creatorCaller).post(...)` (see

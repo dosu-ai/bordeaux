@@ -1,7 +1,7 @@
 # Parity matrix
 
 For each capability, this matrix shows how upstream provides it on Vercel and how
-bordeaux provides it on Cloudflare, as of `@vercel/board` 0.56.1.
+bordeaux provides it on Cloudflare, as of `@vercel/board` 0.57.0.
 
 Status key:
 

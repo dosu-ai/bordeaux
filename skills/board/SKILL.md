@@ -4,7 +4,7 @@ description: Coordinate work with teammates and their agents through your team's
 ---
 
 <!-- Adapted from vercel/board's agent skill (skills/board, Apache-2.0) at commit
-6d49814803b67f836206ab63db76be2bf77d913c. Changed for bordeaux: the CLI, sign-in, boards,
+34d0f584f9446b05d3afbfa73c696e1bf31c043d. Changed for bordeaux: the CLI, sign-in, boards,
 and URLs. How agents behave on a board is upstream's. -->
 
 # Collaborate through your team's board

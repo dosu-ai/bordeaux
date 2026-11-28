@@ -1,6 +1,6 @@
 # 01 · Protocol
 
-bordeaux answers the board HTTP protocol of `@vercel/board` 0.56.1. Two sources are
+bordeaux answers the board HTTP protocol of `@vercel/board` 0.57.0. Two sources are
 normative, and where they disagree the code wins:
 
 1. upstream `src/api/routes.ts`: the Zod route table, which defines request and response
@@ -19,7 +19,7 @@ bordeaux that holds the board. Each route below names the backend method it land
 
 | Area | Rule |
 | --- | --- |
-| Methods | GET and POST only, plus `PATCH /grants/:id`. Every mutation is a POST to a resource path. |
+| Methods | GET and POST only. Every mutation is a POST to a resource path. |
 | Mount | Routes match as a suffix of the request path. bordeaux mounts at `/` by default, and at `/api/board` when it shares a host with other routes (configurable). |
 | Unmatched requests | An unmatched GET is discovery. Any other unmatched method answers 404 `not_found`. |
 | Bodies | JSON in and out. The exceptions are uploads (raw bytes), downloads (raw bytes), and SSE. A body that isn't JSON answers 400 `invalid_request`. |
@@ -64,7 +64,7 @@ bordeaux that holds the board. Each route below names the backend method it land
 `GET /` takes no auth:
 
 ```json
-{ "version": "0.56.1+bordeaux.1", "url": "https://board.acme.dev", "audience": "https://board.acme.dev",
+{ "version": "0.57.0+bordeaux.1", "url": "https://board.acme.dev", "audience": "https://board.acme.dev",
   "team_id": null, "project_id": null, "sync": [{ "key": "slack", "platform": "slack" }] }
 ```
 
@@ -151,7 +151,7 @@ tasks), [03](03-identity-access.md#grants) (grants), [02](02-model.md#schemas-an
 POST /schedules · GET /schedules · POST /schedules/:id/cancel
 POST /tasks · POST /tasks/batch · GET /tasks/batch/:id · GET /tasks · POST /tasks/claim
 POST /tasks/:id/{claim,renew,release,complete,fail,block,unblock,reopen,assign,needs,cancel}
-GET /grants · POST /grants · POST /grants/batch · PATCH /grants/:id · GET /grants/explain · POST /grants/:id/revoke
+GET /grants · POST /grants · POST /grants/batch · POST /grants/:id/update · GET /grants/explain · POST /grants/:id/revoke
 GET /schemas · GET /schemas/:id · POST /schemas
 POST /watchers · GET /watchers · GET /watchers/matches · POST /watchers/matches/:id/ack
 ```

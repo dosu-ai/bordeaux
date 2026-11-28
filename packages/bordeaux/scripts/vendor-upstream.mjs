@@ -11,7 +11,7 @@ import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const PIN = { version: '0.56.1', commit: '6d49814803b67f836206ab63db76be2bf77d913c' }
+export const PIN = { version: '0.57.0', commit: '34d0f584f9446b05d3afbfa73c696e1bf31c043d' }
 
 export const FILES = [
   // The board's data model: events, folds, and what they're made of.

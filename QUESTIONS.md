@@ -24,7 +24,7 @@
 
 ### How each upstream mismatch is handled under Q7
 
-| Problem in `@vercel/board` 0.56.1 | Workaround | Kind |
+| Problem in `@vercel/board` 0.57.0 | Workaround | Kind |
 | --- | --- | --- |
 | `sync-slack`, `sync-github`, and `sync-linear` import `@vercel/connect/chat` at load time | Alias it to a bordeaux stub in the Worker bundle | build-time alias |
 | The inspector's handler reads `app.js` with `node:fs` | bordeaux's own handler serves upstream's prebuilt `app.js` from Static Assets | re-hosted asset + own code |

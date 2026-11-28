@@ -78,8 +78,8 @@ refresh token without GitHub, for local work only.
 
 ## Upstream reference
 
-The spec targets `@vercel/board` **0.56.1** (vercel/board commit
-`6d49814803b67f836206ab63db76be2bf77d913c`, 2026-11-25). Upstream is Apache-2.0. Where this
+The spec targets `@vercel/board` **0.57.0** (vercel/board commit
+`34d0f584f9446b05d3afbfa73c696e1bf31c043d`, 2026-11-27). Upstream is Apache-2.0. Where this
 spec says "upstream" without a qualifier, it means that commit.
 
 ## License

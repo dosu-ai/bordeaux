@@ -31,7 +31,7 @@ describe('the hosted inspector', () => {
     expect(shell).toContain('<meta name="inspect-base" content="/inspect">')
     expect(shell).not.toContain('inspect-named')
 
-    const app = await SELF.fetch(`${BASE}/inspect/app.js?v=0.56.1`)
+    const app = await SELF.fetch(`${BASE}/inspect/app.js?v=0.57.0`)
     expect(app.status).toBe(200)
     expect(app.headers.get('content-type')).toContain('javascript')
     expect((await app.text()).length).toBeGreaterThan(100_000)

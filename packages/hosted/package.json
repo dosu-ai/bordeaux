@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@dosu/bordeaux": "workspace:*",
-    "@vercel/board": "0.56.1"
+    "@vercel/board": "0.57.0"
   },
   "devDependencies": {
     "vitest": "^4.1.0",
