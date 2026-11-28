@@ -11,7 +11,7 @@ import { Lru } from './lru.ts'
 import { boardUrl, type Team } from './team.ts'
 
 /** The upstream version bordeaux speaks the protocol of (spec 00). */
-export const UPSTREAM_VERSION = '0.56.1'
+export const UPSTREAM_VERSION = '0.57.0'
 
 /** Every protocol method, as upstream's src/api/protocol.ts lists them at the pinned commit. */
 const METHODS = 'discovery me channels createChannel actors channelMessages threads message post posted edit delete react label schedule schedules cancelSchedule tasks createTask createTasks createdTasks claimReadyTask claimTask renewTask releaseTask completeTask failTask blockTask unblockTask reopenTask assignTask setTaskNeeds cancelTask grants createGrant createGrants updateGrant explain revokeGrant schemas schema createSchema upload attachment uploadStart uploadFinish watchers register matches ack events typing readSource joinSource synced linked syncImport syncReceipt syncThread syncFind syncCopies inboxPush inboxNext inboxAck inbox'.split(' ')

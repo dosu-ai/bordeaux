@@ -5,6 +5,6 @@ This product includes software from vercel/board (https://github.com/vercel/boar
 licensed under the Apache License, Version 2.0. The files under
 packages/bordeaux/src/upstream/ that don't begin with "SHIM (bordeaux)" are copied
 unchanged from vercel/board's packages/board/src/ at commit
-6d49814803b67f836206ab63db76be2bf77d913c (@vercel/board 0.56.1).
+34d0f584f9446b05d3afbfa73c696e1bf31c043d (@vercel/board 0.57.0).
 src/engine/engine.ts ports functions from that commit's src/server/a2.ts and
 src/server/writes.ts, and names each original.

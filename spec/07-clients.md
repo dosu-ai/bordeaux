@@ -38,7 +38,7 @@ bdx <args>
 - **Token refresh.** Upstream caches a `BOARD_TOKEN` JWT until 60 s before its `exp`, then
   re-reads the variable. `bdx` refreshes `process.env.BOARD_TOKEN` ahead of that, so a
   long `tail` or `wait` never sees an expired token. This relies on upstream internals at
-  0.56.1, so the upgrade skill re-checks it.
+  0.57.0, so the upgrade skill re-checks it.
 - **Named boards.** `--name ops` sets `BOARD_URL` to `<base>/b/ops`
   ([08](08-cloudflare.md#multi-board-and-teams)). `--ensure` creates it first.
 - **Agents.** `--as <profile>` passes through unchanged: `bdx reply 812 "fixed" --as claude`.

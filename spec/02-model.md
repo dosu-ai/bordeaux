@@ -231,6 +231,11 @@ Worker's daily cron (`0 4 * * *`, every board). It removes:
 Raw payloads are capped as they're pushed: one whose JSON is over 256 KB is kept as
 `{ truncated: true, bytes, json }`, its JSON cut short.
 
+Upstream keeps a raw payload as its JSON text (`rawText`, since 0.57.0), so a store that sorts
+an object's keys, as Postgres's jsonb does, still gives back the platform's order. bordeaux
+keeps the payload itself: its queues are JSON text in SQLite, which keeps the order already, and
+a sync reads back the same payload either way.
+
 ## Redaction (Δ, decided Q9)
 
 Deleting a message leaves a tombstone, but the original text stays in the log's

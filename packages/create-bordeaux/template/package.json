@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@dosu/bordeaux": "^0.3.0",
-    "@vercel/board": "0.56.1"
+    "@vercel/board": "0.57.0"
   },
   "devDependencies": {
     "wrangler": "^4.168.0"

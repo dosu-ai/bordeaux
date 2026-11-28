@@ -20,8 +20,8 @@ importers:
         specifier: ^4.45.0
         version: 4.45.0(zod@4.6.7)
       '@vercel/board':
-        specifier: 0.56.1
-        version: 0.56.1(@chat-adapter/github@4.45.0(zod@4.6.7))(@chat-adapter/linear@4.45.0(graphql@17.1.0)(zod@4.6.7))(@chat-adapter/slack@4.45.0(zod@4.6.7))(chat@4.45.0(zod@4.6.7))
+        specifier: 0.57.0
+        version: 0.57.0(@chat-adapter/github@4.45.0(zod@4.6.7))(@chat-adapter/linear@4.45.0(graphql@17.1.0)(zod@4.6.7))(@chat-adapter/slack@4.45.0(zod@4.6.7))(chat@4.45.0(zod@4.6.7))
       chat:
         specifier: ^4.45.0
         version: 4.45.0(zod@4.6.7)
@@ -65,8 +65,8 @@ importers:
         specifier: workspace:*
         version: link:../bordeaux
       '@vercel/board':
-        specifier: 0.56.1
-        version: 0.56.1(@chat-adapter/github@4.45.0(zod@4.6.7))(@chat-adapter/linear@4.45.0(graphql@17.1.0)(zod@4.6.7))(@chat-adapter/slack@4.45.0(zod@4.6.7))(chat@4.45.0(zod@4.6.7))
+        specifier: 0.57.0
+        version: 0.57.0(@chat-adapter/github@4.45.0(zod@4.6.7))(@chat-adapter/linear@4.45.0(graphql@17.1.0)(zod@4.6.7))(@chat-adapter/slack@4.45.0(zod@4.6.7))(chat@4.45.0(zod@4.6.7))
     devDependencies:
       vitest:
         specifier: ^4.1.0
@@ -1123,16 +1123,19 @@ packages:
   '@types/yargs@17.0.24':
     resolution: {integrity: sha512-6i0aC7jV6QzQB8ne1joVZ0eSFIstHsCrobmOtghM11yGlH0j43FKL2UhWdELkyps0zuf7qVTUVCCR+tgSlyLLw==}
 
-  '@vercel/board@0.56.1':
-    resolution: {integrity: sha512-fevWChw7CaZ0hIEMh8g8L8cHudzw/vqO9IfWWUxZCjzgAQ0hMxR1pv+QnM2FIMZLiO9WXJR+UD1onw0xOA/pSg==}
+  '@vercel/board@0.57.0':
+    resolution: {integrity: sha512-n/rnmtR7UPWw3xsuLgbrw6WYPt5vq5ZuBUOUEmpERcyRa3NKuH/e5BAf3wuvOarQfRnqq93cU4vkbDx6D4590A==}
     engines: {node: '>=22.18'}
     hasBin: true
     peerDependencies:
       '@chat-adapter/github': ^4.41.1
       '@chat-adapter/linear': ^4.41.1
       '@chat-adapter/slack': ^4.41.1
+      '@vercel/blob': ^2.8.0
       '@vercel/connect': ^2.3.4
+      '@vercel/queue': '*'
       chat: ^4.41.1
+      pg: ^8.11.0
     peerDependenciesMeta:
       '@chat-adapter/github':
         optional: true
@@ -1140,9 +1143,15 @@ packages:
         optional: true
       '@chat-adapter/slack':
         optional: true
+      '@vercel/blob':
+        optional: true
       '@vercel/connect':
         optional: true
+      '@vercel/queue':
+        optional: true
       chat:
+        optional: true
+      pg:
         optional: true
 
   '@vercel/cli-config@0.3.1':
@@ -2854,7 +2863,7 @@ snapshots:
     dependencies:
       '@types/yargs-parser': 21.0.3
 
-  '@vercel/board@0.56.1(@chat-adapter/github@4.45.0(zod@4.6.7))(@chat-adapter/linear@4.45.0(graphql@17.1.0)(zod@4.6.7))(@chat-adapter/slack@4.45.0(zod@4.6.7))(chat@4.45.0(zod@4.6.7))':
+  '@vercel/board@0.57.0(@chat-adapter/github@4.45.0(zod@4.6.7))(@chat-adapter/linear@4.45.0(graphql@17.1.0)(zod@4.6.7))(@chat-adapter/slack@4.45.0(zod@4.6.7))(chat@4.45.0(zod@4.6.7))':
     dependencies:
       '@vercel/oidc': 3.8.10
       jose: 6.2.18

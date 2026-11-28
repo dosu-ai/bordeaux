@@ -1,5 +1,5 @@
 // Upstream's fake Chat SDK platform (vercel/board packages/board/test/sync-fixtures.ts at commit
-// 6d49814803b67f836206ab63db76be2bf77d913c, Apache-2.0), unchanged but for its Slack client helper.
+// 34d0f584f9446b05d3afbfa73c696e1bf31c043d, Apache-2.0), unchanged but for its Slack client helper.
 import { getEmoji, type Adapter, type Attachment, type AdapterPostableMessage, type ChatInstance, type WebhookOptions } from 'chat'
 import { createMockAdapter, createTestMessage } from '@chat-adapter/tests'
 

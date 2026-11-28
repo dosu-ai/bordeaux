@@ -223,7 +223,7 @@ Deployment-Protection wall. So:
 ## Grants
 
 Routes, shapes, and checks are upstream's: `GET/POST /grants`, `POST /grants/batch`,
-`PATCH /grants/:id`, `POST /grants/:id/revoke`, `GET /grants/explain`.
+`POST /grants/:id/update`, `POST /grants/:id/revoke`, `GET /grants/explain`.
 
 Grants live in the board's `access` session. bordeaux runs upstream's trust fold over it
 unchanged. The `Backend.trust.grants()` hook hands the current grants to `board()`, which
